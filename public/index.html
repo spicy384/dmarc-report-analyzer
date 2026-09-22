@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DMARC Report Analyzer</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/dmarc.css" />
+</head>
+<body>
+  <header>
+    <div class="header-row">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
+        </span>
+        <div class="brand-text">
+          <h1>DMARC Report Analyzer</h1>
+          <p class="brand-sub">Aggregate reports from a Microsoft 365 mailbox</p>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <span id="current-user" class="badge" hidden></span>
+        <button id="account-btn" type="button" class="secondary small" hidden>Account</button>
+        <button id="users-btn" type="button" class="secondary small" hidden>Users</button>
+        <button id="logout-btn" type="button" class="secondary small" hidden>Sign out</button>
+        <button id="theme-toggle" type="button" class="secondary icon-btn">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+          <span class="theme-label">Dark Theme</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Covers the app until the user is signed in. -->
+  <div id="auth-overlay" class="auth-overlay" hidden>
+    <div class="auth-card">
+      <div class="auth-brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
+        </span>
+        <h2 id="auth-title">Sign in</h2>
+      </div>
+
+      <p id="auth-message" class="auth-message" hidden></p>
+
+      <!-- Step 1: username + password -->
+      <form id="auth-login-form" class="auth-form">
+        <label>Username <input id="auth-username" autocomplete="username" required /></label>
+        <label>Password <input id="auth-password" type="password" autocomplete="current-password" required /></label>
+        <button type="submit">Sign in</button>
+      </form>
+
+      <!-- Step 2: authenticator code -->
+      <form id="auth-mfa-form" class="auth-form" hidden>
+        <label>Authentication code
+          <input id="auth-mfa-code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" />
+        </label>
+        <button type="submit">Verify</button>
+        <button type="button" id="auth-use-recovery" class="link-btn">Use a recovery code instead</button>
+      </form>
+
+      <!-- Step 2 (alternate): recovery code -->
+      <form id="auth-recovery-form" class="auth-form" hidden>
+        <label>Recovery code
+          <input id="auth-recovery-code" placeholder="xxxxxxxx-xxxxxxxx" />
+        </label>
+        <button type="submit">Sign in</button>
+        <button type="button" id="auth-use-totp" class="link-btn">Back to authenticator code</button>
+      </form>
+
+      <!-- First run -->
+      <form id="auth-setup-form" class="auth-form" hidden>
+        <p class="auth-hint">No accounts exist yet. Create the first administrator.</p>
+        <label>Username <input id="setup-username" autocomplete="username" placeholder="admin" /></label>
+        <label>Password (12 characters minimum)
+          <input id="setup-password" type="password" autocomplete="new-password" />
+        </label>
+        <label>Confirm password <input id="setup-password2" type="password" autocomplete="new-password" /></label>
+        <button type="submit">Create administrator</button>
+      </form>
+
+      <!-- MFA enrolment -->
+      <div id="auth-enrol" class="auth-form" hidden>
+        <p class="auth-hint">Scan this with your authenticator app, then enter the code it shows.</p>
+        <img id="enrol-qr" class="enrol-qr" alt="TOTP enrolment QR code" />
+        <label>Or enter this secret manually
+          <input id="enrol-secret" class="mono" readonly />
+        </label>
+        <label>Code from your app
+          <input id="enrol-code" inputmode="numeric" placeholder="123456" />
+        </label>
+        <div class="actions">
+          <button type="button" id="enrol-confirm">Enable two-factor</button>
+          <button type="button" id="enrol-skip" class="secondary">Skip for now</button>
+        </div>
+      </div>
+
+      <!-- Recovery codes, shown once -->
+      <div id="auth-recovery-codes" class="auth-form" hidden>
+        <p class="auth-hint">
+          <strong>Save these recovery codes now.</strong> Each works once if you lose your
+          authenticator. They will not be shown again.
+        </p>
+        <pre id="recovery-code-list" class="recovery-list mono"></pre>
+        <div class="actions">
+          <button type="button" id="recovery-copy" class="secondary">Copy</button>
+          <button type="button" id="recovery-download" class="secondary">Download</button>
+          <button type="button" id="recovery-done">I have saved them</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <!-- Period and domain apply to every panel below. -->
+    <section class="panel" id="overview-panel">
+      <div class="panel-head">
+        <h2>Overview</h2>
+        <span id="range-label" class="badge"></span>
+      </div>
+
+      <div class="filter-bar">
+        <label>Period
+          <select id="range-select">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="365">Last year</option>
+            <option value="all">All time</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        <label id="from-label" hidden>From <input type="date" id="from-date" /></label>
+        <label id="to-label" hidden>To (inclusive) <input type="date" id="to-date" /></label>
+        <label>Domain
+          <select id="domain-select">
+            <option value="">All domains</option>
+          </select>
+        </label>
+        <div class="filter-actions">
+          <button id="refresh-btn" type="button" class="secondary">Refresh</button>
+          <button id="export-btn" type="button" class="secondary">Export CSV</button>
+        </div>
+      </div>
+
+      <p id="status" role="status">Loading...</p>
+
+      <div id="stat-grid" class="stat-grid"></div>
+
+      <div class="chart-head">
+        <h3>Messages per day, by DMARC result</h3>
+        <div class="chart-legend">
+          <span><i class="swatch swatch-pass"></i> Pass</span>
+          <span><i class="swatch swatch-fail-none"></i> Fail, delivered</span>
+          <span><i class="swatch swatch-quarantine"></i> Fail, quarantined</span>
+          <span><i class="swatch swatch-reject"></i> Fail, rejected</span>
+        </div>
+      </div>
+      <div id="chart-wrap" class="chart-wrap">
+        <svg id="chart" role="img" aria-label="Messages per day"></svg>
+        <div id="chart-tip" class="chart-tip" hidden></div>
+        <p id="chart-empty" class="empty-state" hidden>No reports in this period.</p>
+      </div>
+      <p class="bulk-hint">
+        Aggregate reports cover a window (usually one UTC day) and count messages per source IP;
+        they do not carry a timestamp for each message. Days here are the start of each report window.
+      </p>
+    </section>
+
+    <section class="panel" id="sources-panel">
+      <div class="panel-head">
+        <h2>Sending sources</h2>
+        <span id="ips-count" class="badge">0 sources</span>
+        <label class="check-inline head-toggle">
+          <input type="checkbox" id="failing-only" checked /> Only sources with failures
+        </label>
+      </div>
+      <p class="bulk-hint">
+        Every IP address that sent mail claiming to be from your domain, worst first. A source that
+        fails everything and is not yours is spoofing; one that fails but is yours needs SPF or DKIM
+        fixed. Click a row for the underlying records.
+      </p>
+      <div id="ips-results" class="table-scroll"></div>
+
+      <div id="ip-detail" class="detail-drawer" hidden>
+        <div class="detail-head">
+          <h3 id="ip-detail-title" class="mono"></h3>
+          <button id="ip-detail-close" type="button" class="secondary small">Close</button>
+        </div>
+        <div id="ip-detail-summary" class="detail-summary"></div>
+        <div id="ip-detail-body" class="table-scroll"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="reporters-panel">
+      <div class="panel-head">
+        <h2>Reporting services</h2>
+        <span id="reporters-count" class="badge">0 reporters</span>
+      </div>
+      <p class="bulk-hint">
+        Who sent the reports: the receiving mail systems that evaluated your domain's DMARC policy.
+      </p>
+      <div id="reporters-results" class="table-scroll"></div>
+    </section>
+
+    <section class="panel" id="reports-panel">
+      <div class="panel-head">
+        <h2>Reports</h2>
+        <span id="reports-count" class="badge">0 reports</span>
+        <label class="head-toggle">Reporter
+          <select id="reporter-filter" class="small">
+            <option value="">All</option>
+          </select>
+        </label>
+      </div>
+      <div id="reports-results" class="table-scroll"></div>
+      <div class="pager">
+        <button id="reports-prev" type="button" class="secondary small">Previous</button>
+        <span id="reports-page-label"></span>
+        <button id="reports-next" type="button" class="secondary small">Next</button>
+      </div>
+
+      <div id="report-detail" class="detail-drawer" hidden>
+        <div class="detail-head">
+          <h3 id="report-detail-title"></h3>
+          <div class="row-actions">
+            <a id="report-detail-xml" class="button-link secondary small" href="#" download>Download XML</a>
+            <button id="report-detail-close" type="button" class="secondary small">Close</button>
+          </div>
+        </div>
+        <div id="report-detail-summary" class="detail-summary"></div>
+        <div id="report-detail-body" class="table-scroll"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="sync-panel">
+      <div class="panel-head">
+        <h2>Mailbox sync</h2>
+        <span id="sync-state" class="badge">Idle</span>
+      </div>
+
+      <div class="sync-grid">
+        <div>
+          <dl id="graph-config" class="kv"></dl>
+          <div class="actions">
+            <button id="sync-now-btn" type="button" class="writer-only">Sync now</button>
+            <button id="test-graph-btn" type="button" class="secondary admin-only" hidden>Test connection</button>
+          </div>
+          <div class="backfill writer-only">
+            <label>Re-scan the mailbox from
+              <input type="date" id="backfill-date" />
+            </label>
+            <button id="backfill-btn" type="button" class="secondary">Backfill</button>
+          </div>
+          <div id="sync-progress" class="sync-progress" hidden>
+            <div class="progress-track"><div id="sync-progress-bar" class="progress-bar indeterminate"></div></div>
+            <p id="sync-progress-text"></p>
+          </div>
+          <p id="sync-message" class="sync-message" hidden></p>
+        </div>
+
+        <div>
+          <h3 class="account-heading">Recent runs</h3>
+          <div id="runs-results" class="table-scroll"></div>
+          <h3 class="account-heading">Messages that could not be read</h3>
+          <div id="errors-results" class="table-scroll"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="users-panel" hidden>
+      <div class="panel-head">
+        <h2>Users</h2>
+        <span id="users-count" class="badge">0 users</span>
+      </div>
+      <p class="bulk-hint">
+        Everyone who signs in gets their own account. Two-factor is enrolled by each user from
+        <strong>Account</strong>. <strong>Users</strong> can start a sync; <strong>viewers</strong>
+        can look at everything but change nothing; <strong>administrators</strong> also manage
+        accounts and can test the mailbox connection.
+      </p>
+
+      <div class="bulk-controls">
+        <label>Username <input id="new-username" placeholder="operator" /></label>
+        <label>Password (12 characters minimum) <input id="new-password" type="password" /></label>
+        <label>Role
+          <select id="new-role">
+            <option value="user">User</option>
+            <option value="admin">Administrator</option>
+            <option value="viewer">Viewer (read-only)</option>
+          </select>
+        </label>
+        <button id="add-user-btn" type="button">Add User</button>
+      </div>
+
+      <div id="users-results" class="bulk-results"></div>
+    </section>
+
+    <section class="panel" id="account-panel" hidden>
+      <div class="panel-head">
+        <h2>Account</h2>
+        <span id="account-mfa-state" class="badge">Two-factor: off</span>
+      </div>
+
+      <div class="account-grid">
+        <div>
+          <h3 class="account-heading">Change password</h3>
+          <label>Current password <input id="acct-current" type="password" /></label>
+          <label>New password (12 characters minimum) <input id="acct-new" type="password" /></label>
+          <div class="actions">
+            <button id="acct-change-password" type="button">Change password</button>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="account-heading">Two-factor authentication</h3>
+          <p class="bulk-hint" id="acct-mfa-hint">
+            Protects your account if your password is ever guessed or reused.
+          </p>
+          <div class="actions">
+            <button id="acct-enable-mfa" type="button">Set up two-factor</button>
+            <button id="acct-disable-mfa" type="button" class="ghost-danger" hidden>Turn off two-factor</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

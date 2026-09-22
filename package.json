@@ -1,0 +1,19 @@
+{
+  "name": "dmarc-report-analyzer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web app that pulls DMARC aggregate reports out of a Microsoft 365 mailbox and analyzes them.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node test/run-all.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "express": "^4.21.2",
+    "fast-xml-parser": "^5.10.1",
+    "fflate": "^0.8.2",
+    "qrcode": "^1.5.4"
+  }
+}

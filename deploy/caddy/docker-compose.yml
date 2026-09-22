@@ -1,0 +1,107 @@
+# DMARC Report Analyzer behind Caddy on the same host.
+#
+# Caddy obtains and renews a Let's Encrypt certificate automatically and proxies
+# to the app over the internal Docker network. The app itself publishes no ports,
+# so the only way in is through Caddy over HTTPS.
+#
+#   cp .env.example .env     # set your domain and email
+#   docker compose up -d
+#
+# Requirements for automatic certificates:
+#   - a real domain whose DNS A/AAAA record points at this host
+#   - inbound TCP 80 and 443 reachable from the internet
+# If you cannot meet those, see the notes in Caddyfile for internal-only options.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: dmarc-caddy
+    restart: unless-stopped
+
+    # 80 is needed for the ACME challenge and the HTTP->HTTPS redirect.
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+
+    environment:
+      # Consumed by the Caddyfile.
+      DMARC_DOMAIN: ${DMARC_DOMAIN:?set DMARC_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # caddy_data holds the issued certificates and the ACME account key.
+      # Losing it forces re-issuance, and Let's Encrypt rate limits apply
+      # (5 identical certificates per week), so keep this volume.
+      - caddy_data:/data
+      - caddy_config:/config
+
+    depends_on:
+      - dmarc-analyzer
+
+    networks:
+      - dmarc
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  dmarc-analyzer:
+    build:
+      context: ../..
+    # Published image (docker compose pull), or build from the checkout with --build.
+    image: ghcr.io/spicy384/dmarc-report-analyzer:latest
+    container_name: dmarc-analyzer
+    restart: unless-stopped
+
+    # Deliberately no ports: only Caddy can reach it, over the internal network.
+    # The proxy hop never leaves this host, so the app speaks plain HTTP here.
+
+    environment:
+      PORT: 3000
+      DATA_DIR: /data
+      TZ: ${TZ:-UTC}
+
+      # Caddy terminates HTTPS, so the browser only ever sends the cookie over TLS.
+      COOKIE_SECURE: "true"
+
+      # Not needed: the hop to the app stays inside this host's Docker network.
+      TLS_ENABLED: "false"
+
+      # --- Microsoft 365 mailbox (see "Entra app registration" in the README) ---
+      GRAPH_TENANT_ID: ${GRAPH_TENANT_ID:?set GRAPH_TENANT_ID in .env}
+      GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID:?set GRAPH_CLIENT_ID in .env}
+      GRAPH_CLIENT_SECRET: ${GRAPH_CLIENT_SECRET:?set GRAPH_CLIENT_SECRET in .env}
+      DMARC_MAILBOX: ${DMARC_MAILBOX:?set DMARC_MAILBOX in .env}
+      DMARC_FOLDER: ${DMARC_FOLDER:-Inbox}
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-60}
+      BACKFILL_DAYS: ${BACKFILL_DAYS:-90}
+
+    volumes:
+      - dmarc-data:/data
+
+    networks:
+      - dmarc
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  dmarc:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  dmarc-data:

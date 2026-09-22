@@ -1,0 +1,53 @@
+# Caddy configuration for DMARC Report Analyzer.
+#
+# Naming a real domain here is all it takes: Caddy requests a Let's Encrypt
+# certificate on first start, redirects HTTP to HTTPS, and renews automatically.
+
+{
+	# Where Let's Encrypt sends expiry warnings. Optional but recommended.
+	email {$ACME_EMAIL}
+}
+
+{$DMARC_DOMAIN} {
+	# The app is reachable only on the internal Docker network.
+	reverse_proxy dmarc-analyzer:3000
+
+	# Modest hardening. The app sets no CSP of its own; this one matches what it
+	# actually loads (its own assets, plus inline styles and a data: URI QR image).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		-Server
+	}
+
+	encode zstd gzip
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+# ---------------------------------------------------------------------------
+# If this host is NOT reachable from the internet on ports 80/443, Let's Encrypt
+# cannot validate the domain. Two alternatives:
+#
+# 1. Caddy's own local CA - real HTTPS, but browsers warn unless you install
+#    Caddy's root certificate (it is written to /data in the caddy_data volume):
+#
+#        {$DMARC_DOMAIN} {
+#            tls internal
+#            reverse_proxy dmarc-analyzer:3000
+#        }
+#
+# 2. DNS-01 validation - gets a genuine Let's Encrypt certificate with no inbound
+#    access, but needs a Caddy image built with your DNS provider's plugin, e.g.
+#    caddy:builder with github.com/caddy-dns/cloudflare, then:
+#
+#        tls {
+#            dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+#        }
+# ---------------------------------------------------------------------------

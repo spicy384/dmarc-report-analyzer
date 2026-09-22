@@ -1,0 +1,646 @@
+/**
+ * SQLite storage for ingested reports and the queries behind every analysis view.
+ *
+ * Times are unix seconds throughout. Report windows come from the report itself
+ * (date_range begin/end); message times come from the mailbox (receivedDateTime).
+ * A "filter" is { from, to, domain }: from/to bound the report window start, and
+ * domain limits to reports about one policy_published domain.
+ */
+const fs = require("fs");
+const path = require("path");
+const zlib = require("zlib");
+const Database = require("better-sqlite3");
+
+const SCHEMA_VERSION = 1;
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS messages (
+  graph_id            TEXT PRIMARY KEY,
+  internet_message_id TEXT,
+  received_at         INTEGER NOT NULL,
+  subject             TEXT,
+  from_addr           TEXT,
+  status              TEXT NOT NULL,   -- ingested | no_report | error
+  error               TEXT,
+  processed_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
+
+CREATE TABLE IF NOT EXISTS reports (
+  id              INTEGER PRIMARY KEY,
+  message_id      TEXT,            -- messages.graph_id; not a FK because the report is stored first
+  org_name        TEXT NOT NULL,
+  org_email       TEXT,
+  report_id       TEXT NOT NULL,
+  range_begin     INTEGER NOT NULL,
+  range_end       INTEGER NOT NULL,
+  domain          TEXT NOT NULL,
+  adkim           TEXT,
+  aspf            TEXT,
+  p               TEXT,
+  sp              TEXT,
+  pct             INTEGER,
+  fo              TEXT,
+  messages        INTEGER NOT NULL DEFAULT 0,
+  passed          INTEGER NOT NULL DEFAULT 0,
+  attachment_name TEXT,
+  xml_gz          BLOB,
+  ingested_at     INTEGER NOT NULL,
+  UNIQUE(org_name, report_id, domain)
+);
+CREATE INDEX IF NOT EXISTS idx_reports_begin  ON reports(range_begin);
+CREATE INDEX IF NOT EXISTS idx_reports_domain ON reports(domain);
+CREATE INDEX IF NOT EXISTS idx_reports_org    ON reports(org_name);
+
+CREATE TABLE IF NOT EXISTS records (
+  id            INTEGER PRIMARY KEY,
+  report_id     INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  source_ip     TEXT NOT NULL,
+  count         INTEGER NOT NULL,
+  disposition   TEXT NOT NULL,
+  dkim_eval     TEXT,
+  spf_eval      TEXT,
+  passed        INTEGER NOT NULL,
+  reasons       TEXT,            -- JSON [{type, comment}]
+  envelope_to   TEXT,
+  envelope_from TEXT,
+  header_from   TEXT,
+  dkim_results  TEXT,            -- JSON [{domain, selector, result, humanResult}]
+  spf_results   TEXT,            -- JSON [{domain, scope, result}]
+  dkim_domain   TEXT,
+  spf_domain    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_records_report ON records(report_id);
+CREATE INDEX IF NOT EXISTS idx_records_ip     ON records(source_ip);
+CREATE INDEX IF NOT EXISTS idx_records_passed ON records(passed);
+
+CREATE TABLE IF NOT EXISTS ip_info (
+  ip           TEXT PRIMARY KEY,
+  ptr          TEXT,
+  looked_up_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_runs (
+  id            INTEGER PRIMARY KEY,
+  started_at    INTEGER NOT NULL,
+  finished_at   INTEGER,
+  trigger       TEXT NOT NULL,
+  since         INTEGER,
+  messages_seen INTEGER NOT NULL DEFAULT 0,
+  reports_added INTEGER NOT NULL DEFAULT 0,
+  duplicates    INTEGER NOT NULL DEFAULT 0,
+  errors        INTEGER NOT NULL DEFAULT 0,
+  error_text    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
+`;
+
+const DISPOSITIONS = ["none", "quarantine", "reject"];
+
+function now() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function toInt(value, fallback = null) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+/**
+ * Builds the WHERE fragment shared by every time/domain-filtered query.
+ * `alias` is the reports table alias in the caller's FROM clause.
+ */
+function buildFilter(filter = {}, alias = "r") {
+  const clauses = [];
+  const params = [];
+  const from = toInt(filter.from);
+  const to = toInt(filter.to);
+  if (from !== null) {
+    clauses.push(`${alias}.range_begin >= ?`);
+    params.push(from);
+  }
+  if (to !== null) {
+    clauses.push(`${alias}.range_begin < ?`);
+    params.push(to);
+  }
+  if (filter.domain) {
+    clauses.push(`${alias}.domain = ?`);
+    params.push(String(filter.domain).toLowerCase());
+  }
+  return { sql: clauses.length ? clauses.join(" AND ") : "1=1", params };
+}
+
+function splitList(value) {
+  if (!value) {
+    return [];
+  }
+  return String(value).split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function parseJson(value, fallback) {
+  if (!value) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function shapeRecord(row) {
+  return {
+    id: row.id,
+    reportId: row.report_id,
+    sourceIp: row.source_ip,
+    count: row.count,
+    disposition: row.disposition,
+    dkimEval: row.dkim_eval,
+    spfEval: row.spf_eval,
+    passed: Boolean(row.passed),
+    reasons: parseJson(row.reasons, []),
+    envelopeTo: row.envelope_to,
+    envelopeFrom: row.envelope_from,
+    headerFrom: row.header_from,
+    dkimResults: parseJson(row.dkim_results, []),
+    spfResults: parseJson(row.spf_results, []),
+    dkimDomain: row.dkim_domain,
+    spfDomain: row.spf_domain,
+    // Present when the query joined reports.
+    orgName: row.org_name,
+    domain: row.domain,
+    rangeBegin: row.range_begin,
+    rangeEnd: row.range_end,
+    policy: row.p,
+    ptr: row.ptr === undefined ? undefined : row.ptr
+  };
+}
+
+function shapeReport(row) {
+  return {
+    id: row.id,
+    messageId: row.message_id,
+    orgName: row.org_name,
+    orgEmail: row.org_email,
+    reportId: row.report_id,
+    rangeBegin: row.range_begin,
+    rangeEnd: row.range_end,
+    domain: row.domain,
+    adkim: row.adkim,
+    aspf: row.aspf,
+    p: row.p,
+    sp: row.sp,
+    pct: row.pct,
+    fo: row.fo,
+    messages: row.messages,
+    passed: row.passed,
+    failed: row.messages - row.passed,
+    attachmentName: row.attachment_name,
+    ingestedAt: row.ingested_at,
+    receivedAt: row.received_at === undefined ? undefined : row.received_at,
+    subject: row.subject === undefined ? undefined : row.subject
+  };
+}
+
+/**
+ * Opens (or creates) the database. Pass `{ file: ":memory:" }` for tests.
+ */
+function openDatabase({ dataDir, file } = {}) {
+  const dbPath = file || path.join(dataDir, "dmarc.sqlite");
+  if (!file && dataDir) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  const db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  db.pragma("synchronous = NORMAL");
+  db.exec(SCHEMA);
+  if (db.pragma("user_version", { simple: true }) < SCHEMA_VERSION) {
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  }
+
+  const stmts = {
+    hasMessage: db.prepare("SELECT 1 FROM messages WHERE graph_id = ?"),
+    upsertMessage: db.prepare(`
+      INSERT INTO messages (graph_id, internet_message_id, received_at, subject, from_addr, status, error, processed_at)
+      VALUES (@graphId, @internetMessageId, @receivedAt, @subject, @fromAddr, @status, @error, @processedAt)
+      ON CONFLICT(graph_id) DO UPDATE SET
+        status = excluded.status, error = excluded.error, processed_at = excluded.processed_at`),
+    insertReport: db.prepare(`
+      INSERT OR IGNORE INTO reports (message_id, org_name, org_email, report_id, range_begin, range_end, domain,
+        adkim, aspf, p, sp, pct, fo, messages, passed, attachment_name, xml_gz, ingested_at)
+      VALUES (@messageId, @orgName, @orgEmail, @reportId, @rangeBegin, @rangeEnd, @domain,
+        @adkim, @aspf, @p, @sp, @pct, @fo, @messages, @passed, @attachmentName, @xmlGz, @ingestedAt)`),
+    insertRecord: db.prepare(`
+      INSERT INTO records (report_id, source_ip, count, disposition, dkim_eval, spf_eval, passed, reasons,
+        envelope_to, envelope_from, header_from, dkim_results, spf_results, dkim_domain, spf_domain)
+      VALUES (@reportId, @sourceIp, @count, @disposition, @dkimEval, @spfEval, @passed, @reasons,
+        @envelopeTo, @envelopeFrom, @headerFrom, @dkimResults, @spfResults, @dkimDomain, @spfDomain)`),
+    maxReceived: db.prepare("SELECT MAX(received_at) AS v FROM messages"),
+    getSetting: db.prepare("SELECT value FROM settings WHERE key = ?"),
+    setSetting: db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+    startRun: db.prepare("INSERT INTO sync_runs (started_at, trigger, since) VALUES (?, ?, ?)"),
+    finishRun: db.prepare(`UPDATE sync_runs SET finished_at = @finishedAt, messages_seen = @messagesSeen,
+      reports_added = @reportsAdded, duplicates = @duplicates, errors = @errors, error_text = @errorText WHERE id = @id`),
+    runs: db.prepare("SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?"),
+    lastRun: db.prepare("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1"),
+    ipsMissingPtr: db.prepare(`SELECT DISTINCT x.source_ip AS ip FROM records x
+      LEFT JOIN ip_info i ON i.ip = x.source_ip WHERE i.ip IS NULL LIMIT ?`),
+    setPtr: db.prepare("INSERT INTO ip_info (ip, ptr, looked_up_at) VALUES (?, ?, ?) ON CONFLICT(ip) DO UPDATE SET ptr = excluded.ptr, looked_up_at = excluded.looked_up_at"),
+    reportXml: db.prepare("SELECT xml_gz, attachment_name, org_name, report_id FROM reports WHERE id = ?"),
+    reportById: db.prepare("SELECT r.*, m.received_at, m.subject FROM reports r LEFT JOIN messages m ON m.graph_id = r.message_id WHERE r.id = ?"),
+    recordsForReport: db.prepare(`SELECT x.*, i.ptr FROM records x LEFT JOIN ip_info i ON i.ip = x.source_ip
+      WHERE x.report_id = ? ORDER BY x.passed ASC, x.count DESC`)
+  };
+
+  const insertReportTx = db.transaction(({ messageId, attachmentName, parsed, xml }) => {
+    const { metadata, policy, records } = parsed;
+    let messages = 0;
+    let passed = 0;
+    for (const r of records) {
+      messages += r.count;
+      if (r.passed) {
+        passed += r.count;
+      }
+    }
+
+    const result = stmts.insertReport.run({
+      messageId: messageId || null,
+      orgName: metadata.orgName || metadata.email || "unknown",
+      orgEmail: metadata.email,
+      reportId: metadata.reportId || `${metadata.dateRange.begin}-${metadata.dateRange.end}`,
+      rangeBegin: metadata.dateRange.begin,
+      rangeEnd: metadata.dateRange.end,
+      domain: policy.domain,
+      adkim: policy.adkim,
+      aspf: policy.aspf,
+      p: policy.p,
+      sp: policy.sp,
+      pct: policy.pct,
+      fo: policy.fo,
+      messages,
+      passed,
+      attachmentName: attachmentName || null,
+      xmlGz: xml ? zlib.gzipSync(Buffer.from(xml, "utf8")) : null,
+      ingestedAt: now()
+    });
+
+    if (result.changes === 0) {
+      return { reportId: null, duplicate: true, messages, passed };
+    }
+
+    const reportId = Number(result.lastInsertRowid);
+    for (const r of records) {
+      stmts.insertRecord.run({
+        reportId,
+        sourceIp: r.sourceIp,
+        count: r.count,
+        disposition: r.disposition,
+        dkimEval: r.dkimEval,
+        spfEval: r.spfEval,
+        passed: r.passed ? 1 : 0,
+        reasons: JSON.stringify(r.reasons || []),
+        envelopeTo: r.envelopeTo,
+        envelopeFrom: r.envelopeFrom,
+        headerFrom: r.headerFrom,
+        dkimResults: JSON.stringify(r.dkimResults || []),
+        spfResults: JSON.stringify(r.spfResults || []),
+        dkimDomain: r.dkimDomain,
+        spfDomain: r.spfDomain
+      });
+    }
+    return { reportId, duplicate: false, messages, passed };
+  });
+
+  // --- ingest -----------------------------------------------------------------
+
+  function hasMessage(graphId) {
+    return Boolean(stmts.hasMessage.get(graphId));
+  }
+
+  function recordMessage({ graphId, internetMessageId, receivedAt, subject, fromAddr, status, error }) {
+    stmts.upsertMessage.run({
+      graphId,
+      internetMessageId: internetMessageId || null,
+      receivedAt: toInt(receivedAt, now()),
+      subject: subject || null,
+      fromAddr: fromAddr || null,
+      status,
+      error: error || null,
+      processedAt: now()
+    });
+  }
+
+  function insertReport(args) {
+    return insertReportTx(args);
+  }
+
+  function latestMessageReceivedAt() {
+    return stmts.maxReceived.get().v || null;
+  }
+
+  // --- analysis ---------------------------------------------------------------
+
+  function summary(filter = {}) {
+    const f = buildFilter(filter);
+
+    const totals = db.prepare(`
+      SELECT COALESCE(SUM(x.count), 0) AS messages,
+             COALESCE(SUM(CASE WHEN x.passed THEN x.count ELSE 0 END), 0) AS passed,
+             COALESCE(SUM(CASE WHEN x.disposition = 'quarantine' THEN x.count ELSE 0 END), 0) AS quarantined,
+             COALESCE(SUM(CASE WHEN x.disposition = 'reject' THEN x.count ELSE 0 END), 0) AS rejected,
+             COALESCE(SUM(CASE WHEN x.dkim_eval = 'pass' THEN x.count ELSE 0 END), 0) AS dkimPassed,
+             COALESCE(SUM(CASE WHEN x.spf_eval = 'pass' THEN x.count ELSE 0 END), 0) AS spfPassed,
+             COUNT(DISTINCT x.source_ip) AS sourceIps,
+             COUNT(DISTINCT CASE WHEN x.passed = 0 THEN x.source_ip END) AS failingIps
+      FROM records x JOIN reports r ON r.id = x.report_id
+      WHERE ${f.sql}`).get(...f.params);
+
+    const reportTotals = db.prepare(`
+      SELECT COUNT(*) AS reports, COUNT(DISTINCT r.org_name) AS reporters, COUNT(DISTINCT r.domain) AS domains,
+             MIN(r.range_begin) AS firstWindow, MAX(r.range_end) AS lastWindow
+      FROM reports r WHERE ${f.sql}`).get(...f.params);
+
+    const days = db.prepare(`
+      SELECT date(r.range_begin, 'unixepoch') AS day,
+             SUM(x.count) AS total,
+             SUM(CASE WHEN x.passed THEN x.count ELSE 0 END) AS pass,
+             SUM(CASE WHEN x.passed = 0 AND x.disposition = 'none' THEN x.count ELSE 0 END) AS failNone,
+             SUM(CASE WHEN x.passed = 0 AND x.disposition = 'quarantine' THEN x.count ELSE 0 END) AS failQuarantine,
+             SUM(CASE WHEN x.passed = 0 AND x.disposition = 'reject' THEN x.count ELSE 0 END) AS failReject
+      FROM records x JOIN reports r ON r.id = x.report_id
+      WHERE ${f.sql}
+      GROUP BY day ORDER BY day`).all(...f.params);
+
+    const failed = totals.messages - totals.passed;
+    return {
+      totals: {
+        ...totals,
+        ...reportTotals,
+        failed,
+        failPct: totals.messages ? Math.round((failed / totals.messages) * 1000) / 10 : 0,
+        passPct: totals.messages ? Math.round((totals.passed / totals.messages) * 1000) / 10 : 0
+      },
+      days: days.map((d) => ({ ...d, fail: d.failNone + d.failQuarantine + d.failReject })),
+      topReporters: reporters(filter).slice(0, 8),
+      topFailingIps: ips(filter, { failingOnly: true, limit: 10 })
+    };
+  }
+
+  function ips(filter = {}, { failingOnly = false, limit = 200, ip } = {}) {
+    const f = buildFilter(filter);
+    const extra = ip ? " AND x.source_ip = ?" : "";
+    const params = ip ? [...f.params, ip] : f.params;
+    const rows = db.prepare(`
+      SELECT x.source_ip AS ip,
+             SUM(x.count) AS total,
+             SUM(CASE WHEN x.passed THEN x.count ELSE 0 END) AS passedTotal,
+             SUM(CASE WHEN x.passed = 0 AND x.disposition = 'none' THEN x.count ELSE 0 END) AS failNone,
+             SUM(CASE WHEN x.disposition = 'quarantine' THEN x.count ELSE 0 END) AS quarantined,
+             SUM(CASE WHEN x.disposition = 'reject' THEN x.count ELSE 0 END) AS rejected,
+             SUM(CASE WHEN x.dkim_eval = 'pass' THEN x.count ELSE 0 END) AS dkimPassed,
+             SUM(CASE WHEN x.spf_eval = 'pass' THEN x.count ELSE 0 END) AS spfPassed,
+             MIN(r.range_begin) AS firstSeen,
+             MAX(r.range_end) AS lastSeen,
+             COUNT(DISTINCT r.id) AS reports,
+             COUNT(DISTINCT r.org_name) AS reporters,
+             GROUP_CONCAT(DISTINCT r.org_name) AS reporterNames,
+             GROUP_CONCAT(DISTINCT r.domain) AS domains,
+             GROUP_CONCAT(DISTINCT x.header_from) AS headerFroms,
+             GROUP_CONCAT(DISTINCT x.envelope_from) AS envelopeFroms,
+             GROUP_CONCAT(DISTINCT x.spf_domain) AS spfDomains,
+             GROUP_CONCAT(DISTINCT x.dkim_domain) AS dkimDomains,
+             MAX(i.ptr) AS ptr
+      FROM records x
+      JOIN reports r ON r.id = x.report_id
+      LEFT JOIN ip_info i ON i.ip = x.source_ip
+      WHERE ${f.sql}${extra}
+      GROUP BY x.source_ip
+      ${failingOnly ? "HAVING passedTotal < total" : ""}
+      ORDER BY (total - passedTotal) DESC, total DESC
+      LIMIT ?`).all(...params, limit);
+
+    return rows.map(({ passedTotal, ...row }) => ({
+      ...row,
+      passed: passedTotal,
+      failed: row.total - passedTotal,
+      failPct: row.total ? Math.round(((row.total - passedTotal) / row.total) * 1000) / 10 : 0,
+      reporterNames: splitList(row.reporterNames),
+      domains: splitList(row.domains),
+      headerFroms: splitList(row.headerFroms),
+      envelopeFroms: splitList(row.envelopeFroms),
+      spfDomains: splitList(row.spfDomains),
+      dkimDomains: splitList(row.dkimDomains)
+    }));
+  }
+
+  function ipDetail(ip, filter = {}) {
+    const [aggregate] = ips(filter, { ip, limit: 1 });
+    if (!aggregate) {
+      return null;
+    }
+    const { rows } = records(filter, { ip, pageSize: 500 });
+    return { ...aggregate, records: rows };
+  }
+
+  function records(filter = {}, { result, ip, org, page = 1, pageSize = 100 } = {}) {
+    const f = buildFilter(filter);
+    const clauses = [f.sql];
+    const params = [...f.params];
+    if (result === "fail") {
+      clauses.push("x.passed = 0");
+    } else if (result === "pass") {
+      clauses.push("x.passed = 1");
+    }
+    if (ip) {
+      clauses.push("x.source_ip = ?");
+      params.push(ip);
+    }
+    if (org) {
+      clauses.push("r.org_name = ?");
+      params.push(org);
+    }
+    const where = clauses.join(" AND ");
+    const size = Math.min(Math.max(1, toInt(pageSize, 100)), 5000);
+    const offset = (Math.max(1, toInt(page, 1)) - 1) * size;
+
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM records x JOIN reports r ON r.id = x.report_id WHERE ${where}`).get(...params).n;
+    const rows = db.prepare(`
+      SELECT x.*, r.org_name, r.domain, r.range_begin, r.range_end, r.p, i.ptr
+      FROM records x
+      JOIN reports r ON r.id = x.report_id
+      LEFT JOIN ip_info i ON i.ip = x.source_ip
+      WHERE ${where}
+      ORDER BY r.range_begin DESC, x.passed ASC, x.count DESC
+      LIMIT ? OFFSET ?`).all(...params, size, offset);
+
+    return { total, page: Math.max(1, toInt(page, 1)), pageSize: size, rows: rows.map(shapeRecord) };
+  }
+
+  function reports(filter = {}, { org, page = 1, pageSize = 50 } = {}) {
+    const f = buildFilter(filter);
+    const clauses = [f.sql];
+    const params = [...f.params];
+    if (org) {
+      clauses.push("r.org_name = ?");
+      params.push(org);
+    }
+    const where = clauses.join(" AND ");
+    const size = Math.min(Math.max(1, toInt(pageSize, 50)), 1000);
+    const offset = (Math.max(1, toInt(page, 1)) - 1) * size;
+
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM reports r WHERE ${where}`).get(...params).n;
+    const rows = db.prepare(`
+      SELECT r.id, r.message_id, r.org_name, r.org_email, r.report_id, r.range_begin, r.range_end, r.domain,
+             r.adkim, r.aspf, r.p, r.sp, r.pct, r.fo, r.messages, r.passed, r.attachment_name, r.ingested_at,
+             m.received_at, m.subject
+      FROM reports r LEFT JOIN messages m ON m.graph_id = r.message_id
+      WHERE ${where}
+      ORDER BY r.range_begin DESC, r.id DESC
+      LIMIT ? OFFSET ?`).all(...params, size, offset);
+
+    return { total, page: Math.max(1, toInt(page, 1)), pageSize: size, rows: rows.map(shapeReport) };
+  }
+
+  function reportById(id) {
+    const row = stmts.reportById.get(id);
+    if (!row) {
+      return null;
+    }
+    const report = shapeReport(row);
+    report.records = stmts.recordsForReport.all(id).map(shapeRecord);
+    return report;
+  }
+
+  function reportXml(id) {
+    const row = stmts.reportXml.get(id);
+    if (!row || !row.xml_gz) {
+      return null;
+    }
+    const base = (row.attachment_name || `${row.org_name}-${row.report_id}`).replace(/\.(zip|gz)$/i, "");
+    return {
+      fileName: /\.xml$/i.test(base) ? base : `${base}.xml`,
+      xml: zlib.gunzipSync(row.xml_gz).toString("utf8")
+    };
+  }
+
+  function reporters(filter = {}) {
+    const f = buildFilter(filter);
+    return db.prepare(`
+      SELECT r.org_name AS orgName, MAX(r.org_email) AS orgEmail, COUNT(*) AS reportCount,
+             SUM(r.messages) AS messageTotal, SUM(r.passed) AS passedTotal, MAX(r.range_end) AS lastSeen,
+             MIN(r.range_begin) AS firstSeen
+      FROM reports r WHERE ${f.sql}
+      GROUP BY r.org_name ORDER BY messageTotal DESC, reportCount DESC`).all(...f.params)
+      .map(({ reportCount, messageTotal, passedTotal, ...row }) => ({
+        ...row,
+        reports: reportCount,
+        messages: messageTotal,
+        passed: passedTotal,
+        failed: messageTotal - passedTotal,
+        failPct: messageTotal ? Math.round(((messageTotal - passedTotal) / messageTotal) * 1000) / 10 : 0
+      }));
+  }
+
+  function domains() {
+    return db.prepare(`
+      SELECT r.domain AS domain, COUNT(*) AS reports, SUM(r.messages) AS messageTotal, SUM(r.passed) AS passedTotal,
+             MAX(r.range_end) AS lastSeen
+      FROM reports r GROUP BY r.domain ORDER BY messageTotal DESC`).all()
+      .map(({ messageTotal, passedTotal, ...row }) => ({ ...row, messages: messageTotal, passed: passedTotal }));
+  }
+
+  /** Counts for the status endpoint; not filtered. */
+  function stats() {
+    const m = db.prepare(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN status = 'ingested' THEN 1 ELSE 0 END) AS ingested,
+        SUM(CASE WHEN status = 'no_report' THEN 1 ELSE 0 END) AS noReport,
+        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
+        MAX(received_at) AS lastReceived FROM messages`).get();
+    const r = db.prepare("SELECT COUNT(*) AS reports, COALESCE(SUM(messages), 0) AS messages, MIN(range_begin) AS firstWindow, MAX(range_end) AS lastWindow FROM reports").get();
+    return { messages: m, reports: r };
+  }
+
+  function messagesWithErrors(limit = 50) {
+    return db.prepare("SELECT * FROM messages WHERE status = 'error' ORDER BY received_at DESC LIMIT ?").all(limit);
+  }
+
+  // --- ip_info ----------------------------------------------------------------
+
+  function ipsMissingPtr(limit = 200) {
+    return stmts.ipsMissingPtr.all(limit).map((r) => r.ip);
+  }
+
+  function setPtr(ip, ptr) {
+    stmts.setPtr.run(ip, ptr || null, now());
+  }
+
+  // --- sync runs / settings ---------------------------------------------------
+
+  function startRun(trigger, since) {
+    return Number(stmts.startRun.run(now(), trigger, since || null).lastInsertRowid);
+  }
+
+  function finishRun(id, { messagesSeen = 0, reportsAdded = 0, duplicates = 0, errors = 0, errorText = null }) {
+    stmts.finishRun.run({ id, finishedAt: now(), messagesSeen, reportsAdded, duplicates, errors, errorText });
+  }
+
+  function runs(limit = 20) {
+    return stmts.runs.all(limit);
+  }
+
+  function lastRun() {
+    return stmts.lastRun.get() || null;
+  }
+
+  function getSetting(key) {
+    const row = stmts.getSetting.get(key);
+    return row ? row.value : null;
+  }
+
+  function setSetting(key, value) {
+    stmts.setSetting.run(key, value === null || value === undefined ? null : String(value));
+  }
+
+  function close() {
+    db.close();
+  }
+
+  return {
+    db,
+    hasMessage,
+    recordMessage,
+    insertReport,
+    latestMessageReceivedAt,
+    summary,
+    ips,
+    ipDetail,
+    records,
+    reports,
+    reportById,
+    reportXml,
+    reporters,
+    domains,
+    stats,
+    messagesWithErrors,
+    ipsMissingPtr,
+    setPtr,
+    startRun,
+    finishRun,
+    runs,
+    lastRun,
+    getSetting,
+    setSetting,
+    close
+  };
+}
+
+module.exports = { openDatabase, buildFilter, DISPOSITIONS };

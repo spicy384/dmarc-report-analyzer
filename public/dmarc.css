@@ -1,0 +1,408 @@
+/* Additions for the DMARC views; styles.css carries the shared look. */
+
+:root {
+  --chart-pass: #2563eb;
+  --chart-fail-none: #f59e0b;
+  --chart-quarantine: #ea580c;
+  --chart-reject: #dc2626;
+  --warning-soft: #fef3c7;
+  --warning-fg: #92400e;
+}
+
+body.theme-dark {
+  --chart-pass: #60a5fa;
+  --chart-fail-none: #fbbf24;
+  --chart-quarantine: #fb923c;
+  --chart-reject: #f87171;
+  --warning-soft: #3b2f0b;
+  --warning-fg: #fcd34d;
+}
+
+/* --- filter bar --------------------------------------------------------- */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.filter-bar label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 160px;
+}
+
+.filter-bar select,
+.filter-bar input {
+  min-width: 160px;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.head-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* --- stat tiles --------------------------------------------------------- */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 12px 0 18px;
+}
+
+.stat {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  min-height: 74px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.stat-sub {
+  font-size: 12px;
+  color: var(--text-subtle);
+  margin-top: 2px;
+}
+
+.stat-pass .stat-value { color: var(--chart-pass); }
+.stat-fail .stat-value { color: var(--danger); }
+.stat-quarantine .stat-value { color: var(--chart-quarantine); }
+.stat-reject .stat-value { color: var(--chart-reject); }
+
+/* --- chart -------------------------------------------------------------- */
+
+.chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 6px;
+}
+
+.chart-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.swatch-pass { background: var(--chart-pass); }
+.swatch-fail-none { background: var(--chart-fail-none); }
+.swatch-quarantine { background: var(--chart-quarantine); }
+.swatch-reject { background: var(--chart-reject); }
+
+.chart-wrap {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+.chart-wrap svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-tip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+/* --- tables ------------------------------------------------------------- */
+
+.table-scroll table {
+  width: 100%;
+}
+
+td.num,
+th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+td.muted {
+  color: var(--text-muted);
+}
+
+td.mono,
+td.nowrap {
+  white-space: nowrap;
+}
+
+.stat-small .stat-value {
+  font-size: 18px;
+  padding-top: 4px;
+}
+
+td.is-fail {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+td.trunc {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+td.trunc-wide {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+
+tr.clickable:hover td,
+tr.clickable:focus-visible td {
+  background: var(--primary-soft);
+}
+
+.pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pill-pass { background: var(--success-soft); color: var(--success); }
+.pill-fail { background: var(--warning-soft); color: var(--warning-fg); }
+.pill-quarantine { background: var(--warning-soft); color: var(--chart-quarantine); }
+.pill-reject { background: var(--danger-soft); color: var(--danger); }
+
+/* --- detail drawers ----------------------------------------------------- */
+
+.detail-drawer {
+  margin-top: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 12px 14px;
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.detail-head h3 {
+  margin: 0;
+  font-size: 15px;
+  word-break: break-all;
+}
+
+.detail-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px 18px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.kv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.kv-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-subtle);
+}
+
+.kv-value {
+  word-break: break-word;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* --- sync panel --------------------------------------------------------- */
+
+.sync-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(0, 1.4fr);
+  gap: 20px 28px;
+}
+
+/* Grid items default to min-width:auto, which lets a wide table push the page out. */
+.sync-grid > div {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .sync-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+dl.kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+dl.kv dt {
+  color: var(--text-muted);
+}
+
+dl.kv dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.backfill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+
+.backfill label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sync-progress {
+  margin-top: 12px;
+}
+
+.sync-progress p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.progress-bar.indeterminate {
+  height: 100%;
+  width: 35%;
+  border-radius: 999px;
+  background: var(--primary);
+  animation: slide 1.2s ease-in-out infinite;
+}
+
+@keyframes slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
+.sync-message {
+  margin-top: 12px;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.sync-message.is-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.badge-live {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* Viewers see everything but the buttons that change state. */
+body.role-viewer .writer-only {
+  display: none;
+}

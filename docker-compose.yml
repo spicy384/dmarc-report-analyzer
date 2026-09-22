@@ -1,0 +1,94 @@
+services:
+  dmarc-analyzer:
+    # The published image, built by GitHub Actions from main for amd64 and arm64:
+    #   docker compose pull && docker compose up -d
+    # Or build from this checkout, which tags the result with the same name:
+    #   docker compose up -d --build
+    image: ghcr.io/spicy384/dmarc-report-analyzer:latest
+    build: .
+    container_name: dmarc-analyzer
+    restart: unless-stopped
+
+    # The app requires a sign-in (per-user accounts, optional TOTP two-factor), but it
+    # serves plain HTTP. Over anything but loopback that puts passwords and session
+    # cookies on the wire in the clear, so it is published to loopback only.
+    #
+    # Behind a reverse proxy (Nginx Proxy Manager, Caddy, Traefik) prefer putting both
+    # containers on a shared network and deleting this ports block entirely - the proxy
+    # reaches the app by container name and nothing is exposed on the host at all.
+    # See deploy/caddy for a ready-made example.
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    environment:
+      PORT: 3000
+      DATA_DIR: /data
+      TZ: ${TZ:-UTC}
+
+      # --- Microsoft 365 mailbox (see "Entra app registration" in the README) ---
+      # Put these in a .env file next to this compose file rather than editing here,
+      # so the client secret never ends up in version control.
+      GRAPH_TENANT_ID: ${GRAPH_TENANT_ID:-}
+      GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID:-}
+      GRAPH_CLIENT_SECRET: ${GRAPH_CLIENT_SECRET:-}
+      # The mailbox that receives the reports (the rua= address), as a UPN.
+      DMARC_MAILBOX: ${DMARC_MAILBOX:-}
+      # Folder to read. "Inbox" needs no lookup; a name or "Parent/Child" path is resolved.
+      DMARC_FOLDER: ${DMARC_FOLDER:-Inbox}
+      # How often to check the mailbox. 0 turns scheduled syncing off (Sync now still works).
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-60}
+      # How far back the very first sync looks. Later runs continue from the newest email seen.
+      BACKFILL_DAYS: ${BACKFILL_DAYS:-90}
+
+      # Set true once HTTPS terminates in front of this, so the session cookie is marked
+      # Secure. Leave false on plain HTTP or sign-in will not work at all.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+
+      # --- HTTPS -----------------------------------------------------------
+      # Encrypts the hop between a reverse proxy and this app, which matters when the
+      # proxy runs on a different host. With TLS_ENABLED=true the app generates and
+      # reuses a self-signed certificate in /data/tls - proxies do not verify upstream
+      # certificates, so that is sufficient for them. Browsers connecting directly warn.
+      TLS_ENABLED: ${TLS_ENABLED:-false}
+
+      # Names and IPs the generated certificate should cover, comma separated.
+      # localhost, 127.0.0.1 and the container hostname are always included.
+      TLS_HOSTS: ${TLS_HOSTS:-}
+
+      # Or supply your own certificate (Let's Encrypt via DNS-01, an internal CA,
+      # anything). These take precedence over TLS_ENABLED; mount them read-only below.
+      TLS_CERT: ${TLS_CERT:-}
+      TLS_KEY: ${TLS_KEY:-}
+
+      # Only enable with an auth proxy in front that strips this header from client
+      # requests - otherwise anyone reaching the port can impersonate any user.
+      # TRUST_PROXY_AUTH: "true"
+      # PROXY_USER_HEADER: remote-user
+
+    # User accounts, sessions and the report database persist here, along with any
+    # generated TLS certificate. Treat it as sensitive: it holds password hashes,
+    # TOTP secrets and a private key.
+    volumes:
+      - dmarc-data:/data
+      # To supply your own certificate, mount it read-only and set TLS_CERT/TLS_KEY above.
+      # - /etc/letsencrypt/live/dmarc.example.com:/certs:ro
+
+    # Run exactly one instance: the sync job and its progress are held in memory, and
+    # SQLite wants a single writer.
+    deploy:
+      replicas: 1
+
+    # Modest hardening; the app only needs outbound HTTPS to Microsoft and its own port.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  dmarc-data:
