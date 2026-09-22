@@ -84,7 +84,7 @@ function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", mes
           internetMessageId: `<${m.id}@mock>`,
           subject: m.subject,
           receivedDateTime: m.receivedDateTime,
-          hasAttachments: true,
+          hasAttachments: m.attachments.length > 0,
           from: { emailAddress: { address: m.from } }
         }))
       };

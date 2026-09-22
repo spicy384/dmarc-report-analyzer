@@ -30,7 +30,8 @@ const messages = [
   { id: "m5", subject: "Google again (duplicate)", receivedDateTime: "2026-09-21T06:00:00Z", from: "noreply-dmarc-support@google.com",
     attachments: [{ name: "again.zip", contentType: "application/octet-stream", bytes: zipSync({ "r.xml": new Uint8Array(googleXml) }) }] },
   { id: "m6", subject: "Bare xml on page two", receivedDateTime: "2026-09-21T07:00:00Z", from: "postmaster@small.test",
-    attachments: [{ name: "report.xml", contentType: "text/xml", bytes: Buffer.from(bareXml) }, { name: "invite.ics", type: "#microsoft.graph.itemAttachment" }] }
+    attachments: [{ name: "report.xml", contentType: "text/xml", bytes: Buffer.from(bareXml) }, { name: "invite.ics", type: "#microsoft.graph.itemAttachment" }] },
+  { id: "m7", subject: "Plain email, no attachments", receivedDateTime: "2026-09-21T08:00:00Z", from: "human@example.org", attachments: [] }
 ];
 
 (async () => {
@@ -52,7 +53,7 @@ const messages = [
 
   // --- connection test ---------------------------------------------------------
   const conn = await graph.testConnection();
-  check("testConnection ok", conn.ok === true && /Inbox/.test(conn.detail) && conn.totalItemCount === 6);
+  check("testConnection ok", conn.ok === true && /Inbox/.test(conn.detail) && conn.totalItemCount === 7);
   const badSecret = await makeClient({ clientSecret: "wrong" }).testConnection();
   check("testConnection bad secret", badSecret.ok === false && badSecret.stage === "token" && /Invalid client secret/.test(badSecret.detail));
   const unconfigured = createGraphClient({ tenantId: "", clientId: "", clientSecret: "", mailbox: "" });
@@ -79,6 +80,11 @@ const messages = [
   check("run 1 errors: broken xml + transient graph failure", j1.errors === 2 && /Picture only/.test(j1.lastError));
   check("run 1 no_report count is zero (m3 failed before it could be judged)", j1.noReport === 0);
   check("throttle was retried", mock.state.requests.filter((r) => /\/messages\?/.test(r.path)).length >= 3);
+  const listing = mock.state.requests.find((r) => /\/messages\?/.test(r.path));
+  check("listing filters on receivedDateTime only (hasAttachments in the filter triggers InefficientFilter)",
+    /receivedDateTime%20ge%20/.test(listing.path) && !/hasAttachments/.test(decodeURIComponent(listing.path).replace(/\$select=[^&]*/, "")));
+  check("attachment-less message is never fetched or recorded",
+    !mock.state.requests.some((r) => /\/messages\/m7\//.test(r.path)) && !db.hasMessage("m7"));
   check("public job hides internals", !("promise" in j1) && !("ptrPromise" in j1));
 
   check("m3 was not recorded so it is retried", !db.hasMessage("m3"));

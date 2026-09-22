@@ -206,10 +206,15 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
   /**
    * Yields messages with attachments received at or after `since` (a Date or ms),
    * oldest first, following @odata.nextLink across pages.
+   *
+   * Only receivedDateTime is filtered server-side. Adding "hasAttachments eq true"
+   * to a query that also sorts on receivedDateTime makes Exchange answer
+   * 400 InefficientFilter ("restriction or sort order is too complex") on many
+   * mailboxes, so attachment-less messages are dropped here instead.
    */
   async function* listMessages({ folderId = "inbox", since } = {}) {
     const sinceIso = new Date(since || 0).toISOString().replace(/\.\d{3}Z$/, "Z");
-    const filter = `hasAttachments eq true and receivedDateTime ge ${sinceIso}`;
+    const filter = `receivedDateTime ge ${sinceIso}`;
     let url = `${userBase()}/mailFolders/${encodeURIComponent(folderId)}/messages` +
       `?$filter=${encodeURIComponent(filter)}` +
       `&$select=id,internetMessageId,subject,receivedDateTime,from,hasAttachments` +
@@ -218,6 +223,9 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
     while (url) {
       const data = await graphFetch(url);
       for (const message of data.value || []) {
+        if (message.hasAttachments === false) {
+          continue; // nothing to unpack; a report always arrives as an attachment
+        }
         yield {
           id: message.id,
           internetMessageId: message.internetMessageId || null,
