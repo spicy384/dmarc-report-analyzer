@@ -203,6 +203,24 @@
       </p>
     </section>
 
+    <section class="panel" id="weekly-panel">
+      <div class="panel-head">
+        <h2>This week</h2>
+        <span id="weekly-badge" class="badge"></span>
+        <div class="head-toggle">
+          <button id="weekly-prev" type="button" class="secondary small" title="Previous week">&larr;</button>
+          <label class="inline-label">Week ending <input type="date" id="weekly-end" /></label>
+          <button id="weekly-next" type="button" class="secondary small" title="Next week">&rarr;</button>
+          <button id="weekly-copy" type="button" class="secondary small">Copy as text</button>
+        </div>
+      </div>
+      <p class="bulk-hint">
+        Seven days against the seven before, for the selected domain and mailbox. <strong>Copy as
+        text</strong> gives a plain summary to paste into an email or a Teams post.
+      </p>
+      <div id="weekly-body" class="weekly-grid"></div>
+    </section>
+
     <section class="panel" id="policy-panel">
       <div class="panel-head">
         <h2>Policy readiness</h2>

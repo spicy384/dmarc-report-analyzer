@@ -141,6 +141,12 @@ check("search matches network and country", db.summary({ q: "telekom" }).totals.
 check("clearGeo forgets answers", db.clearGeo() === 2 && db.ipsMissingGeo().length === 5);
 db.setGeo("192.0.2.99", { countryCode: "DE", country: "Germany", asn: 3320, asOrg: "Deutsche Telekom AG", source: "online" });
 
+// --- first-seen sources -----------------------------------------------------
+const fresh = db.firstSeenSources({ from: 1758153600, to: 1758240000 });
+check("first-seen sources inside the window", fresh.length === 5 && fresh[0].failed >= fresh[fresh.length - 1].failed && fresh.find((r) => r.ip === "192.0.2.99").ptr === "mail.badhost.test");
+check("first-seen sources outside the window", db.firstSeenSources({ from: 1758240000, to: 1758326400 }).length === 0);
+check("first-seen honours the domain filter", db.firstSeenSources({ from: 1758153600, to: 1758240000, domain: "nope.test" }).length === 0);
+
 // --- dkim selectors ---------------------------------------------------------
 const sels = db.dkimSelectors("example.com");
 check("dkim selectors seen for the domain (including the forwarder's)", sels.length === 3 && sels.find((s) => s.selector === "selector1").passed === 42 && sels.find((s) => s.selector === "s1").signingDomain === "example.com" && sels.find((s) => s.selector === "fwd").signingDomain === "forwarder.test", JSON.stringify(sels));

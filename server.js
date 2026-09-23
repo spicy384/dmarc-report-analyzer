@@ -194,6 +194,87 @@ app.get("/api/sync/:id", route(async (req, res) => {
   res.json(publicJob(job));
 }));
 
+// --- weekly summary ------------------------------------------------------------
+
+function pctText(n) {
+  return `${Number(n || 0).toFixed(1)}%`;
+}
+
+function changeText(current, previous, { pct = false } = {}) {
+  const diff = (current || 0) - (previous || 0);
+  if (pct) {
+    return Math.abs(diff) < 0.05 ? "unchanged" : `${diff > 0 ? "+" : ""}${diff.toFixed(1)} pts`;
+  }
+  if (!previous) {
+    return diff ? `+${diff}` : "unchanged";
+  }
+  return diff === 0 ? "unchanged" : `${diff > 0 ? "+" : ""}${Math.round((diff / previous) * 100)}%`;
+}
+
+function weeklyText(w) {
+  const t = w.thisWeek.totals;
+  const p = w.lastWeek.totals;
+  const day = (s) => new Date(s * 1000).toISOString().slice(0, 10);
+  const lines = [];
+  lines.push(`DMARC weekly summary${w.domain ? ` for ${w.domain}` : ""}: ${day(w.thisWeek.from)} to ${day(w.thisWeek.to - 1)}`);
+  lines.push("");
+  lines.push(`Messages: ${t.messages} (${changeText(t.messages, p.messages)} vs previous week)`);
+  lines.push(`DMARC pass rate: ${pctText(t.passPct)} (${changeText(t.passPct, p.passPct, { pct: true })})`);
+  lines.push(`Failures: ${t.failed} (${changeText(t.failed, p.failed)}), of which ${t.likelyForwards} likely forwards`);
+  lines.push(`Quarantined: ${t.quarantined}, rejected: ${t.rejected}`);
+  lines.push(`Failing sources: ${t.failingIps} of ${t.sourceIps} (${changeText(t.failingIps, p.failingIps)})`);
+  lines.push(`Reports: ${t.reports} from ${t.reporters} reporting services`);
+  if (w.newSources.length) {
+    lines.push("");
+    lines.push("New sources this week:");
+    for (const s of w.newSources) {
+      lines.push(`  - ${s.ip}${s.ptr ? ` (${s.ptr})` : ""}${s.asOrg ? ` ${s.asOrg}` : ""}: ${s.failed} of ${s.total} failed${s.sender ? ` - ${s.sender.label}` : ""}`);
+    }
+  }
+  if (w.topFailing.length) {
+    lines.push("");
+    lines.push("Top failing sources:");
+    for (const s of w.topFailing) {
+      lines.push(`  - ${s.ip}${s.ptr ? ` (${s.ptr})` : ""}: ${s.failed} failed of ${s.total}${s.sender ? ` - ${s.sender.label}` : ""}${s.likelyForwards ? ` (${s.likelyForwards} likely forwards)` : ""}`);
+    }
+  }
+  if (w.openAlerts) {
+    lines.push("");
+    lines.push(`${w.openAlerts} open alert${w.openAlerts === 1 ? "" : "s"} awaiting acknowledgement.`);
+  }
+  return lines.join("\n");
+}
+
+/** This week against last week, plus a plain-text version to paste into email or chat. */
+app.get("/api/weekly", route(async (req, res) => {
+  let end;
+  try {
+    end = req.query.end ? parseTime(req.query.end, "end") : null;
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+  const DAY = 86400;
+  const today = Math.floor(Date.now() / 1000 / DAY) * DAY;
+  const to = (end === null ? today : Math.floor(end / DAY) * DAY) + DAY; // week ending on this day, inclusive
+  const from = to - 7 * DAY;
+  const base = { domain: req.query.domain ? String(req.query.domain).toLowerCase() : null, mailbox: req.query.mailbox || null, excludeForwards: false };
+
+  const thisWeek = db.summary({ ...base, from, to });
+  const lastWeek = db.summary({ ...base, from: from - 7 * DAY, to: from });
+  const ips = db.ips({ ...base, from, to }, { limit: 5000 });
+  const w = {
+    domain: base.domain,
+    thisWeek: { from, to, totals: thisWeek.totals, days: thisWeek.days, reporters: thisWeek.topReporters },
+    lastWeek: { from: from - 7 * DAY, to: from, totals: lastWeek.totals, days: lastWeek.days },
+    newSources: db.firstSeenSources({ ...base, from, to }).slice(0, 10),
+    topFailing: ips.filter((r) => r.failed > 0).sort((a, b) => b.failed - a.failed).slice(0, 5),
+    topForwards: ips.filter((r) => r.likelyForwards > 0).sort((a, b) => b.likelyForwards - a.likelyForwards).slice(0, 5),
+    openAlerts: db.openAlertCount()
+  };
+  w.text = weeklyText(w);
+  res.json(w);
+}));
+
 // --- geoip ---------------------------------------------------------------------
 
 /** Re-resolves every source IP, e.g. after the GeoLite2 files were added. Runs in the background. */

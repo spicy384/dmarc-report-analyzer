@@ -18,6 +18,12 @@ it was last seen. Click a row for the individual records behind it. A source tha
 everything and is not yours is spoofing; one that fails but is yours needs SPF or DKIM
 fixed.
 
+**This week**: seven days against the seven before for the selected domain and mailbox:
+messages, pass rate, failures and forwards, quarantined and rejected, failing sources and
+reporters, plus the sources that appeared for the first time this week, the top failing
+sources and the top forwarders. Step back week by week, and **Copy as text** produces a
+plain summary to paste into an email or a Teams post.
+
 **Policy readiness**: for a domain, the DMARC record as published right now with its
 tags explained and warnings (no record, `p=none`, `pct` below 100, no `rua`, reports going
 to an address the analyzer does not read), the SPF record expanded through its includes

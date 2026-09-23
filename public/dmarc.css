@@ -501,6 +501,51 @@ td.network .flag {
   word-break: break-word;
 }
 
+/* --- weekly summary ------------------------------------------------------ */
+
+.weekly-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(0, 1.2fr);
+  gap: 16px 28px;
+}
+
+.weekly-grid > .weekly-col {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .weekly-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.weekly-change {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
+.weekly-change.is-good { color: var(--success); }
+.weekly-change.is-bad { color: var(--danger); }
+
+.weekly-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.weekly-list a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.empty-state.small {
+  font-size: 12px;
+  padding: 4px 0;
+}
+
 /* --- policy readiness ---------------------------------------------------- */
 
 .policy-grid {

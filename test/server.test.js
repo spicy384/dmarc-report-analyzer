@@ -187,6 +187,13 @@ async function waitForServer(tries = 60) {
     const runs = await req("/api/sync/runs");
     check("sync: run history", runs.body.runs.length === 1 && runs.body.runs[0].trigger === "manual" && /GRAPH_TENANT_ID/.test(runs.body.runs[0].error_text));
 
+    // --- weekly summary ---
+    const wk = await req("/api/weekly?end=2025-09-19");
+    check("weekly: shape and totals", wk.status === 200 && wk.body.thisWeek.totals.messages === 53 && wk.body.lastWeek.totals.messages === 0 && wk.body.newSources.length === 4 && wk.body.topFailing.length === 2);
+    check("weekly: plain text", /DMARC weekly summary/.test(wk.body.text) && /Messages: 53/.test(wk.body.text) && /New sources this week/.test(wk.body.text) && /192\.0\.2\.99 \(mail\.badhost\.test\)/.test(wk.body.text));
+    check("weekly: bad end is 400", (await req("/api/weekly?end=whenever")).status === 400);
+    check("weekly: domain filter", (await req("/api/weekly?end=2025-09-19&domain=nope.test")).body.thisWeek.totals.messages === 0);
+
     // --- policy readiness ---
     check("policy: domain required", (await req("/api/policy")).status === 400);
     const pol = await req("/api/policy?domain=no-such-domain-for-tests.invalid");

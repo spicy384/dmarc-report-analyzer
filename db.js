@@ -864,6 +864,29 @@ function openDatabase({ dataDir, file } = {}) {
     return out;
   }
 
+  // --- weekly summary -------------------------------------------------------------
+
+  /** Sources whose very first report window (across all stored data for the domain/mailbox) starts inside [from, to). */
+  function firstSeenSources({ from, to, domain, mailbox } = {}) {
+    const f = buildFilter({ domain, mailbox }, { x: "x" });
+    return db.prepare(`
+      SELECT x.source_ip AS ip,
+             MIN(r.range_begin) AS firstSeen,
+             SUM(x.count) AS total,
+             SUM(CASE WHEN x.passed = 0 THEN x.count ELSE 0 END) AS failed,
+             MAX(i.ptr) AS ptr,
+             MAX(i.as_org) AS asOrg,
+             MAX(i.country_code) AS countryCode
+      FROM records x
+      JOIN reports r ON r.id = x.report_id
+      LEFT JOIN ip_info i ON i.ip = x.source_ip
+      WHERE ${f.sql}
+      GROUP BY x.source_ip
+      HAVING firstSeen >= ? AND firstSeen < ?
+      ORDER BY failed DESC, total DESC`).all(...f.params, toInt(from, 0), toInt(to, 0))
+      .map((row) => ({ ...row, sender: senderFor(row.ip, row.ptr) }));
+  }
+
   // --- policy readiness ---------------------------------------------------------
 
   /** DKIM selectors seen in reports for a domain (from auth_results), with pass/fail message counts. */
@@ -1092,6 +1115,7 @@ function openDatabase({ dataDir, file } = {}) {
     senderFor,
     bySender,
     dkimSelectors,
+    firstSeenSources,
     insertAlert,
     openAlerts,
     recentAlerts,
