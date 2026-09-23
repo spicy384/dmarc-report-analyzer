@@ -2,6 +2,7 @@
 
 :root {
   --chart-pass: #2563eb;
+  --chart-forward: #8b5cf6;
   --chart-fail-none: #f59e0b;
   --chart-quarantine: #ea580c;
   --chart-reject: #dc2626;
@@ -11,6 +12,7 @@
 
 body.theme-dark {
   --chart-pass: #60a5fa;
+  --chart-forward: #a78bfa;
   --chart-fail-none: #fbbf24;
   --chart-quarantine: #fb923c;
   --chart-reject: #f87171;
@@ -152,6 +154,19 @@ body.theme-dark {
 }
 
 .swatch-pass { background: var(--chart-pass); }
+.swatch-forward { background: var(--chart-forward); }
+
+.chart-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.chart-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .swatch-fail-none { background: var(--chart-fail-none); }
 .swatch-quarantine { background: var(--chart-quarantine); }
 .swatch-reject { background: var(--chart-reject); }

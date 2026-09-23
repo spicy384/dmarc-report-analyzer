@@ -167,9 +167,13 @@
       <div id="stat-grid" class="stat-grid"></div>
 
       <div class="chart-head">
-        <h3>Messages per day, by DMARC result</h3>
+        <div class="chart-title">
+          <h3>Messages per day, by DMARC result</h3>
+          <span id="chart-forward-pct" class="chart-note"></span>
+        </div>
         <div class="chart-legend">
           <span><i class="swatch swatch-pass"></i> Pass</span>
+          <span><i class="swatch swatch-forward"></i> Fail, likely forward</span>
           <span><i class="swatch swatch-fail-none"></i> Fail, delivered</span>
           <span><i class="swatch swatch-quarantine"></i> Fail, quarantined</span>
           <span><i class="swatch swatch-reject"></i> Fail, rejected</span>

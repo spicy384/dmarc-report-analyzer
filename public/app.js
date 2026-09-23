@@ -18,6 +18,7 @@ const chartWrap = document.getElementById("chart-wrap");
 const chartSvg = document.getElementById("chart");
 const chartTip = document.getElementById("chart-tip");
 const chartEmpty = document.getElementById("chart-empty");
+const chartForwardPct = document.getElementById("chart-forward-pct");
 
 const ipsResults = document.getElementById("ips-results");
 const ipsCount = document.getElementById("ips-count");
@@ -405,7 +406,7 @@ function completeDays(days) {
   const out = [];
   for (let t = start; t < end; t += DAY) {
     const key = dayKey(t);
-    out.push(byDay.get(key) || { day: key, total: 0, pass: 0, failNone: 0, failQuarantine: 0, failReject: 0, fail: 0 });
+    out.push(byDay.get(key) || { day: key, total: 0, pass: 0, failForward: 0, failNone: 0, failQuarantine: 0, failReject: 0, fail: 0 });
   }
   return out;
 }
@@ -442,6 +443,7 @@ function renderChart(days) {
 
   const colors = {
     pass: cssVar("--chart-pass"),
+    failForward: cssVar("--chart-forward"),
     failNone: cssVar("--chart-fail-none"),
     failQuarantine: cssVar("--chart-quarantine"),
     failReject: cssVar("--chart-reject"),
@@ -472,7 +474,7 @@ function renderChart(days) {
   series.forEach((d, i) => {
     const x = margin.left + i * slot + (slot - barW) / 2;
     let acc = 0;
-    for (const [key, color] of [["pass", colors.pass], ["failNone", colors.failNone], ["failQuarantine", colors.failQuarantine], ["failReject", colors.failReject]]) {
+    for (const [key, color] of [["pass", colors.pass], ["failForward", colors.failForward], ["failNone", colors.failNone], ["failQuarantine", colors.failQuarantine], ["failReject", colors.failReject]]) {
       const v = d[key] || 0;
       if (v <= 0) continue;
       const rect = make("rect", { x, y: y(acc + v), width: barW, height: Math.max(0, y(acc) - y(acc + v)), fill: color, rx: 1.5 });
@@ -494,14 +496,25 @@ function renderChart(days) {
   });
 
   function showTip(d, cx) {
-    const failed = (d.failNone || 0) + (d.failQuarantine || 0) + (d.failReject || 0);
+    const forwards = d.failForward || 0;
+    const failed = forwards + (d.failNone || 0) + (d.failQuarantine || 0) + (d.failReject || 0);
+    const fwdPct = failed ? Math.round((forwards / failed) * 100) : 0;
     chartTip.innerHTML = "";
     const title = document.createElement("strong");
     title.textContent = d.day;
     chartTip.appendChild(title);
-    for (const [label, v] of [["Messages", d.total], ["Pass", d.pass], ["Fail", failed], ["Quarantined", d.failQuarantine], ["Rejected", d.failReject]]) {
+    const lines = [
+      ["Messages", formatNumber(d.total)],
+      ["Pass", formatNumber(d.pass)],
+      ["Fail", formatNumber(failed)],
+      ["Likely forwards", failed ? `${formatNumber(forwards)} (${fwdPct}% of fails)` : "0"],
+      ["Other, delivered", formatNumber(d.failNone)],
+      ["Other, quarantined", formatNumber(d.failQuarantine)],
+      ["Other, rejected", formatNumber(d.failReject)]
+    ];
+    for (const [label, v] of lines) {
       const line = document.createElement("div");
-      line.textContent = `${label}: ${formatNumber(v)}`;
+      line.textContent = `${label}: ${v}`;
       chartTip.appendChild(line);
     }
     chartTip.hidden = false;
@@ -523,6 +536,14 @@ async function loadSummary() {
   const data = await api(`/api/summary${filterQuery()}`);
   renderStats(data.totals);
   renderChart(data.days || []);
+  const t = data.totals;
+  if (hideForwards.checked) {
+    chartForwardPct.textContent = "Likely forwards hidden";
+  } else if (t.failed > 0) {
+    chartForwardPct.textContent = `Likely forwards: ${formatNumber(t.likelyForwards)} of ${formatNumber(t.failed)} fails (${Math.round((t.likelyForwards / t.failed) * 100)}%)`;
+  } else {
+    chartForwardPct.textContent = "";
+  }
   return data;
 }
 

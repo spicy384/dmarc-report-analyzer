@@ -447,9 +447,10 @@ function openDatabase({ dataDir, file } = {}) {
       SELECT date(r.range_begin, 'unixepoch') AS day,
              SUM(x.count) AS total,
              SUM(CASE WHEN x.passed THEN x.count ELSE 0 END) AS pass,
-             SUM(CASE WHEN x.passed = 0 AND x.disposition = 'none' THEN x.count ELSE 0 END) AS failNone,
-             SUM(CASE WHEN x.passed = 0 AND x.disposition = 'quarantine' THEN x.count ELSE 0 END) AS failQuarantine,
-             SUM(CASE WHEN x.passed = 0 AND x.disposition = 'reject' THEN x.count ELSE 0 END) AS failReject
+             SUM(CASE WHEN x.passed = 0 AND x.forwarded THEN x.count ELSE 0 END) AS failForward,
+             SUM(CASE WHEN x.passed = 0 AND x.forwarded = 0 AND x.disposition = 'none' THEN x.count ELSE 0 END) AS failNone,
+             SUM(CASE WHEN x.passed = 0 AND x.forwarded = 0 AND x.disposition = 'quarantine' THEN x.count ELSE 0 END) AS failQuarantine,
+             SUM(CASE WHEN x.passed = 0 AND x.forwarded = 0 AND x.disposition = 'reject' THEN x.count ELSE 0 END) AS failReject
       FROM records x JOIN reports r ON r.id = x.report_id
       WHERE ${f.sql}
       GROUP BY day ORDER BY day`).all(...f.params);
@@ -463,7 +464,7 @@ function openDatabase({ dataDir, file } = {}) {
         failPct: totals.messages ? Math.round((failed / totals.messages) * 1000) / 10 : 0,
         passPct: totals.messages ? Math.round((totals.passed / totals.messages) * 1000) / 10 : 0
       },
-      days: days.map((d) => ({ ...d, fail: d.failNone + d.failQuarantine + d.failReject })),
+      days: days.map((d) => ({ ...d, fail: d.failForward + d.failNone + d.failQuarantine + d.failReject })),
       topReporters: reporters(filter).slice(0, 8),
       topFailingIps: ips(filter, { failingOnly: true, limit: 10 })
     };

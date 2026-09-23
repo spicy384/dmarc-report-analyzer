@@ -110,7 +110,8 @@ check("forwarded report inserted", y.duplicate === false && y.messages === 5 && 
 const withFwd = db.summary();
 check("summary counts likely forwards", withFwd.totals.likelyForwards === 5 && withFwd.totals.failed === 15 && withFwd.totals.messages === 58);
 const noFwd = db.summary({ excludeForwards: true });
-check("excludeForwards drops them from totals and days", noFwd.totals.failed === 10 && noFwd.totals.messages === 53 && noFwd.days[0].fail === 10);
+check("excludeForwards drops them from totals and days", noFwd.totals.failed === 10 && noFwd.totals.messages === 53 && noFwd.days[0].fail === 10 && noFwd.days[0].failForward === 0);
+check("day series splits forwards out of the disposition buckets", withFwd.days[0].failForward === 5 && withFwd.days[0].failQuarantine === 3 && withFwd.days[0].fail === 15);
 check("excludeForwards keeps report counts", noFwd.totals.reports === 3);
 const fwdIp = db.ips({}, { failingOnly: true }).find((r) => r.ip === "10.10.10.10");
 check("ips carry likelyForwards", fwdIp && fwdIp.likelyForwards === 5 && fwdIp.failed === 5);
