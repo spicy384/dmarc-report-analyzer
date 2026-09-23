@@ -18,6 +18,14 @@ it was last seen. Click a row for the individual records behind it. A source tha
 everything and is not yours is spoofing; one that fails but is yours needs SPF or DKIM
 fixed.
 
+**Known senders**: label the sources you recognise so the analyzer can tell "yours" from
+"not yours". A pattern is an IP, a CIDR block, a host name or `*.suffix` matched against
+reverse DNS; the kind is **ours** (your tenant, your relay), **vendor** (sends on your
+behalf) or **other**. Every source is then tagged, the overview splits failures into
+yours (fix SPF or DKIM) and not yours (spoofing), and **Import from SPF** resolves your
+SPF record through its includes and proposes the networks it authorises, for you to tick
+and add. Nothing is added automatically.
+
 **Reporting services**: which receivers (Google, Microsoft, Yahoo, ...) sent reports, how
 many, and the failure rate each of them saw.
 

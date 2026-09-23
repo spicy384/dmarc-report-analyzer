@@ -7,6 +7,7 @@ const { resolveTlsOptions } = require("./tls-setup");
 const { openDatabase } = require("./db");
 const { configFromEnv } = require("./graph");
 const { createMailboxStore } = require("./mailboxes");
+const { createDnsRecords } = require("./dns-records");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -31,6 +32,7 @@ const db = openDatabase({ dataDir: DATA_DIR });
 const envGraph = configFromEnv();
 const mailboxes = createMailboxStore({ dataDir: DATA_DIR, env: envGraph, loginBase: envGraph.loginBase, graphBase: envGraph.graphBase });
 const sync = createSync({ db, mailboxes, backfillDays: BACKFILL_DAYS });
+const dnsRecords = createDnsRecords();
 
 // The sign-in endpoints must be reachable while signed out; everything else under /api is gated.
 app.use(authGuard.router);
@@ -169,6 +171,57 @@ app.get("/api/sync/:id", route(async (req, res) => {
     return res.status(404).json({ error: "No such sync job." });
   }
   res.json(publicJob(job));
+}));
+
+// --- known senders -----------------------------------------------------------
+
+app.get("/api/known-senders", route(async (req, res) => {
+  res.json({ senders: db.knownSenders() });
+}));
+
+app.post("/api/known-senders", authGuard.requireWriter, route(async (req, res) => {
+  const body = req.body || {};
+  // Several at once (from the SPF import) or a single entry.
+  const items = Array.isArray(body.senders) ? body.senders : [body];
+  const added = [];
+  const skipped = [];
+  for (const item of items) {
+    try {
+      added.push(db.addKnownSender(item, { createdBy: req.user?.username || null, source: item.source === "spf" ? "spf" : "manual" }));
+    } catch (error) {
+      if (items.length === 1) throw error;
+      skipped.push({ pattern: item.pattern, error: error.message });
+    }
+  }
+  res.json({ ok: true, added, skipped, sender: added[0] || null });
+}));
+
+app.put("/api/known-senders/:id", authGuard.requireWriter, route(async (req, res) => {
+  res.json({ ok: true, sender: db.updateKnownSender(positiveInt(req.params.id, 0), req.body || {}) });
+}));
+
+app.delete("/api/known-senders/:id", authGuard.requireAdmin, route(async (req, res) => {
+  db.removeKnownSender(positiveInt(req.params.id, 0));
+  res.json({ ok: true });
+}));
+
+/** Proposes known-sender entries from a domain's SPF record; nothing is stored until the user accepts. */
+app.post("/api/known-senders/from-spf", authGuard.requireWriter, route(async (req, res) => {
+  const domain = String((req.body && req.body.domain) || "").trim().toLowerCase();
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
+    return res.status(400).json({ error: "Enter a domain name." });
+  }
+  const spf = await dnsRecords.getSpf(domain, { refresh: Boolean(req.body && req.body.refresh) });
+  const existing = new Set(db.knownSenders().map((s) => s.pattern));
+  const seen = new Set();
+  const proposals = [];
+  for (const n of spf.networks) {
+    const cidr = String(n.cidr).toLowerCase();
+    if (seen.has(cidr)) continue;
+    seen.add(cidr);
+    proposals.push({ pattern: cidr, kind: "ours", label: `SPF ${domain}: ${n.via}`.slice(0, 80), source: "spf", exists: existing.has(cidr) });
+  }
+  res.json({ domain, found: spf.found, record: spf.record, lookups: spf.lookups, tooManyLookups: spf.tooManyLookups, errors: spf.errors, warnings: spf.warnings, proposals });
 }));
 
 // --- mailboxes (admin) -------------------------------------------------------

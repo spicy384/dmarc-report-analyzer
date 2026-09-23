@@ -266,6 +266,94 @@ tr.clickable:focus-visible td {
 .pill-quarantine { background: var(--warning-soft); color: var(--chart-quarantine); }
 .pill-reject { background: var(--danger-soft); color: var(--danger); }
 .pill-forward { background: var(--primary-soft); color: var(--primary); font-weight: 500; }
+.pill-unknown { background: var(--surface-3); color: var(--text-subtle); font-weight: 500; }
+.pill-kind-ours { background: var(--success-soft); color: var(--success); }
+.pill-kind-vendor { background: var(--primary-soft); color: var(--primary); }
+.pill-kind-other { background: var(--surface-3); color: var(--text-muted); }
+
+.small-link {
+  font-size: 12px;
+  padding: 0;
+}
+
+/* --- known senders ------------------------------------------------------ */
+
+.sender-form {
+  display: grid;
+  grid-template-columns: 2fr 1.2fr 1.4fr 1.4fr auto;
+  gap: 8px 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.sender-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+  .sender-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.spf-import {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.spf-import-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.spf-import-head label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 240px;
+}
+
+.spf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 10px;
+  font-size: 13px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.spf-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  margin: 0;
+}
+
+.spf-row input[type="checkbox"] {
+  width: auto;
+  min-width: 0;
+  flex: none;
+  margin: 0;
+}
+
+.spf-row .muted {
+  color: var(--text-muted);
+}
 
 /* --- detail drawers ----------------------------------------------------- */
 

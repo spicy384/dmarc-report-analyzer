@@ -11,10 +11,12 @@ const path = require("path");
 const zlib = require("zlib");
 const Database = require("better-sqlite3");
 const { isLikelyForward } = require("./dmarc-parser");
+const { parsePattern, compileSenders, findSender } = require("./ipmatch");
 
 // 2: records.forwarded (likely forward / mailing list, derived from reasons and DKIM results)
 // 3: mailbox_id on messages, reports and sync_runs (multi-mailbox / multi-tenant)
-const SCHEMA_VERSION = 3;
+// 4: known_senders (created by the schema; version bump only)
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -104,7 +106,20 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS known_senders (
+  id         INTEGER PRIMARY KEY,
+  pattern    TEXT NOT NULL UNIQUE,   -- IP, CIDR, hostname or *.suffix (lower-cased)
+  kind       TEXT NOT NULL,          -- ours | vendor | other
+  label      TEXT NOT NULL,
+  note       TEXT,
+  source     TEXT NOT NULL DEFAULT 'manual',  -- manual | spf
+  created_by TEXT,
+  created_at INTEGER NOT NULL
+);
 `;
+
+const SENDER_KINDS = ["ours", "vendor", "other"];
 
 const DISPOSITIONS = ["none", "quarantine", "reject"];
 
@@ -493,6 +508,7 @@ function openDatabase({ dataDir, file } = {}) {
         passPct: totals.messages ? Math.round((totals.passed / totals.messages) * 1000) / 10 : 0
       },
       days: days.map((d) => ({ ...d, fail: d.failForward + d.failNone + d.failQuarantine + d.failReject })),
+      bySender: bySender(filter),
       topReporters: reporters(filter).slice(0, 8),
       topFailingIps: ips(filter, { failingOnly: true, limit: 10 })
     };
@@ -534,6 +550,7 @@ function openDatabase({ dataDir, file } = {}) {
 
     return rows.map(({ passedTotal, ...row }) => ({
       ...row,
+      sender: senderFor(row.ip, row.ptr),
       passed: passedTotal,
       failed: row.total - passedTotal,
       failPct: row.total ? Math.round(((row.total - passedTotal) / row.total) * 1000) / 10 : 0,
@@ -678,6 +695,130 @@ function openDatabase({ dataDir, file } = {}) {
     return db.prepare("SELECT * FROM messages WHERE status = 'error' ORDER BY received_at DESC LIMIT ?").all(limit);
   }
 
+  // --- known senders ----------------------------------------------------------
+
+  let compiledSenders = null;
+
+  function knownSenders() {
+    return db.prepare("SELECT * FROM known_senders ORDER BY kind, label, pattern").all();
+  }
+
+  function compiled() {
+    if (!compiledSenders) {
+      compiledSenders = compileSenders(knownSenders());
+    }
+    return compiledSenders;
+  }
+
+  function validateSender(fields, { partial = false } = {}) {
+    const out = {};
+    if (!partial || fields.pattern !== undefined) {
+      const parsed = parsePattern(fields.pattern);
+      if (!parsed) {
+        const e = new Error("Pattern must be an IP address, a CIDR block (10.0.0.0/8, 2a01:111::/32), a host name or *.suffix.");
+        e.status = 400;
+        throw e;
+      }
+      out.pattern = parsed.pattern;
+    }
+    if (!partial || fields.kind !== undefined) {
+      const kind = String(fields.kind || "").toLowerCase();
+      if (!SENDER_KINDS.includes(kind)) {
+        const e = new Error(`Kind must be one of ${SENDER_KINDS.join(", ")}.`);
+        e.status = 400;
+        throw e;
+      }
+      out.kind = kind;
+    }
+    if (!partial || fields.label !== undefined) {
+      const label = String(fields.label || "").trim();
+      if (!label || label.length > 80) {
+        const e = new Error("Label is required (80 characters maximum).");
+        e.status = 400;
+        throw e;
+      }
+      out.label = label;
+    }
+    if (fields.note !== undefined) {
+      out.note = String(fields.note || "").trim().slice(0, 500) || null;
+    }
+    return out;
+  }
+
+  function addKnownSender(fields, { createdBy = null, source = "manual" } = {}) {
+    const v = validateSender(fields);
+    try {
+      const result = db.prepare(`INSERT INTO known_senders (pattern, kind, label, note, source, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(v.pattern, v.kind, v.label, v.note || null, source === "spf" ? "spf" : "manual", createdBy, now());
+      compiledSenders = null;
+      return db.prepare("SELECT * FROM known_senders WHERE id = ?").get(Number(result.lastInsertRowid));
+    } catch (error) {
+      if (/UNIQUE/.test(error.message)) {
+        const e = new Error(`${v.pattern} is already a known sender.`);
+        e.status = 409;
+        throw e;
+      }
+      throw error;
+    }
+  }
+
+  function updateKnownSender(id, fields) {
+    const current = db.prepare("SELECT * FROM known_senders WHERE id = ?").get(id);
+    if (!current) {
+      const e = new Error("No such known sender.");
+      e.status = 404;
+      throw e;
+    }
+    const v = validateSender(fields, { partial: true });
+    const next = { ...current, ...v };
+    try {
+      db.prepare("UPDATE known_senders SET pattern = ?, kind = ?, label = ?, note = ? WHERE id = ?").run(next.pattern, next.kind, next.label, next.note || null, id);
+    } catch (error) {
+      if (/UNIQUE/.test(error.message)) {
+        const e = new Error(`${next.pattern} is already a known sender.`);
+        e.status = 409;
+        throw e;
+      }
+      throw error;
+    }
+    compiledSenders = null;
+    return db.prepare("SELECT * FROM known_senders WHERE id = ?").get(id);
+  }
+
+  function removeKnownSender(id) {
+    const result = db.prepare("DELETE FROM known_senders WHERE id = ?").run(id);
+    compiledSenders = null;
+    if (!result.changes) {
+      const e = new Error("No such known sender.");
+      e.status = 404;
+      throw e;
+    }
+    return true;
+  }
+
+  /** The known sender an IP (and its reverse-DNS name) belongs to, or null. */
+  function senderFor(ip, ptr) {
+    const row = findSender(compiled(), ip, ptr);
+    return row ? { id: row.id, kind: row.kind, label: row.label, pattern: row.pattern } : null;
+  }
+
+  /** Totals per sender kind for the filtered period: ours, vendor, other, unknown. */
+  function bySender(filter = {}) {
+    const out = {};
+    for (const kind of [...SENDER_KINDS, "unknown"]) {
+      out[kind] = { sources: 0, total: 0, passed: 0, failed: 0, likelyForwards: 0 };
+    }
+    for (const row of ips(filter, { limit: 5000 })) {
+      const kind = row.sender ? row.sender.kind : "unknown";
+      out[kind].sources += 1;
+      out[kind].total += row.total;
+      out[kind].passed += row.passed;
+      out[kind].failed += row.failed;
+      out[kind].likelyForwards += row.likelyForwards || 0;
+    }
+    return out;
+  }
+
   // --- ip_info ----------------------------------------------------------------
 
   function ipsMissingPtr(limit = 200) {
@@ -754,6 +895,12 @@ function openDatabase({ dataDir, file } = {}) {
     lastRun,
     lastRunsByMailbox,
     mailboxCounts,
+    knownSenders,
+    addKnownSender,
+    updateKnownSender,
+    removeKnownSender,
+    senderFor,
+    bySender,
     getSetting,
     setSetting,
     close

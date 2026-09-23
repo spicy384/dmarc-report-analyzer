@@ -187,6 +187,24 @@ async function waitForServer(tries = 60) {
     const runs = await req("/api/sync/runs");
     check("sync: run history", runs.body.runs.length === 1 && runs.body.runs[0].trigger === "manual" && /GRAPH_TENANT_ID/.test(runs.body.runs[0].error_text));
 
+    // --- known senders ---
+    check("known senders: empty", (await req("/api/known-senders")).body.senders.length === 0);
+    const ksAdd = await req("/api/known-senders", { method: "POST", body: { pattern: "203.0.113.0/24", kind: "ours", label: "Our relay" } });
+    check("known senders: add", ksAdd.status === 200 && ksAdd.body.sender.id > 0 && ksAdd.body.sender.created_by === "admin");
+    check("known senders: validation 400", (await req("/api/known-senders", { method: "POST", body: { pattern: "??", kind: "ours", label: "x" } })).status === 400);
+    check("known senders: duplicate 409", (await req("/api/known-senders", { method: "POST", body: { pattern: "203.0.113.0/24", kind: "ours", label: "x" } })).status === 409);
+    const bulk = await req("/api/known-senders", { method: "POST", body: { senders: [{ pattern: "10.9.0.0/16", kind: "vendor", label: "Bulk A", source: "spf" }, { pattern: "203.0.113.0/24", kind: "ours", label: "dup" }, { pattern: "bad pattern", kind: "ours", label: "x" }] } });
+    check("known senders: bulk add reports added and skipped", bulk.status === 200 && bulk.body.added.length === 1 && bulk.body.added[0].source === "spf" && bulk.body.skipped.length === 2);
+    const ipsLabelled = await req("/api/ips");
+    check("ips: sender label on rows", ipsLabelled.body.ips.find((r) => r.ip === "203.0.113.10").sender.label === "Our relay" && ipsLabelled.body.ips.find((r) => r.ip === "192.0.2.99").sender === null);
+    check("summary: bySender", (await req("/api/summary")).body.bySender.ours.total === 42);
+    const ksUpd = await req(`/api/known-senders/${ksAdd.body.sender.id}`, { method: "PUT", body: { label: "Our relay (edited)" } });
+    check("known senders: update", ksUpd.status === 200 && ksUpd.body.sender.label === "Our relay (edited)");
+    const spfMissing = await req("/api/known-senders/from-spf", { method: "POST", body: { domain: "no-such-domain-for-tests.invalid" } });
+    check("known senders: from-spf on a domain without SPF", spfMissing.status === 200 && spfMissing.body.found === false && spfMissing.body.proposals.length === 0);
+    check("known senders: from-spf validates the domain", (await req("/api/known-senders/from-spf", { method: "POST", body: { domain: "nope" } })).status === 400);
+    check("known senders: delete", (await req(`/api/known-senders/${ksAdd.body.sender.id}`, { method: "DELETE" })).status === 200 && (await req("/api/known-senders")).body.senders.length === 1);
+
     // --- mailboxes (admin) ---
     check("mailboxes: empty list", (await req("/api/mailboxes")).body.mailboxes.length === 0);
     check("mailboxes: validation is 400", (await req("/api/mailboxes", { method: "POST", body: { tenantId: "t" } })).status === 400);

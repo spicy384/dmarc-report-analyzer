@@ -4,6 +4,8 @@ const path = require("path");
 
 const SUITES = [
   "parser.test.js",
+  "ipmatch.test.js",
+  "dns-records.test.js",
   "db.test.js",
   "mailboxes.test.js",
   "sync.test.js",

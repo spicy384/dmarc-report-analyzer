@@ -130,6 +130,27 @@ check("search: like wildcards are literal", db.summary({ q: "%" }).totals.messag
 check("search: no match", db.summary({ q: "nothing-here" }).totals.messages === 0 && db.reports({ q: "nothing-here" }).total === 0);
 check("search combines with excludeForwards", db.summary({ q: "10.10.10.10", excludeForwards: true }).totals.messages === 0);
 
+// --- known senders ----------------------------------------------------------
+check("no known senders yet", db.knownSenders().length === 0 && db.ips().every((r) => r.sender === null));
+const ks1 = db.addKnownSender({ pattern: "203.0.113.0/24", kind: "ours", label: "Our mail server" }, { createdBy: "admin" });
+check("known sender added", ks1.id > 0 && ks1.pattern === "203.0.113.0/24" && ks1.source === "manual" && ks1.created_by === "admin");
+const ks2 = db.addKnownSender({ pattern: "*.badhost.test", kind: "other", label: "Known bad host", note: " seen before " });
+check("hostname pattern added with trimmed note", ks2.kind === "other" && ks2.note === "seen before");
+const bad = (f) => { try { db.addKnownSender(f); return null; } catch (e) { return e.status; } };
+check("validation: pattern", bad({ pattern: "nope nope", kind: "ours", label: "x" }) === 400);
+check("validation: kind", bad({ pattern: "10.0.0.1", kind: "friend", label: "x" }) === 400);
+check("validation: label", bad({ pattern: "10.0.0.1", kind: "ours", label: "" }) === 400);
+check("duplicate pattern is 409", bad({ pattern: "203.0.113.0/24", kind: "vendor", label: "dup" }) === 409);
+check("ips carry their sender", db.ips().find((r) => r.ip === "203.0.113.10").sender.label === "Our mail server" && db.ips().find((r) => r.ip === "192.0.2.99").sender.kind === "other" && db.ips().find((r) => r.ip === "198.51.100.7").sender === null);
+const bs = db.summary().bySender;
+check("summary bySender", bs.ours.total === 42 && bs.ours.failed === 0 && bs.other.failed === 7 && bs.unknown.failed === 8 && bs.unknown.sources === 3, JSON.stringify(bs));
+const ksUpd = db.updateKnownSender(ks2.id, { kind: "vendor", label: "Now a vendor" });
+check("update known sender", ksUpd.kind === "vendor" && db.summary().bySender.vendor.failed === 7);
+check("update unknown id is 404", (() => { try { db.updateKnownSender(999, { label: "x" }); return false; } catch (e) { return e.status === 404; } })());
+db.removeKnownSender(ks2.id);
+check("remove known sender", db.knownSenders().length === 1 && db.ips().find((r) => r.ip === "192.0.2.99").sender === null);
+check("remove unknown id is 404", (() => { try { db.removeKnownSender(999); return false; } catch (e) { return e.status === 404; } })());
+
 // --- mailboxes --------------------------------------------------------------
 check("rows default to the env mailbox", db.summary({ mailbox: "env" }).totals.messages === 58 && db.summary({ mailbox: "other" }).totals.messages === 0);
 db.recordMessage({ graphId: "m5", mailboxId: "box2", receivedAt: 1758340000, subject: "other box", fromAddr: "x@y.z", status: "ingested" });
@@ -178,7 +199,8 @@ v1.exec(`
 v1.close();
 
 const migrated = openDatabase({ dataDir: tmpDir });
-check("migration: schema version bumped", migrated.db.pragma("user_version", { simple: true }) === 3);
+check("migration: schema version bumped", migrated.db.pragma("user_version", { simple: true }) >= 4);
+check("migration: known_senders table exists", migrated.knownSenders().length === 0);
 check("migration: mailbox columns added and backfilled", migrated.db.prepare("SELECT COUNT(*) AS n FROM reports WHERE mailbox_id = 'env'").get().n === 1 && migrated.reports({ mailbox: "env" }).total === 1);
 check("migration: forwarded column added", migrated.db.pragma("table_info(records)").some((c) => c.name === "forwarded"));
 const flags = Object.fromEntries(migrated.db.prepare("SELECT source_ip, forwarded FROM records").all().map((r) => [r.source_ip, r.forwarded]));

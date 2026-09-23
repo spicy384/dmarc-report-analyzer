@@ -221,6 +221,54 @@
       </div>
     </section>
 
+    <section class="panel" id="senders-panel">
+      <div class="panel-head">
+        <h2>Known senders</h2>
+        <span id="senders-count" class="badge">0 entries</span>
+        <button id="import-spf-btn" type="button" class="secondary small head-toggle writer-only">Import from SPF</button>
+      </div>
+      <p class="bulk-hint">
+        Tell the analyzer which sources are yours (your Microsoft 365 tenant, your on-premises
+        relay), which are vendors sending on your behalf (newsletters, ticketing, CRM), and
+        anything else you recognise. Patterns are an IP, a CIDR block, a host name or
+        <span class="mono">*.suffix</span> matched against reverse DNS. Sources are then tagged
+        everywhere, and failures split into <strong>yours</strong> (fix SPF/DKIM) and
+        <strong>not yours</strong> (spoofing).
+      </p>
+
+      <div id="spf-import" class="spf-import" hidden>
+        <div class="spf-import-head">
+          <label>Domain <input id="spf-domain" class="mono" placeholder="example.com" /></label>
+          <button id="spf-lookup-btn" type="button" class="secondary">Look up SPF</button>
+          <button id="spf-close-btn" type="button" class="secondary">Close</button>
+        </div>
+        <p id="spf-summary" class="bulk-hint"></p>
+        <div id="spf-proposals"></div>
+        <div id="spf-actions" class="actions" hidden>
+          <button id="spf-add-btn" type="button">Add selected as "ours"</button>
+        </div>
+      </div>
+
+      <div id="sender-form" class="sender-form writer-only">
+        <label>Pattern <input id="ks-pattern" class="mono" placeholder="40.107.0.0/16 or *.outbound.protection.outlook.com" /></label>
+        <label>Kind
+          <select id="ks-kind">
+            <option value="ours">Ours</option>
+            <option value="vendor">Vendor sending for us</option>
+            <option value="other">Other (recognised, not ours)</option>
+          </select>
+        </label>
+        <label>Label <input id="ks-label" placeholder="Microsoft 365" /></label>
+        <label>Note <input id="ks-note" placeholder="optional" /></label>
+        <div class="actions">
+          <button id="ks-save" type="button">Add</button>
+          <button id="ks-cancel" type="button" class="secondary" hidden>Cancel</button>
+        </div>
+      </div>
+
+      <div id="senders-results" class="table-scroll"></div>
+    </section>
+
     <section class="panel" id="reporters-panel">
       <div class="panel-head">
         <h2>Reporting services</h2>
