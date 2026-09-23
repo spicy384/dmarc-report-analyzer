@@ -468,6 +468,101 @@ tr.clickable:focus-visible td {
   word-break: break-word;
 }
 
+/* --- policy readiness ---------------------------------------------------- */
+
+.policy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+.policy-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.policy-box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.policy-box-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.policy-record {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.policy-facts,
+.policy-warnings,
+.policy-sources {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.policy-facts {
+  color: var(--text-muted);
+}
+
+.policy-warnings li {
+  color: var(--warning-fg);
+}
+
+body.theme-dark .policy-warnings li {
+  color: var(--chart-fail-none);
+}
+
+.policy-sources {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.policy-reject-row {
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.policy-reject-row strong {
+  font-size: 20px;
+}
+
+.policy-reject-row.tone-bad strong { color: var(--danger); }
+.policy-reject-row.tone-good strong { color: var(--success); }
+.policy-reject-row.tone-warn strong { color: var(--chart-quarantine); }
+
+.policy-reject-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.badge-ok { background: var(--success-soft); color: var(--success); }
+.badge-warn { background: var(--warning-soft); color: var(--warning-fg); }
+
 /* --- expandable rows ----------------------------------------------------- */
 
 tr.is-expanded td {

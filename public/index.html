@@ -203,6 +203,27 @@
       </p>
     </section>
 
+    <section class="panel" id="policy-panel">
+      <div class="panel-head">
+        <h2>Policy readiness</h2>
+        <span id="policy-badge" class="badge"></span>
+        <div class="head-toggle">
+          <label class="inline-label">Domain
+            <select id="policy-domain" class="small"></select>
+          </label>
+          <button id="policy-refresh" type="button" class="secondary small">Re-check DNS</button>
+        </div>
+      </div>
+      <p class="bulk-hint">
+        The domain's DMARC, SPF and DKIM records as published right now, with what they mean, and
+        what a <span class="mono">p=reject</span> policy would have done to the mail in the selected
+        period. Label your senders first: unlabelled failing sources are counted as spoofing.
+      </p>
+      <div id="policy-body" class="policy-grid">
+        <p class="empty-state">Pick a domain.</p>
+      </div>
+    </section>
+
     <section class="panel" id="sources-panel">
       <div class="panel-head">
         <h2>Sending sources</h2>

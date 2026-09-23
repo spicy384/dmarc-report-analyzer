@@ -187,6 +187,15 @@ async function waitForServer(tries = 60) {
     const runs = await req("/api/sync/runs");
     check("sync: run history", runs.body.runs.length === 1 && runs.body.runs[0].trigger === "manual" && /GRAPH_TENANT_ID/.test(runs.body.runs[0].error_text));
 
+    // --- policy readiness ---
+    check("policy: domain required", (await req("/api/policy")).status === 400);
+    const pol = await req("/api/policy?domain=no-such-domain-for-tests.invalid");
+    check("policy: shape with no records and no reports", pol.status === 200 && pol.body.dmarc.found === false && pol.body.spf.found === false && Array.isArray(pol.body.dkim) && pol.body.reject.total === 0);
+    const polEx = await req("/api/policy?domain=example.com");
+    check("policy: reject breakdown from stored reports", polEx.status === 200 && polEx.body.reject.total === 53 && polEx.body.reject.spoofingBlocked.messages === 10 && polEx.body.reject.legitimateRejected.messages === 0 && polEx.body.reject.unlabelledFailingSources === 2);
+    check("policy: dkim selectors checked", polEx.body.dkim.some((s) => s.selector === "selector1" && typeof s.found === "boolean"));
+    check("policy: dmarc warnings is an array", Array.isArray(polEx.body.dmarc.warnings));
+
     // --- alerts ---
     check("alerts: none open", (await req("/api/alerts")).body.openCount === 0);
     check("alerts: ack unknown is 404", (await req("/api/alerts/999/ack", { method: "POST", body: {} })).status === 404);

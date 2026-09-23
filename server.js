@@ -9,6 +9,7 @@ const { configFromEnv } = require("./graph");
 const { createMailboxStore } = require("./mailboxes");
 const { createDnsRecords } = require("./dns-records");
 const { evaluateAfterSync } = require("./alerts");
+const { compileSenders, findSender } = require("./ipmatch");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -182,6 +183,87 @@ app.get("/api/sync/:id", route(async (req, res) => {
     return res.status(404).json({ error: "No such sync job." });
   }
   res.json(publicJob(job));
+}));
+
+// --- policy readiness ----------------------------------------------------------
+
+function topSources(rows, key, limit = 5) {
+  return rows
+    .filter((r) => r[key] > 0)
+    .sort((a, b) => b[key] - a[key])
+    .slice(0, limit)
+    .map((r) => ({ ip: r.ip, ptr: r.ptr, count: r[key], sender: r.sender ? r.sender.label : null, spfPassed: r.spfPassed, dkimPassed: r.dkimPassed, total: r.total }));
+}
+
+/**
+ * Everything needed to decide whether the domain is ready for p=reject: the DNS
+ * records with warnings, and what rejecting would have done in the period.
+ */
+app.get("/api/policy", route(async (req, res) => {
+  const filter = filterFrom(req);
+  const domain = String(req.query.domain || filter.domain || "").trim().toLowerCase();
+  if (!/^[a-z0-9.-]+\.[a-z0-9-]{2,}$/.test(domain)) {
+    return res.status(400).json({ error: "Pick a domain first." });
+  }
+  const refresh = String(req.query.refresh || "") === "1";
+  const scoped = { ...filter, domain };
+
+  const [dmarc, spf] = await Promise.all([
+    dnsRecords.getDmarc(domain, { refresh }).catch((error) => ({ domain, found: false, error: error.message, tags: {}, warnings: [`DNS lookup failed: ${error.message}`] })),
+    dnsRecords.getSpf(domain, { refresh }).catch((error) => ({ domain, found: false, error: error.message, networks: [], warnings: [`DNS lookup failed: ${error.message}`], errors: [] }))
+  ]);
+
+  // Which of the mailbox addresses the reports actually reach.
+  const addresses = mailboxes.list().map((m) => m.mailbox.toLowerCase());
+  const rua = (dmarc.tags && dmarc.tags.rua) || [];
+  const ruaToUs = rua.some((a) => addresses.includes(String(a).toLowerCase()));
+  const dmarcWarnings = [...(dmarc.warnings || [])];
+  if (dmarc.found && rua.length && addresses.length && !ruaToUs) {
+    dmarcWarnings.push(`rua= points at ${rua.join(", ")}, none of which is a mailbox this analyzer reads (${addresses.join(", ")}).`);
+  }
+
+  // Sources in the period, annotated with whether SPF authorises them.
+  const spfNets = compileSenders((spf.networks || []).map((n) => ({ pattern: n.cidr, via: n.via })));
+  const rows = db.ips(scoped, { limit: 5000 }).map((r) => {
+    const inSpf = findSender(spfNets, r.ip, null);
+    const nonForwardFailed = r.failed - (r.likelyForwards || 0);
+    return { ...r, inSpf: Boolean(inSpf), spfVia: inSpf ? inSpf.via : null, nonForwardFailed };
+  });
+
+  const groups = { ours: [], vendor: [], other: [], unknown: [] };
+  for (const r of rows) {
+    groups[r.sender ? r.sender.kind : "unknown"].push(r);
+  }
+  const sum = (list, key) => list.reduce((n, r) => n + (r[key] || 0), 0);
+  const reject = {
+    legitimateRejected: { messages: sum(groups.ours, "nonForwardFailed") + sum(groups.vendor, "nonForwardFailed"), sources: topSources([...groups.ours, ...groups.vendor], "nonForwardFailed") },
+    spoofingBlocked: { messages: sum(groups.unknown, "nonForwardFailed") + sum(groups.other, "nonForwardFailed"), sources: topSources([...groups.unknown, ...groups.other], "nonForwardFailed") },
+    forwardsLost: { messages: sum(rows, "likelyForwards"), sources: topSources(rows, "likelyForwards") },
+    passing: sum(rows, "passed"),
+    total: sum(rows, "total"),
+    unlabelledFailingSources: groups.unknown.filter((r) => r.nonForwardFailed > 0).length
+  };
+
+  const yoursOutsideSpf = [...groups.ours, ...groups.vendor].filter((r) => !r.inSpf && r.spfPassed < r.total);
+  const failingInsideSpf = rows.filter((r) => r.inSpf && r.nonForwardFailed > 0);
+
+  // DKIM selectors seen for the domain, checked in DNS.
+  const selectors = db.dkimSelectors(domain, filter).filter((s) => s.signingDomain === domain || String(s.signingDomain || "").endsWith(`.${domain}`) || domain.endsWith(`.${s.signingDomain}`));
+  const dkim = await Promise.all(selectors.slice(0, 20).map(async (s) => {
+    const check = await dnsRecords.checkDkim(s.signingDomain, s.selector, { refresh }).catch((error) => ({ found: false, error: error.message }));
+    return { ...s, ...check };
+  }));
+
+  res.json({
+    domain,
+    mailboxAddresses: addresses,
+    dmarc: { ...dmarc, warnings: dmarcWarnings, ruaToUs },
+    spf: { ...spf, networks: (spf.networks || []).length },
+    dkim,
+    reject,
+    yoursOutsideSpf: yoursOutsideSpf.map((r) => ({ ip: r.ip, ptr: r.ptr, sender: r.sender.label, total: r.total, spfPassed: r.spfPassed, failed: r.failed })),
+    failingInsideSpf: failingInsideSpf.map((r) => ({ ip: r.ip, ptr: r.ptr, sender: r.sender ? r.sender.label : null, via: r.spfVia, failed: r.nonForwardFailed, dkimPassed: r.dkimPassed, total: r.total }))
+  });
 }));
 
 // --- alerts ------------------------------------------------------------------

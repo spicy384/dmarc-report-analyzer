@@ -838,6 +838,27 @@ function openDatabase({ dataDir, file } = {}) {
     return out;
   }
 
+  // --- policy readiness ---------------------------------------------------------
+
+  /** DKIM selectors seen in reports for a domain (from auth_results), with pass/fail message counts. */
+  function dkimSelectors(domain, filter = {}) {
+    const f = buildFilter({ ...filter, domain }, { x: "x" });
+    return db.prepare(`
+      SELECT json_extract(d.value, '$.domain') AS signingDomain,
+             json_extract(d.value, '$.selector') AS selector,
+             SUM(CASE WHEN json_extract(d.value, '$.result') = 'pass' THEN x.count ELSE 0 END) AS passedTotal,
+             SUM(CASE WHEN json_extract(d.value, '$.result') <> 'pass' THEN x.count ELSE 0 END) AS failedTotal,
+             COUNT(DISTINCT x.source_ip) AS sources,
+             MAX(r.range_end) AS lastSeen
+      FROM records x
+      JOIN reports r ON r.id = x.report_id
+      JOIN json_each(x.dkim_results) d
+      WHERE ${f.sql} AND json_extract(d.value, '$.selector') IS NOT NULL
+      GROUP BY signingDomain, selector
+      ORDER BY passedTotal + failedTotal DESC`).all(...f.params)
+      .map(({ passedTotal, failedTotal, ...row }) => ({ ...row, passed: passedTotal, failed: failedTotal }));
+  }
+
   // --- alerts -------------------------------------------------------------------
 
   function shapeAlert(row) {
@@ -1015,6 +1036,7 @@ function openDatabase({ dataDir, file } = {}) {
     removeKnownSender,
     senderFor,
     bySender,
+    dkimSelectors,
     insertAlert,
     openAlerts,
     recentAlerts,

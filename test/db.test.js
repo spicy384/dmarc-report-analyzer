@@ -130,6 +130,11 @@ check("search: like wildcards are literal", db.summary({ q: "%" }).totals.messag
 check("search: no match", db.summary({ q: "nothing-here" }).totals.messages === 0 && db.reports({ q: "nothing-here" }).total === 0);
 check("search combines with excludeForwards", db.summary({ q: "10.10.10.10", excludeForwards: true }).totals.messages === 0);
 
+// --- dkim selectors ---------------------------------------------------------
+const sels = db.dkimSelectors("example.com");
+check("dkim selectors seen for the domain (including the forwarder's)", sels.length === 3 && sels.find((s) => s.selector === "selector1").passed === 42 && sels.find((s) => s.selector === "s1").signingDomain === "example.com" && sels.find((s) => s.selector === "fwd").signingDomain === "forwarder.test", JSON.stringify(sels));
+check("dkim selectors: other domain empty", db.dkimSelectors("nope.test").length === 0);
+
 // --- known senders ----------------------------------------------------------
 check("no known senders yet", db.knownSenders().length === 0 && db.ips().every((r) => r.sender === null));
 const ks1 = db.addKnownSender({ pattern: "203.0.113.0/24", kind: "ours", label: "Our mail server" }, { createdBy: "admin" });

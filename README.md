@@ -18,6 +18,16 @@ it was last seen. Click a row for the individual records behind it. A source tha
 everything and is not yours is spoofing; one that fails but is yours needs SPF or DKIM
 fixed.
 
+**Policy readiness**: for a domain, the DMARC record as published right now with its
+tags explained and warnings (no record, `p=none`, `pct` below 100, no `rua`, reports going
+to an address the analyzer does not read), the SPF record expanded through its includes
+with the DNS-lookup count against the limit of 10, which of your labelled senders fail
+SPF and are missing from it, the DKIM selectors seen in reports and whether each still
+resolves, and **what `p=reject` would have done** in the selected period: legitimate mail
+that would have been rejected (from sources labelled yours or vendor), spoofing that would
+have been blocked, and forwards that would have been lost. A domain is called ready when
+nothing legitimate would be rejected and every failing source has a label.
+
 **Known senders**: label the sources you recognise so the analyzer can tell "yours" from
 "not yours". A pattern is an IP, a CIDR block, a host name or `*.suffix` matched against
 reverse DNS; the kind is **ours** (your tenant, your relay), **vendor** (sends on your
