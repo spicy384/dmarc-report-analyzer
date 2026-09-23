@@ -173,6 +173,27 @@ body.theme-dark {
   margin-top: 2px;
 }
 
+.stat-delta {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  vertical-align: middle;
+}
+
+.stat-delta.is-good { color: var(--success); }
+.stat-delta.is-bad { color: var(--danger); }
+
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sortable:hover {
+  color: var(--primary);
+}
+
 .stat-pass .stat-value { color: var(--chart-pass); }
 .stat-fail .stat-value { color: var(--danger); }
 .stat-quarantine .stat-value { color: var(--chart-quarantine); }

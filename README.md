@@ -76,6 +76,11 @@ Online.
 
 **Export**: every record in the selected period as CSV, honouring the search and filters.
 
+**Small things**: every stat tile shows the change against the previous period of the
+same length (percentage points for rates, percent for counts), the sources table sorts by
+any column, and the URL fragment carries the period, domain, mailbox, search, forwards
+switch and any open IP or report, so a view can be bookmarked or pasted to a colleague.
+
 **Mailbox sync**: sync on a schedule or on demand, with live progress, a run history, and a
 list of emails whose attachments could not be read. Emails already ingested are skipped, so
 re-running is cheap; a backfill option re-scans from any date.

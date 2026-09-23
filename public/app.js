@@ -381,12 +381,19 @@ async function loadDomains() {
 
 // --- overview --------------------------------------------------------------
 
-function statTile(label, value, { sub = "", tone = "", small = false } = {}) {
+function statTile(label, value, { sub = "", tone = "", small = false, delta = null } = {}) {
   const div = document.createElement("div");
   div.className = `stat${tone ? " stat-" + tone : ""}${small ? " stat-small" : ""}`;
   const v = document.createElement("div");
   v.className = "stat-value";
   v.textContent = value;
+  if (delta) {
+    const d = document.createElement("span");
+    d.className = `stat-delta ${delta.direction}${delta.good === null ? "" : delta.good ? " is-good" : " is-bad"}`;
+    d.textContent = delta.text;
+    d.title = delta.title;
+    v.appendChild(d);
+  }
   const l = document.createElement("div");
   l.className = "stat-label";
   l.textContent = label;
@@ -414,20 +421,43 @@ function senderTile(t) {
 }
 
 let lastBySender = null;
+let previousTotals = null;
+let previousLabel = "";
+
+/**
+ * A change against the previous period. `kind` is "count" or "pct" (percentage points);
+ * `upIsGood` says which direction to colour green (null: neutral).
+ */
+function delta(current, previous, { kind = "count", upIsGood = null } = {}) {
+  if (!previousTotals || previous === undefined || previous === null) return null;
+  const diff = (current || 0) - (previous || 0);
+  if (Math.abs(diff) < (kind === "pct" ? 0.05 : 0.5)) {
+    return { direction: "flat", text: "=", good: null, title: `Unchanged against the ${previousLabel}` };
+  }
+  const up = diff > 0;
+  const arrow = up ? "\u25B2" : "\u25BC";
+  const text = kind === "pct"
+    ? `${arrow} ${Math.abs(diff).toFixed(1)} pts`
+    : `${arrow} ${previous ? Math.round((Math.abs(diff) / previous) * 100) + "%" : formatNumber(Math.abs(diff))}`;
+  const good = upIsGood === null ? null : up === upIsGood;
+  return { direction: up ? "up" : "down", text, good, title: `${previousLabel}: ${kind === "pct" ? formatPct(previous) : formatNumber(previous)}` };
+}
 
 function renderStats(t) {
+  const p = previousTotals || {};
   statGrid.replaceChildren(
-    statTile("Messages", formatNumber(t.messages), { sub: `${formatNumber(t.reports)} reports` }),
-    statTile("DMARC pass", formatPct(t.passPct), { sub: `${formatNumber(t.passed)} messages`, tone: "pass" }),
+    statTile("Messages", formatNumber(t.messages), { sub: `${formatNumber(t.reports)} reports`, delta: delta(t.messages, p.messages) }),
+    statTile("DMARC pass", formatPct(t.passPct), { sub: `${formatNumber(t.passed)} messages`, tone: "pass", delta: delta(t.passPct, p.passPct, { kind: "pct", upIsGood: true }) }),
     statTile("DMARC fail", formatPct(t.failPct), {
       sub: `${formatNumber(t.failed)} messages${t.likelyForwards ? `, ${formatNumber(t.likelyForwards)} likely forwards` : ""}`,
-      tone: t.failed > 0 ? "fail" : ""
+      tone: t.failed > 0 ? "fail" : "",
+      delta: delta(t.failPct, p.failPct, { kind: "pct", upIsGood: false })
     }),
-    statTile("Quarantined", formatNumber(t.quarantined), { tone: t.quarantined > 0 ? "quarantine" : "" }),
-    statTile("Rejected", formatNumber(t.rejected), { tone: t.rejected > 0 ? "reject" : "" }),
-    statTile("Failing sources", formatNumber(t.failingIps), { sub: `of ${formatNumber(t.sourceIps)} source IPs` }),
+    statTile("Quarantined", formatNumber(t.quarantined), { tone: t.quarantined > 0 ? "quarantine" : "", delta: delta(t.quarantined, p.quarantined, { upIsGood: false }) }),
+    statTile("Rejected", formatNumber(t.rejected), { tone: t.rejected > 0 ? "reject" : "", delta: delta(t.rejected, p.rejected, { upIsGood: false }) }),
+    statTile("Failing sources", formatNumber(t.failingIps), { sub: `of ${formatNumber(t.sourceIps)} source IPs`, delta: delta(t.failingIps, p.failingIps, { upIsGood: false }) }),
     senderTile(t),
-    statTile("Reporters", formatNumber(t.reporters), { sub: t.domains > 1 ? `${t.domains} domains` : "" }),
+    statTile("Reporters", formatNumber(t.reporters), { sub: t.domains > 1 ? `${t.domains} domains` : "", delta: delta(t.reporters, p.reporters) }),
     statTile("SPF / DKIM aligned", `${t.messages ? Math.round((t.spfPassed / t.messages) * 100) : 0}% / ${t.messages ? Math.round((t.dkimPassed / t.messages) * 100) : 0}%`, { tone: "small" })
   );
 }
@@ -585,8 +615,22 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => lastDays.length && renderChart(lastDays), 150);
 });
 
+/** The window of equal length just before the current one, or null for open-ended ranges. */
+function previousRange() {
+  const { from, to } = currentRange();
+  if (from === null || to === null) return null;
+  const length = to - from;
+  return { from: from - length, to: from, days: Math.round(length / DAY) };
+}
+
 async function loadSummary() {
-  const data = await api(`/api/summary${filterQuery()}`);
+  const prev = previousRange();
+  const [data, prevData] = await Promise.all([
+    api(`/api/summary${filterQuery()}`),
+    prev ? api(`/api/summary${filterQuery({ from: prev.from, to: prev.to })}`).catch(() => null) : Promise.resolve(null)
+  ]);
+  previousTotals = prevData ? prevData.totals : null;
+  previousLabel = prev ? `previous ${prev.days} days (${formatUtcDate(prev.from)} to ${formatUtcDate(prev.to - 1)})` : "";
   lastBySender = data.bySender || null;
   renderStats(data.totals);
   renderChart(data.days || []);
@@ -667,16 +711,72 @@ function ipRow(r) {
   };
 }
 
-async function loadIps() {
-  const data = await api(`/api/ips${filterQuery({ failing: failingOnly.checked ? 1 : 0, limit: 500 })}`);
-  const rows = data.ips || [];
+// Column -> sort key for the sources table; null columns are not sortable.
+const IPS_COLUMNS = [
+  { label: "Source IP", key: "ip" },
+  { label: "Reverse DNS", key: "ptr" },
+  { label: "Network", key: "asOrg" },
+  { label: "Sender", key: "senderLabel" },
+  { label: "Messages", className: "num", key: "total" },
+  { label: "Failed", className: "num", key: "failed" },
+  { label: "Fail %", className: "num", key: "failPct" },
+  { label: "Failures by action", key: null },
+  { label: "SPF / DKIM pass", className: "num", key: "spfPassed" },
+  { label: "SPF domain", key: null },
+  { label: "DKIM domain", key: null },
+  { label: "Reported by", key: "reporters" },
+  { label: "Last seen", key: "lastSeen" }
+];
+const IPS_DESC_FIRST = ["total", "failed", "failPct", "spfPassed", "reporters", "lastSeen"];
+let lastIpRows = [];
+let ipsSort = (() => {
+  try { return JSON.parse(localStorage.getItem("dmarc-ips-sort")) || { key: "failed", dir: "desc" }; } catch { return { key: "failed", dir: "desc" }; }
+})();
+
+function sortIpRows(rows) {
+  const { key, dir } = ipsSort;
+  const sign = dir === "asc" ? 1 : -1;
+  const value = (r) => (key === "senderLabel" ? (r.sender ? r.sender.label : "") : r[key]);
+  return [...rows].sort((a, b) => {
+    const va = value(a);
+    const vb = value(b);
+    if (va === vb) return b.failed - a.failed || b.total - a.total;
+    if (va === null || va === undefined || va === "") return 1;
+    if (vb === null || vb === undefined || vb === "") return -1;
+    if (typeof va === "number" && typeof vb === "number") return (va - vb) * sign;
+    return String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: "base" }) * sign;
+  });
+}
+
+function renderIps() {
+  const rows = sortIpRows(lastIpRows);
   ipsCount.textContent = `${rows.length} source${rows.length === 1 ? "" : "s"}`;
-  ipsResults.replaceChildren(buildTable(
-    ["Source IP", "Reverse DNS", "Network", "Sender", { label: "Messages", className: "num" }, { label: "Failed", className: "num" }, { label: "Fail %", className: "num" },
-      "Failures by action", { label: "SPF / DKIM pass", className: "num" }, "SPF domain", "DKIM domain", "Reported by", "Last seen"],
+  const arrow = ipsSort.dir === "asc" ? " \u25B2" : " \u25BC";
+  const table = buildTable(
+    IPS_COLUMNS.map((c) => ({ label: c.label + (c.key === ipsSort.key ? arrow : ""), className: `${c.className || ""}${c.key ? " sortable" : ""}`.trim() })),
     rows.map(ipRow),
     { emptyText: failingOnly.checked ? "No failing sources in this period." : "No sources in this period.", onRowClick: (r) => openIpDetail(r.ip) }
-  ));
+  );
+  const ths = table.querySelectorAll ? table.querySelectorAll("thead th") : [];
+  ths.forEach((th, i) => {
+    const col = IPS_COLUMNS[i];
+    if (!col || !col.key) return;
+    th.title = "Sort by this column";
+    th.addEventListener("click", () => {
+      ipsSort = ipsSort.key === col.key
+        ? { key: col.key, dir: ipsSort.dir === "asc" ? "desc" : "asc" }
+        : { key: col.key, dir: IPS_DESC_FIRST.includes(col.key) ? "desc" : "asc" };
+      localStorage.setItem("dmarc-ips-sort", JSON.stringify(ipsSort));
+      renderIps();
+    });
+  });
+  ipsResults.replaceChildren(table);
+}
+
+async function loadIps() {
+  const data = await api(`/api/ips${filterQuery({ failing: failingOnly.checked ? 1 : 0, limit: 500 })}`);
+  lastIpRows = data.ips || [];
+  renderIps();
 }
 
 function recordRows(records, { showIp = false } = {}) {
@@ -744,12 +844,15 @@ async function openIpDetail(ip) {
     ));
     ipDetail.hidden = false;
     ipDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    openIp = ip;
+    openReport = null;
+    writeHash({ ip });
   } catch (error) {
     setStatus(error.message, true);
   }
 }
 
-document.getElementById("ip-detail-close").addEventListener("click", () => { ipDetail.hidden = true; });
+document.getElementById("ip-detail-close").addEventListener("click", () => { ipDetail.hidden = true; openIp = null; writeHash(); });
 
 function kv(label, value) {
   const div = document.createElement("div");
@@ -1500,12 +1603,15 @@ async function openReportDetail(id) {
     ));
     reportDetail.hidden = false;
     reportDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    openReport = id;
+    openIp = null;
+    writeHash({ report: id });
   } catch (error) {
     setStatus(error.message, true);
   }
 }
 
-document.getElementById("report-detail-close").addEventListener("click", () => { reportDetail.hidden = true; });
+document.getElementById("report-detail-close").addEventListener("click", () => { reportDetail.hidden = true; openReport = null; writeHash(); });
 
 // --- sync ------------------------------------------------------------------
 
@@ -1862,6 +1968,61 @@ async function loadSyncStatus() {
 
 // --- load everything -------------------------------------------------------
 
+// --- deep links ------------------------------------------------------------------
+
+let applyingHash = false;
+let pendingOpen = null;
+let openIp = null;
+let openReport = null;
+
+/** Reads filter state from the URL fragment (#range=30&domain=...&q=...&hide=1&ip=...&report=...). */
+function readHash() {
+  const raw = location.hash.replace(/^#/, "");
+  if (!raw) return false;
+  const p = new URLSearchParams(raw);
+  if (p.has("range") && [...rangeSelect.options].some((o) => o.value === p.get("range"))) rangeSelect.value = p.get("range");
+  if (p.has("from")) fromDate.value = p.get("from");
+  if (p.has("to")) toDate.value = p.get("to");
+  if (p.has("domain")) domainSelect.value = p.get("domain");
+  if (p.has("mailbox")) mailboxSelect.value = p.get("mailbox");
+  searchInput.value = p.get("q") || "";
+  hideForwards.checked = p.get("hide") === "1";
+  if (p.has("failing")) failingOnly.checked = p.get("failing") !== "0";
+  pendingOpen = p.has("ip") ? { ip: p.get("ip") } : p.has("report") ? { report: p.get("report") } : null;
+  const custom = rangeSelect.value === "custom";
+  fromLabel.hidden = !custom;
+  toLabel.hidden = !custom;
+  return true;
+}
+
+function writeHash(extra = {}) {
+  const p = new URLSearchParams();
+  p.set("range", rangeSelect.value);
+  if (rangeSelect.value === "custom") {
+    if (fromDate.value) p.set("from", fromDate.value);
+    if (toDate.value) p.set("to", toDate.value);
+  }
+  if (domainSelect.value) p.set("domain", domainSelect.value);
+  if (mailboxSelect.value) p.set("mailbox", mailboxSelect.value);
+  if (searchInput.value.trim()) p.set("q", searchInput.value.trim());
+  if (hideForwards.checked) p.set("hide", "1");
+  if (!failingOnly.checked) p.set("failing", "0");
+  for (const [k, v] of Object.entries(extra)) {
+    if (v !== null && v !== undefined && v !== "") p.set(k, String(v));
+  }
+  applyingHash = true;
+  history.replaceState(null, "", `#${p.toString()}`);
+  applyingHash = false;
+}
+
+window.addEventListener("hashchange", () => {
+  if (applyingHash) return;
+  if (readHash()) {
+    reportsPage = 1;
+    loadAll();
+  }
+});
+
 async function loadAll() {
   const range = currentRange();
   rangeLabel.textContent = range.label + (domainSelect.value ? ` - ${domainSelect.value}` : "");
@@ -1889,6 +2050,13 @@ async function loadAll() {
     setStatus(problems.join(" | "), true);
   } else {
     setStatus(`Updated ${formatTimestamp(Math.floor(Date.now() / 1000))}`);
+  }
+  writeHash(openIp ? { ip: openIp } : openReport ? { report: openReport } : {});
+  if (pendingOpen) {
+    const open = pendingOpen;
+    pendingOpen = null;
+    if (open.ip) openIpDetail(open.ip);
+    else if (open.report) openReportDetail(open.report);
   }
 }
 
@@ -2349,6 +2517,7 @@ async function onSignedIn() {
     await loadDomains();
     const st = await api("/api/status");
     populateMailboxSelect(st.mailboxes || [], st.mailboxCounts || []);
+    readHash();
   } catch (_) {
     // The dropdowns are a convenience; the rest still loads.
   }
@@ -2369,6 +2538,7 @@ async function onSignedIn() {
     fromDate.value = formatUtcDate(todayUtcStart() - 30 * DAY);
     toDate.value = formatUtcDate(todayUtcStart());
   }
+  readHash();
 
   // Nothing loads until we know who (if anyone) is signed in.
   const signedIn = await refreshIdentity();
