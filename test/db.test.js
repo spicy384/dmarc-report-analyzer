@@ -130,6 +130,15 @@ check("search: like wildcards are literal", db.summary({ q: "%" }).totals.messag
 check("search: no match", db.summary({ q: "nothing-here" }).totals.messages === 0 && db.reports({ q: "nothing-here" }).total === 0);
 check("search combines with excludeForwards", db.summary({ q: "10.10.10.10", excludeForwards: true }).totals.messages === 0);
 
+// --- mailboxes --------------------------------------------------------------
+check("rows default to the env mailbox", db.summary({ mailbox: "env" }).totals.messages === 58 && db.summary({ mailbox: "other" }).totals.messages === 0);
+db.recordMessage({ graphId: "m5", mailboxId: "box2", receivedAt: 1758340000, subject: "other box", fromAddr: "x@y.z", status: "ingested" });
+const other = db.insertReport({ messageId: "m5", mailboxId: "box2", attachmentName: "o.xml", parsed: parseAggregateReport(googleXml.replace("<report_id>12345678901234567890</report_id>", "<report_id>box2-1</report_id>")), xml: googleXml });
+check("report stored under its mailbox", !other.duplicate && db.reports({ mailbox: "box2" }).rows[0].mailboxId === "box2" && db.reports({ mailbox: "box2" }).total === 1);
+check("mailbox filter isolates totals", db.summary({ mailbox: "box2" }).totals.messages === 45 && db.summary().totals.messages === 103);
+check("latest received per mailbox", db.latestMessageReceivedAt("box2") === 1758340000 && db.latestMessageReceivedAt("env") === 1758330000 && db.latestMessageReceivedAt() === 1758340000);
+check("mailbox counts", db.mailboxCounts().length === 2 && db.mailboxCounts().find((c) => c.id === "box2").messages === 45);
+
 // --- runs / settings / stats ------------------------------------------------
 
 const runId = db.startRun("manual", 1758000000);
@@ -142,7 +151,7 @@ db.setSetting("cursor", "123");
 check("settings", db.getSetting("cursor") === "123" && db.getSetting("missing") === null);
 
 const st = db.stats();
-check("stats", st.messages.total === 3 && st.reports.reports === 3 && st.reports.messages === 58);
+check("stats", st.messages.total === 4 && st.reports.reports === 4 && st.reports.messages === 103);
 
 db.recordMessage({ graphId: "m1", receivedAt: 1758300000, status: "error", error: "boom" });
 check("message upsert updates status", db.messagesWithErrors()[0].graph_id === "m1");
@@ -169,7 +178,8 @@ v1.exec(`
 v1.close();
 
 const migrated = openDatabase({ dataDir: tmpDir });
-check("migration: schema version bumped", migrated.db.pragma("user_version", { simple: true }) === 2);
+check("migration: schema version bumped", migrated.db.pragma("user_version", { simple: true }) === 3);
+check("migration: mailbox columns added and backfilled", migrated.db.prepare("SELECT COUNT(*) AS n FROM reports WHERE mailbox_id = 'env'").get().n === 1 && migrated.reports({ mailbox: "env" }).total === 1);
 check("migration: forwarded column added", migrated.db.pragma("table_info(records)").some((c) => c.name === "forwarded"));
 const flags = Object.fromEntries(migrated.db.prepare("SELECT source_ip, forwarded FROM records").all().map((r) => [r.source_ip, r.forwarded]));
 check("migration: existing failures re-derived", flags["10.0.0.1"] === 1 && flags["10.0.0.2"] === 1 && flags["10.0.0.3"] === 0, JSON.stringify(flags));

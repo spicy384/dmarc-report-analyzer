@@ -150,6 +150,11 @@
             <option value="">All domains</option>
           </select>
         </label>
+        <label id="mailbox-label" hidden>Mailbox
+          <select id="mailbox-select">
+            <option value="">All mailboxes</option>
+          </select>
+        </label>
         <label>Search
           <input type="search" id="search-input" placeholder="IP, host, domain, reporter" autocomplete="off" />
         </label>
@@ -264,15 +269,45 @@
         <span id="sync-state" class="badge">Idle</span>
       </div>
 
+      <p class="bulk-hint">
+        Each mailbox is an Entra app registration (tenant, client ID, client secret) plus the
+        address that receives the reports. Mailboxes can live in different tenants. The one set
+        through environment variables appears as <strong>(env)</strong> and is managed there.
+      </p>
+      <div id="mailboxes-results" class="table-scroll"></div>
+
+      <div class="actions">
+        <button id="sync-now-btn" type="button" class="writer-only">Sync all now</button>
+        <button id="add-mailbox-btn" type="button" class="secondary" hidden>Add mailbox</button>
+      </div>
+
+      <div id="mailbox-form" class="mailbox-form" hidden>
+        <h3 id="mailbox-form-title" class="account-heading">Add a mailbox</h3>
+        <div class="mailbox-form-grid">
+          <label>Name <input id="mb-name" placeholder="Contoso" /></label>
+          <label>Mailbox address (UPN) <input id="mb-mailbox" class="mono" placeholder="dmarc-reports@contoso.com" /></label>
+          <label>Directory (tenant) ID <input id="mb-tenant" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+          <label>Application (client) ID <input id="mb-client" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+          <label>Client secret <input id="mb-secret" type="password" class="mono" autocomplete="new-password" /></label>
+          <label>Folder <input id="mb-folder" placeholder="Inbox" /></label>
+        </div>
+        <label class="check-inline"><input type="checkbox" id="mb-enabled" checked /> Enabled (included in scheduled and Sync all runs)</label>
+        <p class="bulk-hint">
+          The app registration needs the Microsoft Graph application permission <strong>Mail.Read</strong>
+          with admin consent. Restricting it to this mailbox with an application access policy is
+          recommended; the README has the steps.
+        </p>
+        <div class="actions">
+          <button id="mb-save" type="button">Save</button>
+          <button id="mb-cancel" type="button" class="secondary">Cancel</button>
+        </div>
+      </div>
+
       <div class="sync-grid">
         <div>
           <dl id="graph-config" class="kv"></dl>
-          <div class="actions">
-            <button id="sync-now-btn" type="button" class="writer-only">Sync now</button>
-            <button id="test-graph-btn" type="button" class="secondary admin-only" hidden>Test connection</button>
-          </div>
           <div class="backfill writer-only">
-            <label>Re-scan the mailbox from
+            <label>Re-scan every mailbox from
               <input type="date" id="backfill-date" />
             </label>
             <button id="backfill-btn" type="button" class="secondary">Backfill</button>
@@ -280,6 +315,7 @@
           <div id="sync-progress" class="sync-progress" hidden>
             <div class="progress-track"><div id="sync-progress-bar" class="progress-bar indeterminate"></div></div>
             <p id="sync-progress-text"></p>
+            <ul id="sync-progress-list" class="sync-progress-list"></ul>
           </div>
           <p id="sync-message" class="sync-message" hidden></p>
         </div>

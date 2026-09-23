@@ -448,6 +448,40 @@ dl.kv dd {
   color: var(--text-muted);
 }
 
+.mailbox-form {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.mailbox-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px 16px;
+  margin-bottom: 8px;
+}
+
+.mailbox-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sync-progress-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.sync-progress-list li.is-error {
+  color: var(--danger);
+}
+
 .sync-progress {
   margin-top: 12px;
 }

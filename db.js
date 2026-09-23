@@ -13,11 +13,13 @@ const Database = require("better-sqlite3");
 const { isLikelyForward } = require("./dmarc-parser");
 
 // 2: records.forwarded (likely forward / mailing list, derived from reasons and DKIM results)
-const SCHEMA_VERSION = 2;
+// 3: mailbox_id on messages, reports and sync_runs (multi-mailbox / multi-tenant)
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
   graph_id            TEXT PRIMARY KEY,
+  mailbox_id          TEXT NOT NULL DEFAULT 'env',
   internet_message_id TEXT,
   received_at         INTEGER NOT NULL,
   subject             TEXT,
@@ -31,6 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_received ON messages(received_at);
 CREATE TABLE IF NOT EXISTS reports (
   id              INTEGER PRIMARY KEY,
   message_id      TEXT,            -- messages.graph_id; not a FK because the report is stored first
+  mailbox_id      TEXT NOT NULL DEFAULT 'env',
   org_name        TEXT NOT NULL,
   org_email       TEXT,
   report_id       TEXT NOT NULL,
@@ -85,6 +88,7 @@ CREATE TABLE IF NOT EXISTS ip_info (
 
 CREATE TABLE IF NOT EXISTS sync_runs (
   id            INTEGER PRIMARY KEY,
+  mailbox_id    TEXT,
   started_at    INTEGER NOT NULL,
   finished_at   INTEGER,
   trigger       TEXT NOT NULL,
@@ -145,6 +149,10 @@ function buildFilter(filter = {}, { r = "r", x = null } = {}) {
   if (filter.domain) {
     clauses.push(`${r}.domain = ?`);
     params.push(String(filter.domain).toLowerCase());
+  }
+  if (filter.mailbox) {
+    clauses.push(`${r}.mailbox_id = ?`);
+    params.push(String(filter.mailbox));
   }
 
   const q = filter.q && String(filter.q).trim();
@@ -228,6 +236,7 @@ function shapeReport(row) {
   return {
     id: row.id,
     messageId: row.message_id,
+    mailboxId: row.mailbox_id,
     orgName: row.org_name,
     orgEmail: row.org_email,
     reportId: row.report_id,
@@ -279,6 +288,18 @@ function migrate(db) {
     })();
   }
 
+  if (version < 3) {
+    for (const table of ["messages", "reports", "sync_runs"]) {
+      const cols = db.pragma(`table_info(${table})`).map((c) => c.name);
+      if (!cols.includes("mailbox_id")) {
+        const def = table === "sync_runs" ? "TEXT" : "TEXT NOT NULL DEFAULT 'env'";
+        db.exec(`ALTER TABLE ${table} ADD COLUMN mailbox_id ${def}`);
+      }
+    }
+    db.exec("UPDATE sync_runs SET mailbox_id = 'env' WHERE mailbox_id IS NULL");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_reports_mailbox ON reports(mailbox_id)");
+  }
+
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
 
@@ -301,14 +322,14 @@ function openDatabase({ dataDir, file } = {}) {
   const stmts = {
     hasMessage: db.prepare("SELECT 1 FROM messages WHERE graph_id = ?"),
     upsertMessage: db.prepare(`
-      INSERT INTO messages (graph_id, internet_message_id, received_at, subject, from_addr, status, error, processed_at)
-      VALUES (@graphId, @internetMessageId, @receivedAt, @subject, @fromAddr, @status, @error, @processedAt)
+      INSERT INTO messages (graph_id, mailbox_id, internet_message_id, received_at, subject, from_addr, status, error, processed_at)
+      VALUES (@graphId, @mailboxId, @internetMessageId, @receivedAt, @subject, @fromAddr, @status, @error, @processedAt)
       ON CONFLICT(graph_id) DO UPDATE SET
         status = excluded.status, error = excluded.error, processed_at = excluded.processed_at`),
     insertReport: db.prepare(`
-      INSERT OR IGNORE INTO reports (message_id, org_name, org_email, report_id, range_begin, range_end, domain,
+      INSERT OR IGNORE INTO reports (message_id, mailbox_id, org_name, org_email, report_id, range_begin, range_end, domain,
         adkim, aspf, p, sp, pct, fo, messages, passed, attachment_name, xml_gz, ingested_at)
-      VALUES (@messageId, @orgName, @orgEmail, @reportId, @rangeBegin, @rangeEnd, @domain,
+      VALUES (@messageId, @mailboxId, @orgName, @orgEmail, @reportId, @rangeBegin, @rangeEnd, @domain,
         @adkim, @aspf, @p, @sp, @pct, @fo, @messages, @passed, @attachmentName, @xmlGz, @ingestedAt)`),
     insertRecord: db.prepare(`
       INSERT INTO records (report_id, source_ip, count, disposition, dkim_eval, spf_eval, passed, forwarded, reasons,
@@ -316,9 +337,13 @@ function openDatabase({ dataDir, file } = {}) {
       VALUES (@reportId, @sourceIp, @count, @disposition, @dkimEval, @spfEval, @passed, @forwarded, @reasons,
         @envelopeTo, @envelopeFrom, @headerFrom, @dkimResults, @spfResults, @dkimDomain, @spfDomain)`),
     maxReceived: db.prepare("SELECT MAX(received_at) AS v FROM messages"),
+    maxReceivedFor: db.prepare("SELECT MAX(received_at) AS v FROM messages WHERE mailbox_id = ?"),
     getSetting: db.prepare("SELECT value FROM settings WHERE key = ?"),
     setSetting: db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
-    startRun: db.prepare("INSERT INTO sync_runs (started_at, trigger, since) VALUES (?, ?, ?)"),
+    startRun: db.prepare("INSERT INTO sync_runs (started_at, trigger, since, mailbox_id) VALUES (?, ?, ?, ?)"),
+    lastRunsByMailbox: db.prepare(`SELECT * FROM sync_runs s WHERE s.id = (SELECT MAX(id) FROM sync_runs WHERE mailbox_id IS s.mailbox_id)`),
+    mailboxCounts: db.prepare(`SELECT mailbox_id AS id, COUNT(*) AS reports, COALESCE(SUM(messages), 0) AS messages,
+      MAX(range_end) AS lastWindow FROM reports GROUP BY mailbox_id`),
     finishRun: db.prepare(`UPDATE sync_runs SET finished_at = @finishedAt, messages_seen = @messagesSeen,
       reports_added = @reportsAdded, duplicates = @duplicates, errors = @errors, error_text = @errorText WHERE id = @id`),
     runs: db.prepare("SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?"),
@@ -332,7 +357,7 @@ function openDatabase({ dataDir, file } = {}) {
       WHERE x.report_id = ? ORDER BY x.passed ASC, x.count DESC`)
   };
 
-  const insertReportTx = db.transaction(({ messageId, attachmentName, parsed, xml }) => {
+  const insertReportTx = db.transaction(({ messageId, mailboxId, attachmentName, parsed, xml }) => {
     const { metadata, policy, records } = parsed;
     let messages = 0;
     let passed = 0;
@@ -345,6 +370,7 @@ function openDatabase({ dataDir, file } = {}) {
 
     const result = stmts.insertReport.run({
       messageId: messageId || null,
+      mailboxId: mailboxId || "env",
       orgName: metadata.orgName || metadata.email || "unknown",
       orgEmail: metadata.email,
       reportId: metadata.reportId || `${metadata.dateRange.begin}-${metadata.dateRange.end}`,
@@ -398,9 +424,10 @@ function openDatabase({ dataDir, file } = {}) {
     return Boolean(stmts.hasMessage.get(graphId));
   }
 
-  function recordMessage({ graphId, internetMessageId, receivedAt, subject, fromAddr, status, error }) {
+  function recordMessage({ graphId, mailboxId, internetMessageId, receivedAt, subject, fromAddr, status, error }) {
     stmts.upsertMessage.run({
       graphId,
+      mailboxId: mailboxId || "env",
       internetMessageId: internetMessageId || null,
       receivedAt: toInt(receivedAt, now()),
       subject: subject || null,
@@ -415,8 +442,9 @@ function openDatabase({ dataDir, file } = {}) {
     return insertReportTx(args);
   }
 
-  function latestMessageReceivedAt() {
-    return stmts.maxReceived.get().v || null;
+  function latestMessageReceivedAt(mailboxId) {
+    const row = mailboxId ? stmts.maxReceivedFor.get(mailboxId) : stmts.maxReceived.get();
+    return row.v || null;
   }
 
   // --- analysis ---------------------------------------------------------------
@@ -575,7 +603,7 @@ function openDatabase({ dataDir, file } = {}) {
 
     const total = db.prepare(`SELECT COUNT(*) AS n FROM reports r WHERE ${where}`).get(...params).n;
     const rows = db.prepare(`
-      SELECT r.id, r.message_id, r.org_name, r.org_email, r.report_id, r.range_begin, r.range_end, r.domain,
+      SELECT r.id, r.message_id, r.mailbox_id, r.org_name, r.org_email, r.report_id, r.range_begin, r.range_end, r.domain,
              r.adkim, r.aspf, r.p, r.sp, r.pct, r.fo, r.messages, r.passed, r.attachment_name, r.ingested_at,
              m.received_at, m.subject
       FROM reports r LEFT JOIN messages m ON m.graph_id = r.message_id
@@ -662,8 +690,18 @@ function openDatabase({ dataDir, file } = {}) {
 
   // --- sync runs / settings ---------------------------------------------------
 
-  function startRun(trigger, since) {
-    return Number(stmts.startRun.run(now(), trigger, since || null).lastInsertRowid);
+  function startRun(trigger, since, mailboxId = "env") {
+    return Number(stmts.startRun.run(now(), trigger, since || null, mailboxId).lastInsertRowid);
+  }
+
+  /** The most recent run of every mailbox, for the mailbox table. */
+  function lastRunsByMailbox() {
+    return stmts.lastRunsByMailbox.all();
+  }
+
+  /** Reports and messages stored per mailbox, for the filter dropdown. */
+  function mailboxCounts() {
+    return stmts.mailboxCounts.all();
   }
 
   function finishRun(id, { messagesSeen = 0, reportsAdded = 0, duplicates = 0, errors = 0, errorText = null }) {
@@ -714,6 +752,8 @@ function openDatabase({ dataDir, file } = {}) {
     finishRun,
     runs,
     lastRun,
+    lastRunsByMailbox,
+    mailboxCounts,
     getSetting,
     setSetting,
     close

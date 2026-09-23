@@ -26,6 +26,9 @@ services:
       TZ: ${TZ:-UTC}
 
       # --- Microsoft 365 mailbox (see "Entra app registration" in the README) ---
+      # Optional: mailboxes can also be added in the app by an administrator (they are
+      # stored in the data volume), including mailboxes in other tenants. The one set
+      # here appears in the app as the read-only "(env)" entry.
       # Put these in a .env file next to this compose file rather than editing here,
       # so the client secret never ends up in version control.
       GRAPH_TENANT_ID: ${GRAPH_TENANT_ID:-}

@@ -104,6 +104,19 @@ in and it keeps working unattended.
 That gives you the four values the app needs: tenant ID, client ID, client secret, and the
 mailbox address.
 
+## Several mailboxes and tenants
+
+Administrators add mailboxes under **Mailbox sync** in the app: a name, the mailbox
+address, the tenant ID, client ID and client secret of an app registration in that
+mailbox's tenant, and optionally a folder. Each mailbox is synced on its own with its own
+cursor, a failure in one (expired secret, consent revoked) does not stop the others, and
+every report remembers which mailbox it came from. When more than one is configured a
+**Mailbox** dropdown joins the filter bar.
+
+The mailbox given through `GRAPH_*` and `DMARC_MAILBOX` still works and shows up as the
+read-only **(env)** entry. Mailboxes added in the app are stored in `mailboxes.json` in
+the data directory with their client secrets, so keep that directory private.
+
 ## Run it
 
 ### Docker Compose

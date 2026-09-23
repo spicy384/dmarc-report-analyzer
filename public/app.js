@@ -48,7 +48,13 @@ const ipDetailExo = document.getElementById("ip-detail-exo");
 const syncState = document.getElementById("sync-state");
 const graphConfig = document.getElementById("graph-config");
 const syncNowBtn = document.getElementById("sync-now-btn");
-const testGraphBtn = document.getElementById("test-graph-btn");
+const mailboxesResults = document.getElementById("mailboxes-results");
+const addMailboxBtn = document.getElementById("add-mailbox-btn");
+const mailboxForm = document.getElementById("mailbox-form");
+const mailboxFormTitle = document.getElementById("mailbox-form-title");
+const syncProgressList = document.getElementById("sync-progress-list");
+const mailboxSelect = document.getElementById("mailbox-select");
+const mailboxLabel = document.getElementById("mailbox-label");
 const backfillDate = document.getElementById("backfill-date");
 const backfillBtn = document.getElementById("backfill-btn");
 const syncProgress = document.getElementById("sync-progress");
@@ -292,6 +298,7 @@ function filterQuery(extra = {}) {
   if (from !== null) params.set("from", String(from));
   if (to !== null) params.set("to", String(to));
   if (domainSelect.value) params.set("domain", domainSelect.value);
+  if (mailboxSelect.value) params.set("mailbox", mailboxSelect.value);
   if (searchInput.value.trim()) params.set("q", searchInput.value.trim());
   if (hideForwards.checked) params.set("hideForwards", "1");
   for (const [k, v] of Object.entries(extra)) {
@@ -318,6 +325,7 @@ rangeSelect.addEventListener("change", onRangeChanged);
 fromDate.addEventListener("change", () => { reportsPage = 1; loadAll(); });
 toDate.addEventListener("change", () => { reportsPage = 1; loadAll(); });
 domainSelect.addEventListener("change", () => { reportsPage = 1; loadAll(); });
+mailboxSelect.addEventListener("change", () => { reportsPage = 1; loadAll(); });
 refreshBtn.addEventListener("click", () => loadAll());
 
 let searchTimer = null;
@@ -867,7 +875,7 @@ async function loadReports() {
   reportsNext.disabled = data.page >= pages;
 
   reportsResults.replaceChildren(buildTable(
-    ["Window", "Reporter", "Domain", "Policy", { label: "Messages", className: "num" }, { label: "Failed", className: "num" }, "Received", "Report ID"],
+    ["Window", "Reporter", "Domain", "Policy", { label: "Messages", className: "num" }, { label: "Failed", className: "num" }, "Received", ...(mailboxNames.size > 1 ? ["Mailbox"] : []), "Report ID"],
     rows.map((r) => ({
       data: r,
       cells: [
@@ -878,6 +886,7 @@ async function loadReports() {
         textCell(formatNumber(r.messages), "num"),
         textCell(formatNumber(r.failed), r.failed ? "num is-fail" : "num"),
         textCell(r.receivedAt ? formatTimestamp(r.receivedAt) : formatTimestamp(r.ingestedAt), "nowrap"),
+        ...(mailboxNames.size > 1 ? [textCell(mailboxName(r.mailboxId), "nowrap")] : []),
         textCell(r.reportId, "mono muted trunc")
       ]
     })),
@@ -924,41 +933,153 @@ function describeRun(run) {
   if (!run) return "never";
   const when = formatTimestamp(run.finished_at || run.started_at);
   if (!run.finished_at) return `running since ${when}`;
+  if (run.error_text && !run.reports_added && !run.messages_seen) return `${when} failed: ${run.error_text}`;
   const parts = [`${run.reports_added} added`];
   if (run.duplicates) parts.push(`${run.duplicates} duplicate${run.duplicates === 1 ? "" : "s"}`);
   if (run.errors) parts.push(`${run.errors} error${run.errors === 1 ? "" : "s"}`);
   return `${when} (${parts.join(", ")})`;
 }
 
+let mailboxList = [];
+const mailboxNames = new Map();
+
+function mailboxName(id) {
+  return mailboxNames.get(id) || id || "";
+}
+
+function isAdmin() {
+  return Boolean(currentUser) && currentUser.role === "admin";
+}
+
+/** Keeps the filter-bar dropdown in step with the configured mailboxes; hidden when there is only one. */
+function populateMailboxSelect(list, counts) {
+  mailboxNames.clear();
+  for (const m of list) mailboxNames.set(m.id, m.name);
+  const known = new Map(list.map((m) => [m.id, m]));
+  // Reports may belong to a mailbox that was deleted since; keep it selectable.
+  for (const c of counts || []) {
+    if (!known.has(c.id)) mailboxNames.set(c.id, `${c.id} (removed)`);
+  }
+  const current = mailboxSelect.value;
+  mailboxSelect.replaceChildren();
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "All mailboxes";
+  mailboxSelect.appendChild(all);
+  for (const [id, name] of mailboxNames) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = name;
+    mailboxSelect.appendChild(opt);
+  }
+  mailboxSelect.value = current;
+  if (mailboxSelect.value !== current) mailboxSelect.value = "";
+  mailboxLabel.hidden = mailboxNames.size < 2;
+}
+
+function renderMailboxes(list) {
+  mailboxList = list;
+  const admin = isAdmin();
+  mailboxesResults.replaceChildren(buildTable(
+    ["Name", "Mailbox", "Folder", "Tenant", "Last sync", { label: "Reports", className: "num" }, "State", ""],
+    list.map((m) => {
+      const actions = document.createElement("td");
+      const wrap = document.createElement("div");
+      wrap.className = "row-actions";
+      if (canWrite() && m.enabled) {
+        const syncBtn = document.createElement("button");
+        syncBtn.className = "secondary small";
+        syncBtn.textContent = "Sync";
+        syncBtn.addEventListener("click", () => startSync({ mailboxId: m.id }));
+        wrap.appendChild(syncBtn);
+      }
+      if (admin) {
+        const testBtn = document.createElement("button");
+        testBtn.className = "secondary small";
+        testBtn.textContent = "Test";
+        testBtn.addEventListener("click", async () => {
+          testBtn.disabled = true;
+          showSyncMessage(`Testing ${m.name}...`);
+          try {
+            const result = await api(`/api/mailboxes/${encodeURIComponent(m.id)}/test`, { method: "POST", body: "{}" });
+            showSyncMessage(result.ok ? `${m.name}: ${result.detail}` : `${m.name}: connection test failed (${result.stage}): ${result.detail}`, !result.ok);
+          } catch (error) {
+            showSyncMessage(error.message, true);
+          } finally {
+            testBtn.disabled = false;
+          }
+        });
+        wrap.appendChild(testBtn);
+        if (!m.readOnly) {
+          const editBtn = document.createElement("button");
+          editBtn.className = "secondary small";
+          editBtn.textContent = "Edit";
+          editBtn.addEventListener("click", () => openMailboxForm(m));
+          wrap.appendChild(editBtn);
+          const delBtn = document.createElement("button");
+          delBtn.className = "ghost-danger small";
+          delBtn.textContent = "Delete";
+          delBtn.addEventListener("click", async () => {
+            if (!confirm(`Remove the mailbox "${m.name}"?\n\nReports already ingested from it stay in the database.`)) return;
+            try {
+              await api(`/api/mailboxes/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+              showSyncMessage(`Removed ${m.name}.`);
+              await loadSyncStatus();
+            } catch (error) {
+              showSyncMessage(error.message, true);
+            }
+          });
+          wrap.appendChild(delBtn);
+        }
+      }
+      actions.appendChild(wrap);
+      return {
+        data: m,
+        cells: [
+          textCell(m.name + (m.readOnly ? " (env)" : ""), "nowrap"),
+          textCell(m.mailbox, "mono"),
+          textCell(m.folder || "Inbox"),
+          textCell(m.tenantId, "mono muted trunc"),
+          textCell(describeRun(m.lastRun), m.lastRun?.error_text ? "muted trunc-wide is-fail" : "muted trunc-wide"),
+          textCell(m.counts ? formatNumber(m.counts.reports) : "0", "num"),
+          textCell(m.enabled ? "enabled" : "disabled", m.enabled ? "" : "muted"),
+          actions
+        ]
+      };
+    }),
+    { emptyText: isAdmin() ? "No mailboxes yet. Add one below, or set the GRAPH_* and DMARC_MAILBOX environment variables." : "No mailboxes configured. An administrator can add one here." }
+  ));
+}
+
 function renderSyncStatus(st) {
-  const g = st.graph || {};
+  const list = st.mailboxes || [];
+  populateMailboxSelect(list, st.mailboxCounts || []);
+  renderMailboxes(list);
+
   graphConfig.replaceChildren(
-    kvRow("Mailbox", g.mailbox || "not set"),
-    kvRow("Folder", g.folder || "Inbox"),
-    kvRow("Tenant", g.tenantId || "not set"),
-    kvRow("Client ID", g.clientId || "not set"),
     kvRow("Scheduled sync", st.scheduler?.enabled ? `every ${st.scheduler.intervalMinutes} min` : "off"),
-    kvRow("Backfill window", `${st.backfillDays} days on first sync`),
+    kvRow("Backfill window", `${st.backfillDays} days on a mailbox's first sync`),
     kvRow("Last run", describeRun(st.lastRun)),
     kvRow("Stored", `${formatNumber(st.stats?.reports?.reports)} reports from ${formatNumber(st.stats?.messages?.ingested)} emails`)
   );
 
-  if (!g.configured) {
-    showSyncMessage(`Microsoft Graph is not configured. Set ${(g.missing || []).join(", ")} and restart. See the README for the Entra app registration steps.`, true);
-    syncNowBtn.disabled = true;
-    backfillBtn.disabled = true;
-  } else {
-    syncNowBtn.disabled = false;
-    backfillBtn.disabled = false;
+  const usable = st.configured && canWrite();
+  syncNowBtn.disabled = !usable;
+  backfillBtn.disabled = !usable;
+  if (!st.configured && !list.length) {
+    showSyncMessage(isAdmin()
+      ? "No mailbox is configured yet. Add one with the button below (you need the tenant ID, client ID, client secret and mailbox address from the Entra app registration; see the README)."
+      : "No mailbox is configured yet. Ask an administrator to add one.", true);
   }
 
   const runs = st.runs || [];
   runsResults.replaceChildren(buildTable(
-    ["Started", "Trigger", { label: "Seen", className: "num" }, { label: "Added", className: "num" }, { label: "Duplicates", className: "num" }, { label: "Errors", className: "num" }, "Outcome"],
+    ["Started", "Mailbox", "Trigger", { label: "Seen", className: "num" }, { label: "Added", className: "num" }, { label: "Duplicates", className: "num" }, { label: "Errors", className: "num" }, "Outcome"],
     runs.map((r) => ({
       data: r,
       cells: [
         textCell(formatTimestamp(r.started_at), "nowrap"),
+        textCell(mailboxName(r.mailbox_id), "nowrap"),
         textCell(r.trigger),
         textCell(formatNumber(r.messages_seen), "num"),
         textCell(formatNumber(r.reports_added), "num"),
@@ -985,6 +1106,56 @@ function renderSyncStatus(st) {
   }
 }
 
+// --- mailbox add / edit form -------------------------------------------------
+
+let editingMailboxId = null;
+
+function openMailboxForm(m) {
+  editingMailboxId = m ? m.id : null;
+  mailboxFormTitle.textContent = m ? `Edit ${m.name}` : "Add a mailbox";
+  document.getElementById("mb-name").value = m ? m.name : "";
+  document.getElementById("mb-tenant").value = m ? m.tenantId : "";
+  document.getElementById("mb-client").value = m ? m.clientId : "";
+  document.getElementById("mb-secret").value = "";
+  document.getElementById("mb-secret").placeholder = m ? "leave blank to keep the current secret" : "";
+  document.getElementById("mb-mailbox").value = m ? m.mailbox : "";
+  document.getElementById("mb-folder").value = m ? m.folder || "Inbox" : "Inbox";
+  document.getElementById("mb-enabled").checked = m ? Boolean(m.enabled) : true;
+  mailboxForm.hidden = false;
+  mailboxForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  document.getElementById("mb-name").focus();
+}
+
+function closeMailboxForm() {
+  mailboxForm.hidden = true;
+  editingMailboxId = null;
+}
+
+addMailboxBtn.addEventListener("click", () => openMailboxForm(null));
+document.getElementById("mb-cancel").addEventListener("click", closeMailboxForm);
+
+document.getElementById("mb-save").addEventListener("click", async () => {
+  const body = {
+    name: document.getElementById("mb-name").value,
+    tenantId: document.getElementById("mb-tenant").value,
+    clientId: document.getElementById("mb-client").value,
+    clientSecret: document.getElementById("mb-secret").value,
+    mailbox: document.getElementById("mb-mailbox").value,
+    folder: document.getElementById("mb-folder").value,
+    enabled: document.getElementById("mb-enabled").checked
+  };
+  try {
+    const data = editingMailboxId
+      ? await api(`/api/mailboxes/${encodeURIComponent(editingMailboxId)}`, { method: "PUT", body: JSON.stringify(body) })
+      : await api("/api/mailboxes", { method: "POST", body: JSON.stringify(body) });
+    closeMailboxForm();
+    showSyncMessage(`${editingMailboxId ? "Saved" : "Added"} ${data.mailbox.name}. Use Test to check the connection, then Sync.`);
+    await loadSyncStatus();
+  } catch (error) {
+    showSyncMessage(error.message, true);
+  }
+});
+
 function kvRow(label, value) {
   const wrap = document.createDocumentFragment();
   const dt = document.createElement("dt");
@@ -1002,8 +1173,8 @@ function showSyncMessage(text, isError = false) {
 }
 
 function setSyncBusy(busy) {
-  syncNowBtn.disabled = busy;
-  backfillBtn.disabled = busy;
+  syncNowBtn.disabled = busy || !canWrite();
+  backfillBtn.disabled = busy || !canWrite();
   syncProgress.hidden = !busy;
   syncState.textContent = busy ? "Running" : "Idle";
   syncState.classList.toggle("badge-live", busy);
@@ -1018,6 +1189,17 @@ function describeJob(job) {
   return bits.join(", ");
 }
 
+function renderJobMailboxes(job) {
+  syncProgressList.replaceChildren();
+  for (const b of job.mailboxes || []) {
+    const li = document.createElement("li");
+    const state = b.status === "failed" ? `failed: ${b.error}` : b.status === "pending" ? "waiting" : b.status === "running" ? "reading..." : "done";
+    li.textContent = `${b.name}: ${state}${b.status !== "pending" ? ` (${b.added} added, ${b.seen} read${b.errors ? `, ${b.errors} errors` : ""})` : ""}`;
+    if (b.status === "failed") li.className = "is-error";
+    syncProgressList.appendChild(li);
+  }
+}
+
 async function trackJob(jobId) {
   if (syncPollTimer) {
     return;
@@ -1028,6 +1210,7 @@ async function trackJob(jobId) {
     try {
       const job = await api(`/api/sync/${encodeURIComponent(jobId)}`);
       syncProgressText.textContent = `${describeJob(job)}${job.current ? ` - reading "${job.current}"` : ""}`;
+      renderJobMailboxes(job);
       if (job.status === "running") {
         syncPollTimer = setTimeout(poll, JOB_POLL_MS);
         return;
@@ -1037,7 +1220,7 @@ async function trackJob(jobId) {
       if (job.status === "failed") {
         showSyncMessage(`Sync failed: ${job.error}`, true);
       } else {
-        showSyncMessage(`Sync finished: ${describeJob(job)}.${job.lastError ? ` Last problem: ${job.lastError}` : ""}`, job.errors > 0);
+        showSyncMessage(`Sync finished: ${describeJob(job)}.${job.lastError ? ` Problem: ${job.lastError}` : ""}`, job.errors > 0 || Boolean(job.lastError));
       }
       await loadAll();
     } catch (error) {
@@ -1068,19 +1251,6 @@ backfillBtn.addEventListener("click", () => {
     return;
   }
   startSync({ since: backfillDate.value });
-});
-
-testGraphBtn.addEventListener("click", async () => {
-  testGraphBtn.disabled = true;
-  showSyncMessage("Testing the connection...");
-  try {
-    const result = await api("/api/graph/test", { method: "POST", body: "{}" });
-    showSyncMessage(result.ok ? result.detail : `Connection test failed (${result.stage}): ${result.detail}`, !result.ok);
-  } catch (error) {
-    showSyncMessage(error.message, true);
-  } finally {
-    testGraphBtn.disabled = false;
-  }
 });
 
 async function loadSyncStatus() {
@@ -1209,7 +1379,8 @@ function applyIdentity(user, token) {
   accountBtn.hidden = !signedIn;
   logoutBtn.hidden = !signedIn;
   usersBtn.hidden = !signedIn || user.role !== "admin";
-  testGraphBtn.hidden = !signedIn || user.role !== "admin";
+  addMailboxBtn.hidden = !signedIn || user.role !== "admin";
+  if (!signedIn) mailboxForm.hidden = true;
 
   if (signedIn) {
     currentUserEl.textContent = user.role === "user" ? user.username : `${user.username} (${user.role})`;
@@ -1567,8 +1738,10 @@ async function onSignedIn() {
   renderAccountPanel();
   try {
     await loadDomains();
+    const st = await api("/api/status");
+    populateMailboxSelect(st.mailboxes || [], st.mailboxCounts || []);
   } catch (_) {
-    // The dropdown is a convenience; the rest still loads.
+    // The dropdowns are a convenience; the rest still loads.
   }
   await loadAll();
 }

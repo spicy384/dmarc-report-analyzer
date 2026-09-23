@@ -6,9 +6,10 @@
  */
 const http = require("http");
 
-function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", messages = [] } = {}) {
+function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", messages = [], mailboxes = {} } = {}) {
   const state = {
     messages,            // [{ id, subject, receivedDateTime, from, attachments: [{ name, contentType, bytes }] }]
+    mailboxes: { [mailbox]: messages, ...mailboxes }, // extra UPNs -> their own message lists
     requests: [],        // every request seen: { method, path }
     throttleOnce: false, // next message listing gets a 429 first
     failAttachmentsOnce: new Set(), // message ids whose attachment fetch 500s once
@@ -43,15 +44,17 @@ function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", mes
       return json(res, 401, { error: { code: "InvalidAuthenticationToken", message: "Access token is empty." } });
     }
 
-    const base = `/v1.0/users/${encodeURIComponent(mailbox)}`;
-    if (!url.pathname.startsWith(base)) {
-      return json(res, 404, { error: { code: "ResourceNotFound", message: "Resource could not be discovered." } });
+    const userMatch = url.pathname.match(/^\/v1\.0\/users\/([^/]+)(.*)$/);
+    const upn = userMatch ? decodeURIComponent(userMatch[1]) : null;
+    if (!upn || !Object.prototype.hasOwnProperty.call(state.mailboxes, upn)) {
+      return json(res, 404, { error: { code: "ErrorInvalidUser", message: `The requested user '${upn}' is invalid.` } });
     }
-    const rest = url.pathname.slice(base.length);
+    const boxMessages = state.mailboxes[upn];
+    const rest = userMatch[2];
 
     // --- folders ------------------------------------------------------------
     if (rest === "/mailFolders/inbox" && req.method === "GET") {
-      return json(res, 200, { id: "inbox-id", displayName: "Inbox", totalItemCount: state.messages.length });
+      return json(res, 200, { id: "inbox-id", displayName: "Inbox", totalItemCount: boxMessages.length });
     }
     if (rest === "/mailFolders" && req.method === "GET") {
       const filter = url.searchParams.get("$filter") || "";
@@ -77,7 +80,7 @@ function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", mes
       const page = Number(url.searchParams.get("page") || 1);
       const top = Number(url.searchParams.get("$top") || 100);
       const pageSize = Math.min(top, 4);
-      const slice = state.messages.slice((page - 1) * pageSize, page * pageSize);
+      const slice = boxMessages.slice((page - 1) * pageSize, page * pageSize);
       const body = {
         value: slice.map((m) => ({
           id: m.id,
@@ -88,7 +91,7 @@ function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", mes
           from: { emailAddress: { address: m.from } }
         }))
       };
-      if (page * pageSize < state.messages.length) {
+      if (page * pageSize < boxMessages.length) {
         const next = new URL(url.toString());
         next.searchParams.set("page", String(page + 1));
         body["@odata.nextLink"] = `http://127.0.0.1:${server.address().port}${next.pathname}${next.search}`;
@@ -103,7 +106,7 @@ function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", mes
         state.failAttachmentsOnce.delete(id);
         return json(res, 500, { error: { code: "InternalServerError", message: "try again" } });
       }
-      const message = state.messages.find((m) => m.id === id);
+      const message = boxMessages.find((m) => m.id === id);
       if (!message) {
         return json(res, 404, { error: { code: "ErrorItemNotFound", message: "not found" } });
       }

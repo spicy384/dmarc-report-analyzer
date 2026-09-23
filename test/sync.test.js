@@ -35,7 +35,11 @@ const messages = [
 ];
 
 (async () => {
-  const mock = createMockGraph({ messages });
+  const secondBox = [
+    { id: "s1", subject: "Report from second mailbox", receivedDateTime: "2026-09-21T09:00:00Z", from: "noreply-dmarc-support@google.com",
+      attachments: [{ name: "second.xml", contentType: "text/xml", bytes: Buffer.from(googleXml.toString().replace("<report_id>12345678901234567890</report_id>", "<report_id>second-1</report_id>").replace("<domain>example.com</domain>", "<domain>second.test</domain>")) }] }
+  ];
+  const mock = createMockGraph({ messages, mailboxes: { "second@example.com": secondBox } });
   const { loginBase, graphBase } = await mock.start();
   const db = openDatabase({ file: ":memory:" });
 
@@ -129,6 +133,56 @@ const messages = [
   check("scheduler refuses to start unconfigured", syncUnconfigured.startScheduler(60) === false);
   check("scheduler starts when configured", sync.startScheduler(60) === true);
   sync.stopScheduler();
+
+  // --- several mailboxes through the store -----------------------------------------
+  const { createMailboxStore } = require("../mailboxes");
+  const os = require("os");
+  const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "dmarc-sync-store-"));
+  const store = createMailboxStore({ dataDir: storeDir, loginBase, graphBase });
+  const boxA = store.add({ name: "Primary", tenantId: "t", clientId: "c", clientSecret: mock.secret, mailbox: mock.mailbox });
+  const boxB = store.add({ name: "Second", tenantId: "t", clientId: "c", clientSecret: mock.secret, mailbox: "second@example.com" });
+  const boxC = store.add({ name: "Broken", tenantId: "t", clientId: "c", clientSecret: "wrong", mailbox: "third@example.com" });
+  const db2 = openDatabase({ file: ":memory:" });
+  const multi = createSync({ db: db2, mailboxes: store, backfillDays: 30, resolver, logger: { warn() {}, error() {}, log() {} } });
+
+  const run = multi.runSync({ trigger: "manual" });
+  check("job lists every enabled mailbox", run.job.mailboxes.length === 3 && run.job.mailboxes.map((b) => b.name).join(",") === "Primary,Second,Broken");
+  await run.job.promise;
+  const pj = publicJob(run.job);
+  check("public job strips clients and report ids", pj.mailboxes.every((b) => !("client" in b)) && !("addedReportIds" in pj));
+  const byName = Object.fromEntries(pj.mailboxes.map((b) => [b.name, b]));
+  check("primary mailbox ingested", byName.Primary.status === "done" && byName.Primary.added === 3 && byName.Primary.seen === 6);
+  check("second mailbox ingested its own report", byName.Second.status === "done" && byName.Second.added === 1 && byName.Second.seen === 1);
+  check("broken mailbox failed without stopping the others", byName.Broken.status === "failed" && /Invalid client secret/.test(byName.Broken.error));
+  check("job done with the failure noted", pj.status === "done" && /Broken/.test(pj.lastError) && pj.added === 4 && pj.seen === 7);
+  check("reports carry their mailbox", db2.summary({ mailbox: boxB.id }).totals.reports === 1 && db2.summary({ mailbox: boxA.id }).totals.reports === 3 && db2.summary({ mailbox: boxC.id }).totals.reports === 0);
+  check("reports list exposes mailboxId", db2.reports({ mailbox: boxB.id }).rows[0].mailboxId === boxB.id && db2.reports({ mailbox: boxB.id }).rows[0].domain === "second.test");
+  check("one sync_runs row per mailbox", db2.runs().length === 3 && db2.runs().every((r) => r.mailbox_id) && db2.lastRunsByMailbox().length === 3);
+  check("mailbox counts", db2.mailboxCounts().length === 2 && db2.mailboxCounts().find((c) => c.id === boxB.id).reports === 1);
+  check("cursor is per mailbox", multi.defaultSince(boxB.id) === Date.parse("2026-09-21T09:00:00Z") / 1000 - 86400 && multi.defaultSince(boxA.id) === Date.parse("2026-09-21T07:00:00Z") / 1000 - 86400);
+
+  const one = multi.runSync({ mailboxId: boxB.id });
+  check("mailboxId limits the run", one.job.mailboxes.length === 1 && one.job.mailboxes[0].id === boxB.id);
+  await one.job.promise;
+  check("second run skips known messages", one.job.skipped === 1 && one.job.status === "done");
+
+  store.update(boxC.id, { enabled: false });
+  const again = multi.runSync();
+  check("disabled mailbox is left out", again.job.mailboxes.length === 2);
+  await again.job.promise;
+  check("all mailboxes failing fails the job", (() => { store.update(boxA.id, { clientSecret: "bad" }); store.update(boxB.id, { clientSecret: "bad" }); return true; })());
+  const allBad = multi.runSync();
+  await allBad.job.promise;
+  check("all mailboxes failing fails the job (result)", allBad.job.status === "failed" && /Primary/.test(allBad.job.error) && /Second/.test(allBad.job.error));
+
+  const empty = createSync({ db: db2, mailboxes: createMailboxStore({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "dmarc-sync-empty-")) }), logger: { warn() {}, error() {}, log() {} } });
+  const none = empty.runSync();
+  await none.job.promise;
+  check("no mailboxes fails with guidance and leaves a run row", none.job.status === "failed" && /No mailboxes/.test(none.job.error) && db2.lastRun().error_text.includes("No mailboxes"));
+  check("scheduler refuses with no mailboxes", empty.startScheduler(60) === false);
+
+  db2.close();
+  fs.rmSync(storeDir, { recursive: true, force: true });
 
   db.close();
   await mock.stop();

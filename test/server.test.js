@@ -31,7 +31,7 @@ threw = null;
 try { parseFilter({ from: "2025-09-20", to: "2025-09-10" }); } catch (e) { threw = e; }
 check("parseFilter: to before from throws", Boolean(threw));
 check("parseFilter: domain lower-cased", parseFilter({ domain: " Example.COM " }).domain === "example.com");
-check("parseFilter: empty", JSON.stringify(parseFilter({})) === JSON.stringify({ from: null, to: null, domain: null, q: null, excludeForwards: false }));
+check("parseFilter: empty", JSON.stringify(parseFilter({})) === JSON.stringify({ from: null, to: null, domain: null, q: null, excludeForwards: false, mailbox: null }));
 check("parseFilter: search and hideForwards", (() => { const f = parseFilter({ q: "  badhost ", hideForwards: "1" }); return f.q === "badhost" && f.excludeForwards === true; })());
 
 const csv = toCsv([{
@@ -90,7 +90,7 @@ async function waitForServer(tries = 60) {
 (async () => {
   const app = spawn("node", ["server.js"], {
     cwd: PROJECT,
-    env: { ...process.env, PORT: String(APP_PORT), DATA_DIR, SYNC_INTERVAL_MINUTES: "0", GRAPH_TENANT_ID: "", GRAPH_CLIENT_ID: "", GRAPH_CLIENT_SECRET: "", DMARC_MAILBOX: "" },
+    env: { ...process.env, PORT: String(APP_PORT), DATA_DIR, SYNC_INTERVAL_MINUTES: "0", GRAPH_TENANT_ID: "", GRAPH_CLIENT_ID: "", GRAPH_CLIENT_SECRET: "", DMARC_MAILBOX: "", GRAPH_LOGIN_BASE: "http://127.0.0.1:1", GRAPH_API_BASE: "http://127.0.0.1:1/v1.0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   app.stderr.on("data", (d) => console.error("[app stderr]", d.toString().trim()));
@@ -103,7 +103,7 @@ async function waitForServer(tries = 60) {
 
     // --- status ---
     const status = await req("/api/status");
-    check("status: graph unconfigured with missing list", status.body.graph.configured === false && status.body.graph.missing.length === 4);
+    check("status: no mailboxes configured", status.body.configured === false && Array.isArray(status.body.mailboxes) && status.body.mailboxes.length === 0);
     check("status: never exposes a secret field", !JSON.stringify(status.body).includes("clientSecret"));
     check("status: scheduler off", status.body.scheduler.enabled === false);
     check("status: stats and errors", status.body.stats.reports.reports === 2 && status.body.errors.length === 1 && status.body.errors[0].graph_id === "m3");
@@ -187,8 +187,29 @@ async function waitForServer(tries = 60) {
     const runs = await req("/api/sync/runs");
     check("sync: run history", runs.body.runs.length === 1 && runs.body.runs[0].trigger === "manual" && /GRAPH_TENANT_ID/.test(runs.body.runs[0].error_text));
 
-    const test = await req("/api/graph/test", { method: "POST", body: {} });
-    check("graph test reports not configured", test.body.ok === false && /Not configured/.test(test.body.detail));
+    // --- mailboxes (admin) ---
+    check("mailboxes: empty list", (await req("/api/mailboxes")).body.mailboxes.length === 0);
+    check("mailboxes: validation is 400", (await req("/api/mailboxes", { method: "POST", body: { tenantId: "t" } })).status === 400);
+    const mbAdd = await req("/api/mailboxes", { method: "POST", body: { name: "Contoso", tenantId: "t-1", clientId: "c-1", clientSecret: "s-1", mailbox: "dmarc@contoso.test" } });
+    check("mailboxes: add", mbAdd.status === 200 && mbAdd.body.mailbox.id && mbAdd.body.mailbox.hasSecret === true && !("clientSecret" in mbAdd.body.mailbox));
+    const mbId = mbAdd.body.mailbox.id;
+    check("mailboxes: duplicate is 409", (await req("/api/mailboxes", { method: "POST", body: { tenantId: "t-1", clientId: "c-1", clientSecret: "s-1", mailbox: "dmarc@contoso.test" } })).status === 409);
+    const mbList = await req("/api/mailboxes");
+    check("mailboxes: listed without secret", mbList.body.mailboxes.length === 1 && !JSON.stringify(mbList.body).includes("s-1"));
+    const mbUpd = await req(`/api/mailboxes/${mbId}`, { method: "PUT", body: { name: "Contoso Ltd", folder: "DMARC" } });
+    check("mailboxes: update", mbUpd.status === 200 && mbUpd.body.mailbox.name === "Contoso Ltd" && mbUpd.body.mailbox.folder === "DMARC" && mbUpd.body.mailbox.hasSecret);
+    check("mailboxes: unknown id is 404", (await req("/api/mailboxes/nope", { method: "PUT", body: { name: "x" } })).status === 404);
+    const mbTest = await req(`/api/mailboxes/${mbId}/test`, { method: "POST", body: {} });
+    check("mailboxes: connection test reports the failure", mbTest.status === 200 && mbTest.body.ok === false && mbTest.body.stage === "token");
+    const stNow = await req("/api/status");
+    check("status: lists the mailbox with counts and last run", stNow.body.configured === true && stNow.body.mailboxes[0].id === mbId && stNow.body.mailboxes[0].counts === null);
+    check("sync: unknown mailboxId is 404", (await req("/api/sync", { method: "POST", body: { mailboxId: "nope" } })).status === 404);
+    const syncOne = await req("/api/sync", { method: "POST", body: { mailboxId: mbId } });
+    await new Promise((r) => setTimeout(r, 400));
+    const jobOne = await req(`/api/sync/${syncOne.body.jobId}`);
+    check("sync: per-mailbox run fails on the unreachable tenant and is reported per mailbox", jobOne.body.status === "failed" && jobOne.body.mailboxes.length === 1 && jobOne.body.mailboxes[0].status === "failed");
+    check("mailboxes: delete", (await req(`/api/mailboxes/${mbId}`, { method: "DELETE" })).status === 200 && (await req("/api/mailboxes")).body.mailboxes.length === 0);
+    check("filter: mailbox param accepted", (await req("/api/summary?mailbox=env")).body.totals.messages === 53 && (await req("/api/summary?mailbox=other")).body.totals.messages === 0);
 
     check("static page served", (await fetch(`http://127.0.0.1:${APP_PORT}/`)).status === 200);
   } finally {

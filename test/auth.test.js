@@ -56,7 +56,7 @@ async function waitForServer(tries = 60) {
 const PROTECTED = [
   ["GET", "/api/status"], ["GET", "/api/summary"], ["GET", "/api/ips"],
   ["GET", "/api/reports"], ["GET", "/api/domains"], ["GET", "/api/reporters"],
-  ["POST", "/api/sync"], ["POST", "/api/graph/test"]
+  ["POST", "/api/sync"], ["POST", "/api/mailboxes"]
 ];
 
 (async () => {
@@ -198,7 +198,7 @@ const PROTECTED = [
     check("non-admin cannot list users", (await req("/api/users")).status === 403);
     check("non-admin cannot add users", (await req("/api/users", { method: "POST", body: { username: "x9", password: "another-long-password" } })).status === 403);
     check("non-admin can still use the app", (await req("/api/reports")).status === 200);
-    check("non-admin cannot run the Graph connection test", (await req("/api/graph/test", { method: "POST", body: {} })).status === 403);
+    check("non-admin cannot add a mailbox", (await req("/api/mailboxes", { method: "POST", body: {} })).status === 403);
     check("non-admin cannot change roles", (await req(`/api/users/${adminId}/role`, { method: "POST", body: { role: "viewer" } })).status === 403);
 
     cookie = adminCookie; csrf = adminCsrf;
@@ -229,7 +229,7 @@ const PROTECTED = [
     check("viewer can export csv", (await fetch(`http://127.0.0.1:${APP_PORT}/api/export/records.csv`, { headers: { Cookie: cookie } })).status === 200);
     const readOnly = async (path, options) => (await req(path, options)).status === 403;
     check("viewer cannot start a sync", await readOnly("/api/sync", { method: "POST", body: {} }));
-    check("viewer cannot run the Graph connection test", await readOnly("/api/graph/test", { method: "POST", body: {} }));
+    check("viewer cannot add a mailbox", await readOnly("/api/mailboxes", { method: "POST", body: {} }));
     check("viewer cannot manage users", (await req("/api/users")).status === 403);
     check("viewer can change their own password", (await req("/api/auth/password", { method: "POST", body: { currentPassword: "watcher-long-password", newPassword: "watcher-longer-password-2" } })).status === 200);
 

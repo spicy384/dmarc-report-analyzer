@@ -5,7 +5,8 @@ const express = require("express");
 const { createAuth } = require("./auth-routes");
 const { resolveTlsOptions } = require("./tls-setup");
 const { openDatabase } = require("./db");
-const { createGraphClient, configFromEnv } = require("./graph");
+const { configFromEnv } = require("./graph");
+const { createMailboxStore } = require("./mailboxes");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -27,8 +28,9 @@ app.use(express.static(path.join(__dirname, "public")));
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const authGuard = createAuth({ dataDir: DATA_DIR });
 const db = openDatabase({ dataDir: DATA_DIR });
-const graph = createGraphClient(configFromEnv());
-const sync = createSync({ db, graph, backfillDays: BACKFILL_DAYS });
+const envGraph = configFromEnv();
+const mailboxes = createMailboxStore({ dataDir: DATA_DIR, env: envGraph, loginBase: envGraph.loginBase, graphBase: envGraph.graphBase });
+const sync = createSync({ db, mailboxes, backfillDays: BACKFILL_DAYS });
 
 // The sign-in endpoints must be reachable while signed out; everything else under /api is gated.
 app.use(authGuard.router);
@@ -67,7 +69,8 @@ function parseFilter(query = {}) {
   const domain = query.domain ? String(query.domain).trim().toLowerCase() : null;
   const q = query.q ? String(query.q).trim().slice(0, 200) : null;
   const excludeForwards = String(query.hideForwards || "") === "1";
-  return { from, to, domain, q: q || null, excludeForwards };
+  const mailbox = query.mailbox ? String(query.mailbox).trim().slice(0, 40) : null;
+  return { from, to, domain, q: q || null, excludeForwards, mailbox: mailbox || null };
 }
 
 function positiveInt(value, fallback) {
@@ -123,9 +126,14 @@ function filterFrom(req) {
 // --- status & sync ---------------------------------------------------------
 
 app.get("/api/status", route(async (req, res) => {
+  const lastRuns = new Map(db.lastRunsByMailbox().map((r) => [r.mailbox_id, r]));
+  const counts = new Map(db.mailboxCounts().map((c) => [c.id, c]));
+  const list = mailboxes.list().map((m) => ({ ...m, lastRun: lastRuns.get(m.id) || null, counts: counts.get(m.id) || null }));
   res.json({
-    graph: graph.describe(),
-    scheduler: { intervalMinutes: SYNC_INTERVAL_MINUTES, enabled: SYNC_INTERVAL_MINUTES > 0 && graph.isConfigured() },
+    mailboxes: list,
+    mailboxCounts: db.mailboxCounts(),
+    configured: list.some((m) => m.enabled),
+    scheduler: { intervalMinutes: SYNC_INTERVAL_MINUTES, enabled: SYNC_INTERVAL_MINUTES > 0 && sync.anyConfigured() },
     backfillDays: BACKFILL_DAYS,
     currentJob: publicJob(sync.currentJob()),
     lastRun: db.lastRun(),
@@ -143,7 +151,11 @@ app.post("/api/sync", authGuard.requireWriter, route(async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
   }
-  const { job, alreadyRunning } = sync.runSync({ trigger: "manual", since });
+  const mailboxId = req.body && req.body.mailboxId ? String(req.body.mailboxId) : null;
+  if (mailboxId && !mailboxes.get(mailboxId)) {
+    return res.status(404).json({ error: "No such mailbox." });
+  }
+  const { job, alreadyRunning } = sync.runSync({ trigger: "manual", since, mailboxId });
   res.json({ jobId: job.id, alreadyRunning, job: publicJob(job) });
 }));
 
@@ -159,8 +171,33 @@ app.get("/api/sync/:id", route(async (req, res) => {
   res.json(publicJob(job));
 }));
 
-app.post("/api/graph/test", authGuard.requireAdmin, route(async (req, res) => {
-  res.json(await graph.testConnection());
+// --- mailboxes (admin) -------------------------------------------------------
+
+app.get("/api/mailboxes", authGuard.requireAdmin, route(async (req, res) => {
+  res.json({ mailboxes: mailboxes.list() });
+}));
+
+app.post("/api/mailboxes", authGuard.requireAdmin, route(async (req, res) => {
+  const mailbox = mailboxes.add(req.body || {});
+  console.log(`mailboxes: ${req.user?.username || "admin"} added ${mailbox.mailbox} (${mailbox.id})`);
+  res.json({ ok: true, mailbox });
+}));
+
+app.put("/api/mailboxes/:id", authGuard.requireAdmin, route(async (req, res) => {
+  const mailbox = mailboxes.update(req.params.id, req.body || {});
+  res.json({ ok: true, mailbox });
+}));
+
+app.delete("/api/mailboxes/:id", authGuard.requireAdmin, route(async (req, res) => {
+  mailboxes.remove(req.params.id);
+  res.json({ ok: true });
+}));
+
+app.post("/api/mailboxes/:id/test", authGuard.requireAdmin, route(async (req, res) => {
+  if (!mailboxes.get(req.params.id)) {
+    return res.status(404).json({ error: "No such mailbox." });
+  }
+  res.json(await mailboxes.testConnection(req.params.id));
 }));
 
 // --- analysis --------------------------------------------------------------
@@ -273,17 +310,22 @@ if (require.main === module) {
       console.log("TLS: off (plain HTTP)");
     }
 
-    const g = graph.describe();
-    if (g.configured) {
-      console.log(`Mailbox: ${g.mailbox} (folder "${g.folder}", tenant ${g.tenantId})`);
-      if (SYNC_INTERVAL_MINUTES > 0) {
+    const boxes = mailboxes.list();
+    if (boxes.length) {
+      for (const m of boxes) {
+        console.log(`Mailbox: ${m.mailbox} (folder "${m.folder}", tenant ${m.tenantId})${m.enabled ? "" : " - disabled"}${m.readOnly ? " - from environment" : ""}`);
+      }
+      if (SYNC_INTERVAL_MINUTES > 0 && boxes.some((m) => m.enabled)) {
         console.log(`Sync: every ${SYNC_INTERVAL_MINUTES} minute(s); first run in 10 seconds. Backfill window: ${BACKFILL_DAYS} days.`);
         sync.startScheduler(SYNC_INTERVAL_MINUTES);
+      } else if (SYNC_INTERVAL_MINUTES > 0) {
+        console.log("Sync: every mailbox is disabled; nothing is scheduled.");
       } else {
         console.log("Sync: scheduled sync is off (SYNC_INTERVAL_MINUTES=0); use Sync now in the app.");
       }
     } else {
-      console.log(`Mailbox: not configured - set ${g.missing.join(", ")} to enable syncing.`);
+      console.log("Mailbox: none configured - add one under Mailbox sync as an administrator, or set "
+        + "GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and DMARC_MAILBOX.");
     }
 
     if (!authGuard.hasUsers()) {
