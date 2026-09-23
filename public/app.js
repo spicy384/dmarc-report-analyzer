@@ -19,6 +19,7 @@ const chartSvg = document.getElementById("chart");
 const chartTip = document.getElementById("chart-tip");
 const chartEmpty = document.getElementById("chart-empty");
 const chartForwardPct = document.getElementById("chart-forward-pct");
+const retentionNote = document.getElementById("retention-note");
 
 const ipsResults = document.getElementById("ips-results");
 const ipsCount = document.getElementById("ips-count");
@@ -1720,7 +1721,8 @@ async function openReportDetail(id) {
       kv("Contact", r.orgEmail || "-"),
       kv("Email received", r.receivedAt ? formatTimestamp(r.receivedAt) : "-"),
       kv("Subject", r.subject || "-"),
-      kv("Attachment", r.attachmentName || "-")
+      kv("Attachment", r.attachmentName || "-"),
+      ...(r.purgedAt ? [kv("Records", `rolled up by retention on ${formatTimestamp(r.purgedAt)}; only the totals remain`)] : [])
     );
     reportDetailExo.replaceChildren(exoSearchBlock({ begin: r.rangeBegin, end: r.rangeEnd, domain: r.domain }));
     reportDetailBody.replaceChildren(buildTable(
@@ -1864,8 +1866,24 @@ function renderMailboxes(list) {
   ));
 }
 
+function renderRetentionNote(rt) {
+  if (!rt || !rt.enabled || !rt.purgedReports) {
+    retentionNote.hidden = true;
+    return;
+  }
+  const { from } = currentRange();
+  const earliest = rt.earliestRetained || rt.cutoff;
+  if (from !== null && from >= earliest) {
+    retentionNote.hidden = true;
+    return;
+  }
+  retentionNote.hidden = false;
+  retentionNote.textContent = `Reports older than ${rt.months} month${rt.months === 1 ? "" : "s"} have been rolled up: totals and the chart include them, but sources, records, search and XML downloads only cover data since ${formatUtcDate(earliest)} (${formatNumber(rt.purgedReports)} reports rolled up).`;
+}
+
 function renderSyncStatus(st) {
   const list = st.mailboxes || [];
+  renderRetentionNote(st.retention);
   populateMailboxSelect(list, st.mailboxCounts || []);
   renderMailboxes(list);
 
@@ -1874,7 +1892,8 @@ function renderSyncStatus(st) {
     kvRow("Backfill window", `${st.backfillDays} days on a mailbox's first sync`),
     kvRow("Last run", describeRun(st.lastRun)),
     kvRow("Stored", `${formatNumber(st.stats?.reports?.reports)} reports from ${formatNumber(st.stats?.messages?.ingested)} emails`),
-    kvRow("GeoIP", describeGeoip(st.geoip))
+    kvRow("GeoIP", describeGeoip(st.geoip)),
+    kvRow("Retention", st.retention && st.retention.enabled ? `${st.retention.months} month${st.retention.months === 1 ? "" : "s"}; ${formatNumber(st.retention.purgedReports)} reports rolled up into ${formatNumber(st.retention.rolledUpDays)} daily totals` : "keeping everything")
   );
 
   const usable = st.configured && canWrite();

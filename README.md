@@ -209,6 +209,7 @@ Data lives in `./data` unless `DATA_DIR` says otherwise.
 | `DMARC_FOLDER` | `Inbox` | Folder to read. A display name, or a `Parent/Child` path |
 | `SYNC_INTERVAL_MINUTES` | `60` | Scheduled sync interval. `0` turns it off; **Sync now** still works |
 | `BACKFILL_DAYS` | `90` | How far back the very first sync looks |
+| `RETENTION_MONTHS` | `0` (keep all) | Roll up reports older than this many months into daily totals |
 | `GEOIP_CITY_DB`, `GEOIP_ASN_DB` | `<data>/geoip/GeoLite2-*.mmdb` | MaxMind database files, if you have them |
 | `GEOIP_ONLINE` | `true` | Fall back to ip-api.com for IPs the files cannot answer |
 | `PORT` | `3000` | Listening port |
@@ -224,6 +225,15 @@ Data lives in `./data` unless `DATA_DIR` says otherwise.
 Nothing in the mailbox is changed: the app only reads. It remembers which emails it has
 ingested by their Graph message ID, and a report delivered twice (same reporter, report ID
 and domain) is stored once.
+
+### Retention
+
+Everything is kept by default. Set `RETENTION_MONTHS` to roll reports older than that
+into daily totals: their individual records and stored XML are removed, the report rows
+stay (marked as rolled up), and totals, the chart and the weekly view still cover the
+full history. Sources, records, search, the CSV export and XML downloads only cover
+retained data, and the overview says so when the selected period reaches further back.
+The pass runs 30 seconds after start and then daily.
 
 ### Country and network of source IPs
 

@@ -43,6 +43,10 @@ services:
       # How far back the very first sync looks. Later runs continue from the newest email seen.
       BACKFILL_DAYS: ${BACKFILL_DAYS:-90}
 
+      # Keep everything (0), or roll reports older than N months into daily totals and
+      # drop their per-record detail and stored XML to bound the database size.
+      RETENTION_MONTHS: ${RETENTION_MONTHS:-0}
+
       # --- Country / network of source IPs -----------------------------------
       # Put MaxMind's free GeoLite2-City.mmdb and GeoLite2-ASN.mmdb in the geoip/ folder of
       # the data volume (docker cp them into the container at /data/geoip) for offline

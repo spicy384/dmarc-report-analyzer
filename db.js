@@ -18,7 +18,8 @@ const { parsePattern, compileSenders, findSender } = require("./ipmatch");
 // 4: known_senders (created by the schema; version bump only)
 // 5: alerts (created by the schema; version bump only)
 // 6: ip_info country/city/ASN columns
-const SCHEMA_VERSION = 6;
+// 7: daily_totals (retention rollups) and reports.purged_at
+const SCHEMA_VERSION = 7;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS reports (
   attachment_name TEXT,
   xml_gz          BLOB,
   ingested_at     INTEGER NOT NULL,
+  purged_at       INTEGER,         -- set by retention once records and XML were rolled up and removed
   UNIQUE(org_name, report_id, domain)
 );
 CREATE INDEX IF NOT EXISTS idx_reports_begin  ON reports(range_begin);
@@ -144,6 +146,23 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(acknowledged_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_alerts_key  ON alerts(type, key, created_at);
+
+-- Per-day totals kept for reports whose records and XML were purged by retention.
+CREATE TABLE IF NOT EXISTS daily_totals (
+  day             TEXT NOT NULL,      -- YYYY-MM-DD (UTC) of the report window start
+  domain          TEXT NOT NULL,
+  mailbox_id      TEXT NOT NULL,
+  reports         INTEGER NOT NULL DEFAULT 0,
+  total           INTEGER NOT NULL DEFAULT 0,
+  pass            INTEGER NOT NULL DEFAULT 0,
+  fail_forward    INTEGER NOT NULL DEFAULT 0,
+  fail_none       INTEGER NOT NULL DEFAULT 0,
+  fail_quarantine INTEGER NOT NULL DEFAULT 0,
+  fail_reject     INTEGER NOT NULL DEFAULT 0,
+  fwd_quarantine  INTEGER NOT NULL DEFAULT 0,  -- likely forwards the receiver quarantined / rejected,
+  fwd_reject      INTEGER NOT NULL DEFAULT 0,  -- so the Quarantined/Rejected tiles stay exact
+  PRIMARY KEY (day, domain, mailbox_id)
+);
 `;
 
 const DISPOSITIONS = ["none", "quarantine", "reject"];
@@ -299,6 +318,7 @@ function shapeReport(row) {
     failed: row.messages - row.passed,
     attachmentName: row.attachment_name,
     ingestedAt: row.ingested_at,
+    purgedAt: row.purged_at || null,
     receivedAt: row.received_at === undefined ? undefined : row.received_at,
     subject: row.subject === undefined ? undefined : row.subject
   };
@@ -343,6 +363,13 @@ function migrate(db) {
     }
     db.exec("UPDATE sync_runs SET mailbox_id = 'env' WHERE mailbox_id IS NULL");
     db.exec("CREATE INDEX IF NOT EXISTS idx_reports_mailbox ON reports(mailbox_id)");
+  }
+
+  if (version < 7) {
+    const cols = db.pragma("table_info(reports)").map((c) => c.name);
+    if (!cols.includes("purged_at")) {
+      db.exec("ALTER TABLE reports ADD COLUMN purged_at INTEGER");
+    }
   }
 
   if (version < 6) {
@@ -538,6 +565,28 @@ function openDatabase({ dataDir, file } = {}) {
       WHERE ${f.sql}
       GROUP BY day ORDER BY day`).all(...f.params);
 
+    // Purged reports live on as daily totals; fold them in unless a search narrows to records.
+    const rolled = filter.q ? [] : dailyTotals(filter);
+    const dayMap = new Map(days.map((d) => [d.day, { ...d }]));
+    for (const r of rolled) {
+      const fwd = filter.excludeForwards ? 0 : r.fail_forward;
+      const t = filter.excludeForwards ? r.total - r.fail_forward : r.total;
+      totals.messages += t;
+      totals.passed += r.pass;
+      totals.likelyForwards += fwd;
+      totals.quarantined += r.fail_quarantine + (filter.excludeForwards ? 0 : r.fwd_quarantine);
+      totals.rejected += r.fail_reject + (filter.excludeForwards ? 0 : r.fwd_reject);
+      const d = dayMap.get(r.day) || { day: r.day, total: 0, pass: 0, failForward: 0, failNone: 0, failQuarantine: 0, failReject: 0 };
+      d.total += t;
+      d.pass += r.pass;
+      d.failForward += fwd;
+      d.failNone += r.fail_none;
+      d.failQuarantine += r.fail_quarantine;
+      d.failReject += r.fail_reject;
+      dayMap.set(r.day, d);
+    }
+    const mergedDays = [...dayMap.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+
     const failed = totals.messages - totals.passed;
     return {
       totals: {
@@ -545,9 +594,10 @@ function openDatabase({ dataDir, file } = {}) {
         ...reportTotals,
         failed,
         failPct: totals.messages ? Math.round((failed / totals.messages) * 1000) / 10 : 0,
-        passPct: totals.messages ? Math.round((totals.passed / totals.messages) * 1000) / 10 : 0
+        passPct: totals.messages ? Math.round((totals.passed / totals.messages) * 1000) / 10 : 0,
+        rolledUpReports: rolled.reduce((n, r) => n + r.reports, 0)
       },
-      days: days.map((d) => ({ ...d, fail: d.failForward + d.failNone + d.failQuarantine + d.failReject })),
+      days: mergedDays.map((d) => ({ ...d, fail: d.failForward + d.failNone + d.failQuarantine + d.failReject })),
       bySender: bySender(filter),
       topReporters: reporters(filter).slice(0, 8),
       topFailingIps: ips(filter, { failingOnly: true, limit: 10 })
@@ -887,6 +937,89 @@ function openDatabase({ dataDir, file } = {}) {
       .map((row) => ({ ...row, sender: senderFor(row.ip, row.ptr) }));
   }
 
+  // --- retention: rollups and purge ----------------------------------------------
+
+  /** Daily totals of purged reports inside the filter's window, domain and mailbox. */
+  function dailyTotals(filter = {}) {
+    const clauses = [];
+    const params = [];
+    const from = toInt(filter.from);
+    const to = toInt(filter.to);
+    if (from !== null) {
+      clauses.push("day >= date(?, 'unixepoch')");
+      params.push(from);
+    }
+    if (to !== null) {
+      clauses.push("day < date(?, 'unixepoch')");
+      params.push(to);
+    }
+    if (filter.domain) {
+      clauses.push("domain = ?");
+      params.push(String(filter.domain).toLowerCase());
+    }
+    if (filter.mailbox) {
+      clauses.push("mailbox_id = ?");
+      params.push(String(filter.mailbox));
+    }
+    return db.prepare(`SELECT day, domain, mailbox_id, SUM(reports) AS reports, SUM(total) AS total, SUM(pass) AS pass,
+        SUM(fail_forward) AS fail_forward, SUM(fail_none) AS fail_none, SUM(fail_quarantine) AS fail_quarantine, SUM(fail_reject) AS fail_reject,
+        SUM(fwd_quarantine) AS fwd_quarantine, SUM(fwd_reject) AS fwd_reject
+      FROM daily_totals ${clauses.length ? "WHERE " + clauses.join(" AND ") : ""} GROUP BY day, domain, mailbox_id ORDER BY day`).all(...params);
+  }
+
+  /**
+   * Rolls the records of reports whose window started before `cutoff` (unix seconds)
+   * into daily_totals, then deletes those records and the stored XML. The report rows
+   * stay (marked purged) so counts, reporters and the report list still make sense.
+   */
+  const purgeBeforeTx = db.transaction((cutoff) => {
+    const victims = db.prepare("SELECT id, domain, mailbox_id, range_begin FROM reports WHERE range_begin < ? AND purged_at IS NULL").all(cutoff);
+    if (!victims.length) {
+      return { reports: 0, records: 0, days: 0 };
+    }
+    const upsert = db.prepare(`INSERT INTO daily_totals (day, domain, mailbox_id, reports, total, pass, fail_forward, fail_none, fail_quarantine, fail_reject, fwd_quarantine, fwd_reject)
+      VALUES (@day, @domain, @mailboxId, @reports, @total, @pass, @failForward, @failNone, @failQuarantine, @failReject, @fwdQuarantine, @fwdReject)
+      ON CONFLICT(day, domain, mailbox_id) DO UPDATE SET
+        reports = reports + excluded.reports, total = total + excluded.total, pass = pass + excluded.pass,
+        fail_forward = fail_forward + excluded.fail_forward, fail_none = fail_none + excluded.fail_none,
+        fail_quarantine = fail_quarantine + excluded.fail_quarantine, fail_reject = fail_reject + excluded.fail_reject,
+        fwd_quarantine = fwd_quarantine + excluded.fwd_quarantine, fwd_reject = fwd_reject + excluded.fwd_reject`);
+    const sums = db.prepare(`SELECT COALESCE(SUM(count), 0) AS total,
+        COALESCE(SUM(CASE WHEN passed THEN count ELSE 0 END), 0) AS pass,
+        COALESCE(SUM(CASE WHEN passed = 0 AND forwarded THEN count ELSE 0 END), 0) AS failForward,
+        COALESCE(SUM(CASE WHEN passed = 0 AND forwarded = 0 AND disposition = 'none' THEN count ELSE 0 END), 0) AS failNone,
+        COALESCE(SUM(CASE WHEN passed = 0 AND forwarded = 0 AND disposition = 'quarantine' THEN count ELSE 0 END), 0) AS failQuarantine,
+        COALESCE(SUM(CASE WHEN passed = 0 AND forwarded = 0 AND disposition = 'reject' THEN count ELSE 0 END), 0) AS failReject,
+        COALESCE(SUM(CASE WHEN passed = 0 AND forwarded = 1 AND disposition = 'quarantine' THEN count ELSE 0 END), 0) AS fwdQuarantine,
+        COALESCE(SUM(CASE WHEN passed = 0 AND forwarded = 1 AND disposition = 'reject' THEN count ELSE 0 END), 0) AS fwdReject
+      FROM records WHERE report_id = ?`);
+    const delRecords = db.prepare("DELETE FROM records WHERE report_id = ?");
+    const markReport = db.prepare("UPDATE reports SET xml_gz = NULL, purged_at = ? WHERE id = ?");
+    const at = now();
+    const daysTouched = new Set();
+    let records = 0;
+    for (const v of victims) {
+      const s = sums.get(v.id);
+      const day = new Date(v.range_begin * 1000).toISOString().slice(0, 10);
+      upsert.run({ day, domain: v.domain, mailboxId: v.mailbox_id || "env", reports: 1, ...s });
+      records += delRecords.run(v.id).changes;
+      markReport.run(at, v.id);
+      daysTouched.add(`${day}|${v.domain}|${v.mailbox_id}`);
+    }
+    return { reports: victims.length, records, days: daysTouched.size };
+  });
+
+  function purgeBefore(cutoff) {
+    return purgeBeforeTx(toInt(cutoff, 0));
+  }
+
+  function retentionInfo() {
+    const r = db.prepare(`SELECT COUNT(*) AS purgedReports, MIN(CASE WHEN purged_at IS NULL THEN range_begin END) AS earliestRetained,
+        MAX(purged_at) AS lastPurgeAt FROM reports`).get();
+    const t = db.prepare("SELECT COUNT(*) AS days, COALESCE(SUM(total), 0) AS messages FROM daily_totals").get();
+    return { purgedReports: db.prepare("SELECT COUNT(*) AS n FROM reports WHERE purged_at IS NOT NULL").get().n, earliestRetained: r.earliestRetained, lastPurgeAt: r.lastPurgeAt, rolledUpDays: t.days, rolledUpMessages: t.messages };
+  }
+
   // --- policy readiness ---------------------------------------------------------
 
   /** DKIM selectors seen in reports for a domain (from auth_results), with pass/fail message counts. */
@@ -1116,6 +1249,9 @@ function openDatabase({ dataDir, file } = {}) {
     bySender,
     dkimSelectors,
     firstSeenSources,
+    dailyTotals,
+    purgeBefore,
+    retentionInfo,
     insertAlert,
     openAlerts,
     recentAlerts,

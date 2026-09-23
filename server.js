@@ -11,6 +11,7 @@ const { createDnsRecords } = require("./dns-records");
 const { evaluateAfterSync } = require("./alerts");
 const { compileSenders, findSender } = require("./ipmatch");
 const { createGeoIp } = require("./geoip");
+const { createRetention } = require("./retention");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -24,6 +25,8 @@ const SYNC_INTERVAL_MINUTES = process.env.SYNC_INTERVAL_MINUTES === undefined
   ? 60
   : Number(process.env.SYNC_INTERVAL_MINUTES) || 0;
 const BACKFILL_DAYS = Number(process.env.BACKFILL_DAYS) > 0 ? Number(process.env.BACKFILL_DAYS) : 90;
+// 0 keeps everything; N rolls reports older than N months into daily totals and drops their records and XML.
+const RETENTION_MONTHS = Number(process.env.RETENTION_MONTHS) > 0 ? Number(process.env.RETENTION_MONTHS) : 0;
 const CSV_ROW_CAP = 50000;
 
 app.use(express.json({ limit: "1mb" }));
@@ -53,6 +56,7 @@ const sync = createSync({
   }
 });
 const dnsRecords = createDnsRecords();
+const retention = createRetention({ db, months: RETENTION_MONTHS });
 
 // The sign-in endpoints must be reachable while signed out; everything else under /api is gated.
 app.use(authGuard.router);
@@ -155,6 +159,7 @@ app.get("/api/status", route(async (req, res) => {
     mailboxes: list,
     mailboxCounts: db.mailboxCounts(),
     geoip: { ...geoip.describe(), stats: db.geoStats() },
+    retention: retention.describe(),
     configured: list.some((m) => m.enabled),
     scheduler: { intervalMinutes: SYNC_INTERVAL_MINUTES, enabled: SYNC_INTERVAL_MINUTES > 0 && sync.anyConfigured() },
     backfillDays: BACKFILL_DAYS,
@@ -592,6 +597,13 @@ if (require.main === module) {
     } else {
       console.log("Mailbox: none configured - add one under Mailbox sync as an administrator, or set "
         + "GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and DMARC_MAILBOX.");
+    }
+
+    if (retention.enabled) {
+      retention.start();
+      console.log(`Retention: reports older than ${RETENTION_MONTHS} month(s) are rolled up into daily totals; records and XML removed. First pass in 30 seconds, then daily.`);
+    } else {
+      console.log("Retention: keeping everything (set RETENTION_MONTHS to roll up old reports).");
     }
 
     geoip.open().then((g) => {
