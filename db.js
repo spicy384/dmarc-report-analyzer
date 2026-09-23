@@ -10,8 +10,10 @@ const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 const Database = require("better-sqlite3");
+const { isLikelyForward } = require("./dmarc-parser");
 
-const SCHEMA_VERSION = 1;
+// 2: records.forwarded (likely forward / mailing list, derived from reasons and DKIM results)
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS records (
   dkim_eval     TEXT,
   spf_eval      TEXT,
   passed        INTEGER NOT NULL,
+  forwarded     INTEGER NOT NULL DEFAULT 0,  -- failed, but looks like a forward / mailing list
   reasons       TEXT,            -- JSON [{type, comment}]
   envelope_to   TEXT,
   envelope_from TEXT,
@@ -113,27 +116,64 @@ function toInt(value, fallback = null) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
+function likePattern(text) {
+  return `%${String(text).trim().toLowerCase().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
+// Record-level columns a free-text search matches against; `ptr` comes from ip_info.
+const SEARCH_RECORD_COLUMNS = ["source_ip", "header_from", "envelope_from", "envelope_to", "spf_domain", "dkim_domain"];
+
 /**
- * Builds the WHERE fragment shared by every time/domain-filtered query.
- * `alias` is the reports table alias in the caller's FROM clause.
+ * Builds the WHERE fragment shared by every filtered query.
+ *   filter: { from, to, domain, q, excludeForwards }
+ *   r: the reports table alias; x: the records alias when the query joins records,
+ *      or null for report-only queries (search then looks through the report's records).
  */
-function buildFilter(filter = {}, alias = "r") {
+function buildFilter(filter = {}, { r = "r", x = null } = {}) {
   const clauses = [];
   const params = [];
   const from = toInt(filter.from);
   const to = toInt(filter.to);
   if (from !== null) {
-    clauses.push(`${alias}.range_begin >= ?`);
+    clauses.push(`${r}.range_begin >= ?`);
     params.push(from);
   }
   if (to !== null) {
-    clauses.push(`${alias}.range_begin < ?`);
+    clauses.push(`${r}.range_begin < ?`);
     params.push(to);
   }
   if (filter.domain) {
-    clauses.push(`${alias}.domain = ?`);
+    clauses.push(`${r}.domain = ?`);
     params.push(String(filter.domain).toLowerCase());
   }
+
+  const q = filter.q && String(filter.q).trim();
+  if (q) {
+    const like = likePattern(q);
+    const reportCols = [`${r}.org_name`, `${r}.domain`, `${r}.report_id`];
+    const recordMatch = (alias) => [
+      ...SEARCH_RECORD_COLUMNS.map((c) => `${alias}.${c} LIKE ? ESCAPE '\\'`),
+      `EXISTS (SELECT 1 FROM ip_info ip2 WHERE ip2.ip = ${alias}.source_ip AND ip2.ptr LIKE ? ESCAPE '\\')`
+    ];
+    if (x) {
+      const parts = [...reportCols.map((c) => `${c} LIKE ? ESCAPE '\\'`), ...recordMatch(x)];
+      clauses.push(`(${parts.join(" OR ")})`);
+      params.push(...Array(parts.length).fill(like));
+    } else {
+      const inner = recordMatch("x2");
+      const parts = [
+        ...reportCols.map((c) => `${c} LIKE ? ESCAPE '\\'`),
+        `EXISTS (SELECT 1 FROM records x2 WHERE x2.report_id = ${r}.id AND (${inner.join(" OR ")}))`
+      ];
+      clauses.push(`(${parts.join(" OR ")})`);
+      params.push(...Array(reportCols.length + inner.length).fill(like));
+    }
+  }
+
+  if (filter.excludeForwards && x) {
+    clauses.push(`NOT (${x}.passed = 0 AND ${x}.forwarded = 1)`);
+  }
+
   return { sql: clauses.length ? clauses.join(" AND ") : "1=1", params };
 }
 
@@ -165,6 +205,7 @@ function shapeRecord(row) {
     dkimEval: row.dkim_eval,
     spfEval: row.spf_eval,
     passed: Boolean(row.passed),
+    likelyForward: Boolean(row.forwarded),
     reasons: parseJson(row.reasons, []),
     envelopeTo: row.envelope_to,
     envelopeFrom: row.envelope_from,
@@ -209,6 +250,38 @@ function shapeReport(row) {
   };
 }
 
+/** Brings a database created by an earlier version up to the current schema. */
+function migrate(db) {
+  const version = db.pragma("user_version", { simple: true });
+  if (version >= SCHEMA_VERSION) {
+    return;
+  }
+
+  const columns = db.pragma("table_info(records)").map((c) => c.name);
+  if (!columns.includes("forwarded")) {
+    db.exec("ALTER TABLE records ADD COLUMN forwarded INTEGER NOT NULL DEFAULT 0");
+  }
+
+  // Re-derive the forward flag for every failed record already stored.
+  if (version < 2) {
+    const update = db.prepare("UPDATE records SET forwarded = ? WHERE id = ?");
+    const rows = db.prepare("SELECT id, passed, reasons, dkim_results, header_from FROM records WHERE passed = 0").all();
+    db.transaction(() => {
+      for (const row of rows) {
+        const flag = isLikelyForward({
+          passed: false,
+          reasons: parseJson(row.reasons, []),
+          dkimResults: parseJson(row.dkim_results, []),
+          headerFrom: row.header_from
+        });
+        update.run(flag ? 1 : 0, row.id);
+      }
+    })();
+  }
+
+  db.pragma(`user_version = ${SCHEMA_VERSION}`);
+}
+
 /**
  * Opens (or creates) the database. Pass `{ file: ":memory:" }` for tests.
  */
@@ -223,9 +296,7 @@ function openDatabase({ dataDir, file } = {}) {
   db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
   db.exec(SCHEMA);
-  if (db.pragma("user_version", { simple: true }) < SCHEMA_VERSION) {
-    db.pragma(`user_version = ${SCHEMA_VERSION}`);
-  }
+  migrate(db);
 
   const stmts = {
     hasMessage: db.prepare("SELECT 1 FROM messages WHERE graph_id = ?"),
@@ -240,9 +311,9 @@ function openDatabase({ dataDir, file } = {}) {
       VALUES (@messageId, @orgName, @orgEmail, @reportId, @rangeBegin, @rangeEnd, @domain,
         @adkim, @aspf, @p, @sp, @pct, @fo, @messages, @passed, @attachmentName, @xmlGz, @ingestedAt)`),
     insertRecord: db.prepare(`
-      INSERT INTO records (report_id, source_ip, count, disposition, dkim_eval, spf_eval, passed, reasons,
+      INSERT INTO records (report_id, source_ip, count, disposition, dkim_eval, spf_eval, passed, forwarded, reasons,
         envelope_to, envelope_from, header_from, dkim_results, spf_results, dkim_domain, spf_domain)
-      VALUES (@reportId, @sourceIp, @count, @disposition, @dkimEval, @spfEval, @passed, @reasons,
+      VALUES (@reportId, @sourceIp, @count, @disposition, @dkimEval, @spfEval, @passed, @forwarded, @reasons,
         @envelopeTo, @envelopeFrom, @headerFrom, @dkimResults, @spfResults, @dkimDomain, @spfDomain)`),
     maxReceived: db.prepare("SELECT MAX(received_at) AS v FROM messages"),
     getSetting: db.prepare("SELECT value FROM settings WHERE key = ?"),
@@ -307,6 +378,7 @@ function openDatabase({ dataDir, file } = {}) {
         dkimEval: r.dkimEval,
         spfEval: r.spfEval,
         passed: r.passed ? 1 : 0,
+        forwarded: (r.likelyForward === undefined ? isLikelyForward(r) : r.likelyForward) ? 1 : 0,
         reasons: JSON.stringify(r.reasons || []),
         envelopeTo: r.envelopeTo,
         envelopeFrom: r.envelopeFrom,
@@ -350,11 +422,13 @@ function openDatabase({ dataDir, file } = {}) {
   // --- analysis ---------------------------------------------------------------
 
   function summary(filter = {}) {
-    const f = buildFilter(filter);
+    const f = buildFilter(filter, { x: "x" });
+    const fr = buildFilter(filter);
 
     const totals = db.prepare(`
       SELECT COALESCE(SUM(x.count), 0) AS messages,
              COALESCE(SUM(CASE WHEN x.passed THEN x.count ELSE 0 END), 0) AS passed,
+             COALESCE(SUM(CASE WHEN x.passed = 0 AND x.forwarded THEN x.count ELSE 0 END), 0) AS likelyForwards,
              COALESCE(SUM(CASE WHEN x.disposition = 'quarantine' THEN x.count ELSE 0 END), 0) AS quarantined,
              COALESCE(SUM(CASE WHEN x.disposition = 'reject' THEN x.count ELSE 0 END), 0) AS rejected,
              COALESCE(SUM(CASE WHEN x.dkim_eval = 'pass' THEN x.count ELSE 0 END), 0) AS dkimPassed,
@@ -367,7 +441,7 @@ function openDatabase({ dataDir, file } = {}) {
     const reportTotals = db.prepare(`
       SELECT COUNT(*) AS reports, COUNT(DISTINCT r.org_name) AS reporters, COUNT(DISTINCT r.domain) AS domains,
              MIN(r.range_begin) AS firstWindow, MAX(r.range_end) AS lastWindow
-      FROM reports r WHERE ${f.sql}`).get(...f.params);
+      FROM reports r WHERE ${fr.sql}`).get(...fr.params);
 
     const days = db.prepare(`
       SELECT date(r.range_begin, 'unixepoch') AS day,
@@ -396,13 +470,14 @@ function openDatabase({ dataDir, file } = {}) {
   }
 
   function ips(filter = {}, { failingOnly = false, limit = 200, ip } = {}) {
-    const f = buildFilter(filter);
+    const f = buildFilter(filter, { x: "x" });
     const extra = ip ? " AND x.source_ip = ?" : "";
     const params = ip ? [...f.params, ip] : f.params;
     const rows = db.prepare(`
       SELECT x.source_ip AS ip,
              SUM(x.count) AS total,
              SUM(CASE WHEN x.passed THEN x.count ELSE 0 END) AS passedTotal,
+             SUM(CASE WHEN x.passed = 0 AND x.forwarded THEN x.count ELSE 0 END) AS likelyForwards,
              SUM(CASE WHEN x.passed = 0 AND x.disposition = 'none' THEN x.count ELSE 0 END) AS failNone,
              SUM(CASE WHEN x.disposition = 'quarantine' THEN x.count ELSE 0 END) AS quarantined,
              SUM(CASE WHEN x.disposition = 'reject' THEN x.count ELSE 0 END) AS rejected,
@@ -452,7 +527,7 @@ function openDatabase({ dataDir, file } = {}) {
   }
 
   function records(filter = {}, { result, ip, org, page = 1, pageSize = 100 } = {}) {
-    const f = buildFilter(filter);
+    const f = buildFilter(filter, { x: "x" });
     const clauses = [f.sql];
     const params = [...f.params];
     if (result === "fail") {
@@ -533,12 +608,13 @@ function openDatabase({ dataDir, file } = {}) {
   }
 
   function reporters(filter = {}) {
-    const f = buildFilter(filter);
+    const f = buildFilter(filter, { x: "x" });
     return db.prepare(`
-      SELECT r.org_name AS orgName, MAX(r.org_email) AS orgEmail, COUNT(*) AS reportCount,
-             SUM(r.messages) AS messageTotal, SUM(r.passed) AS passedTotal, MAX(r.range_end) AS lastSeen,
-             MIN(r.range_begin) AS firstSeen
-      FROM reports r WHERE ${f.sql}
+      SELECT r.org_name AS orgName, MAX(r.org_email) AS orgEmail, COUNT(DISTINCT r.id) AS reportCount,
+             SUM(x.count) AS messageTotal, SUM(CASE WHEN x.passed THEN x.count ELSE 0 END) AS passedTotal,
+             MAX(r.range_end) AS lastSeen, MIN(r.range_begin) AS firstSeen
+      FROM records x JOIN reports r ON r.id = x.report_id
+      WHERE ${f.sql}
       GROUP BY r.org_name ORDER BY messageTotal DESC, reportCount DESC`).all(...f.params)
       .map(({ reportCount, messageTotal, passedTotal, ...row }) => ({
         ...row,

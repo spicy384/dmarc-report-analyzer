@@ -95,6 +95,40 @@ check("filter: domain match is case-insensitive", db.summary({ domain: "EXAMPLE.
 check("filter: other domain", db.summary({ domain: "other.test" }).totals.reports === 0);
 check("filter: ips honour window", db.ips({ to: 1758153600 }).length === 0);
 
+// --- likely forwards and search ---------------------------------------------
+
+const forwardedXml = `<feedback><report_metadata><org_name>Yahoo</org_name><email>dmarchelp@yahooinc.com</email><report_id>y-1</report_id>
+<date_range><begin>1758153600</begin><end>1758239999</end></date_range></report_metadata>
+<policy_published><domain>example.com</domain><p>quarantine</p></policy_published>
+<record><row><source_ip>10.10.10.10</source_ip><count>5</count><policy_evaluated><disposition>quarantine</disposition><dkim>fail</dkim><spf>fail</spf>
+<reason><type>forwarded</type></reason></policy_evaluated></row><identifiers><header_from>example.com</header_from><envelope_from>lists.forwarder.test</envelope_from></identifiers>
+<auth_results><dkim><domain>example.com</domain><result>fail</result></dkim><spf><domain>lists.forwarder.test</domain><result>pass</result></spf></auth_results></record></feedback>`;
+db.recordMessage({ graphId: "m4", receivedAt: 1758330000, subject: "yahoo", fromAddr: "dmarchelp@yahooinc.com", status: "ingested" });
+const y = db.insertReport({ messageId: "m4", attachmentName: "yahoo.zip", parsed: parseAggregateReport(forwardedXml), xml: forwardedXml });
+check("forwarded report inserted", y.duplicate === false && y.messages === 5 && y.passed === 0);
+
+const withFwd = db.summary();
+check("summary counts likely forwards", withFwd.totals.likelyForwards === 5 && withFwd.totals.failed === 15 && withFwd.totals.messages === 58);
+const noFwd = db.summary({ excludeForwards: true });
+check("excludeForwards drops them from totals and days", noFwd.totals.failed === 10 && noFwd.totals.messages === 53 && noFwd.days[0].fail === 10);
+check("excludeForwards keeps report counts", noFwd.totals.reports === 3);
+const fwdIp = db.ips({}, { failingOnly: true }).find((r) => r.ip === "10.10.10.10");
+check("ips carry likelyForwards", fwdIp && fwdIp.likelyForwards === 5 && fwdIp.failed === 5);
+check("ips honour excludeForwards", db.ips({ excludeForwards: true }, { failingOnly: true }).length === 2);
+check("records expose likelyForward", db.records({}, { ip: "10.10.10.10" }).rows[0].likelyForward === true && db.records({}, { ip: "192.0.2.99" }).rows[0].likelyForward === false);
+check("reporters honour excludeForwards", db.reporters({ excludeForwards: true }).find((r) => r.orgName === "Yahoo") === undefined && db.reporters().length === 3);
+
+check("search: source ip", db.summary({ q: "192.0.2.99" }).totals.messages === 7);
+check("search: reverse dns", db.summary({ q: "BADHOST" }).totals.messages === 7 && db.ips({ q: "badhost" }).length === 1);
+check("search: spf domain", db.ips({ q: "spammer" }).length === 1 && db.ips({ q: "spammer" })[0].ip === "198.51.100.7");
+check("search: envelope from", db.records({ q: "forwarder.test" }).total === 2);
+check("search: reporter name on reports and records", db.reports({ q: "google" }).total === 1 && db.reporters({ q: "google" }).length === 1);
+check("search: reports match through their records (ptr)", db.reports({ q: "badhost" }).total === 1 && db.reports({ q: "badhost" }).rows[0].orgName === "Enterprise Outlook");
+check("search: report id", db.reports({ q: "y-1" }).total === 1);
+check("search: like wildcards are literal", db.summary({ q: "%" }).totals.messages === 0 && db.summary({ q: "_" }).totals.messages === 0);
+check("search: no match", db.summary({ q: "nothing-here" }).totals.messages === 0 && db.reports({ q: "nothing-here" }).total === 0);
+check("search combines with excludeForwards", db.summary({ q: "10.10.10.10", excludeForwards: true }).totals.messages === 0);
+
 // --- runs / settings / stats ------------------------------------------------
 
 const runId = db.startRun("manual", 1758000000);
@@ -107,10 +141,39 @@ db.setSetting("cursor", "123");
 check("settings", db.getSetting("cursor") === "123" && db.getSetting("missing") === null);
 
 const st = db.stats();
-check("stats", st.messages.total === 2 && st.reports.reports === 2 && st.reports.messages === 53);
+check("stats", st.messages.total === 3 && st.reports.reports === 3 && st.reports.messages === 58);
 
 db.recordMessage({ graphId: "m1", receivedAt: 1758300000, status: "error", error: "boom" });
 check("message upsert updates status", db.messagesWithErrors()[0].graph_id === "m1");
 
 db.close();
+
+// --- migration from schema version 1 ---------------------------------------
+
+const os = require("os");
+const Database = require("better-sqlite3");
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "dmarc-migrate-"));
+const v1 = new Database(path.join(tmpDir, "dmarc.sqlite"));
+v1.exec(`
+  CREATE TABLE messages (graph_id TEXT PRIMARY KEY, internet_message_id TEXT, received_at INTEGER NOT NULL, subject TEXT, from_addr TEXT, status TEXT NOT NULL, error TEXT, processed_at INTEGER NOT NULL);
+  CREATE TABLE reports (id INTEGER PRIMARY KEY, message_id TEXT, org_name TEXT NOT NULL, org_email TEXT, report_id TEXT NOT NULL, range_begin INTEGER NOT NULL, range_end INTEGER NOT NULL, domain TEXT NOT NULL, adkim TEXT, aspf TEXT, p TEXT, sp TEXT, pct INTEGER, fo TEXT, messages INTEGER NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0, attachment_name TEXT, xml_gz BLOB, ingested_at INTEGER NOT NULL, UNIQUE(org_name, report_id, domain));
+  CREATE TABLE records (id INTEGER PRIMARY KEY, report_id INTEGER NOT NULL, source_ip TEXT NOT NULL, count INTEGER NOT NULL, disposition TEXT NOT NULL, dkim_eval TEXT, spf_eval TEXT, passed INTEGER NOT NULL, reasons TEXT, envelope_to TEXT, envelope_from TEXT, header_from TEXT, dkim_results TEXT, spf_results TEXT, dkim_domain TEXT, spf_domain TEXT);
+  INSERT INTO reports (id, org_name, report_id, range_begin, range_end, domain, messages, passed, ingested_at) VALUES (1, 'x', '1', 1, 2, 'example.com', 3, 0, 1);
+  INSERT INTO records (report_id, source_ip, count, disposition, passed, reasons, header_from, dkim_results) VALUES
+    (1, '10.0.0.1', 1, 'none', 0, '[{"type":"forwarded","comment":null}]', 'example.com', '[]'),
+    (1, '10.0.0.2', 1, 'none', 0, '[]', 'example.com', '[{"domain":"example.com","selector":"s","result":"fail","humanResult":null}]'),
+    (1, '10.0.0.3', 1, 'none', 0, '[]', 'example.com', '[]');
+  PRAGMA user_version = 1;
+`);
+v1.close();
+
+const migrated = openDatabase({ dataDir: tmpDir });
+check("migration: schema version bumped", migrated.db.pragma("user_version", { simple: true }) === 2);
+check("migration: forwarded column added", migrated.db.pragma("table_info(records)").some((c) => c.name === "forwarded"));
+const flags = Object.fromEntries(migrated.db.prepare("SELECT source_ip, forwarded FROM records").all().map((r) => [r.source_ip, r.forwarded]));
+check("migration: existing failures re-derived", flags["10.0.0.1"] === 1 && flags["10.0.0.2"] === 1 && flags["10.0.0.3"] === 0, JSON.stringify(flags));
+check("migration: queries work on migrated db", migrated.summary().totals.likelyForwards === 2);
+migrated.close();
+fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+
 process.exit(report() ? 0 : 1);

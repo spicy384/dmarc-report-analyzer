@@ -150,6 +150,12 @@
             <option value="">All domains</option>
           </select>
         </label>
+        <label>Search
+          <input type="search" id="search-input" placeholder="IP, host, domain, reporter" autocomplete="off" />
+        </label>
+        <label class="check-inline filter-check" title="Hide failures that look like forwarded or mailing-list mail: the reporter said so, or a DKIM signature for your domain was present but broken">
+          <input type="checkbox" id="hide-forwards" /> Hide likely forwards
+        </label>
         <div class="filter-actions">
           <button id="refresh-btn" type="button" class="secondary">Refresh</button>
           <button id="export-btn" type="button" class="secondary">Export CSV</button>

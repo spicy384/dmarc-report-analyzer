@@ -31,7 +31,8 @@ threw = null;
 try { parseFilter({ from: "2025-09-20", to: "2025-09-10" }); } catch (e) { threw = e; }
 check("parseFilter: to before from throws", Boolean(threw));
 check("parseFilter: domain lower-cased", parseFilter({ domain: " Example.COM " }).domain === "example.com");
-check("parseFilter: empty", JSON.stringify(parseFilter({})) === JSON.stringify({ from: null, to: null, domain: null }));
+check("parseFilter: empty", JSON.stringify(parseFilter({})) === JSON.stringify({ from: null, to: null, domain: null, q: null, excludeForwards: false }));
+check("parseFilter: search and hideForwards", (() => { const f = parseFilter({ q: "  badhost ", hideForwards: "1" }); return f.q === "badhost" && f.excludeForwards === true; })());
 
 const csv = toCsv([{
   rangeBegin: 1758153600, rangeEnd: 1758239999, orgName: "google.com", domain: "example.com", sourceIp: "1.2.3.4", ptr: null,
@@ -155,6 +156,20 @@ async function waitForServer(tries = 60) {
     check("reporters", reporters.body.reporters.length === 2 && reporters.body.reporters[0].orgName === "google.com");
     const domains = await req("/api/domains");
     check("domains", domains.body.domains.length === 1 && domains.body.domains[0].domain === "example.com");
+
+    // --- search and forwards ---
+    const q1 = await req("/api/summary?q=192.0.2.99");
+    check("search: ip narrows the summary", q1.body.totals.messages === 7 && q1.body.totals.reports === 1);
+    const q2 = await req("/api/ips?q=badhost");
+    check("search: reverse dns", q2.body.ips.length === 1 && q2.body.ips[0].ip === "192.0.2.99");
+    const q3 = await req("/api/reports?q=google");
+    check("search: reporter on reports", q3.body.total === 1 && q3.body.rows[0].orgName === "google.com");
+    const q4 = await req("/api/reporters?q=spammer");
+    check("search: spf domain reaches reporters", q4.body.reporters.length === 1 && q4.body.reporters[0].orgName === "google.com");
+    check("search: no match is empty, not an error", (await req("/api/summary?q=zzz")).body.totals.messages === 0);
+    const hf = await req("/api/summary?hideForwards=1");
+    check("hideForwards accepted", hf.status === 200 && hf.body.totals.messages === 53 && hf.body.totals.likelyForwards === 0);
+    check("records expose likelyForward", (await req("/api/records?result=fail")).body.rows.every((r) => r.likelyForward === false));
 
     // --- csv ---
     const csvRes = await req("/api/export/records.csv?result=fail", { raw: true });

@@ -24,7 +24,21 @@ many, and the failure rate each of them saw.
 **Reports**: every report with its window, reporter, domain, published policy and counts.
 Click one for its records; the original XML can be downloaded.
 
-**Export**: every record in the selected period as CSV.
+**Search**: one box that narrows every panel at once. It matches source IPs, reverse DNS
+names, From and envelope domains, the SPF and DKIM domains seen, reporter names and
+report IDs, so typing an IP shows that sender's history and typing a reporter shows only
+their reports.
+
+**Hide likely forwards**: DMARC counts forwarded and mailing-list mail as failures, which
+buries real spoofing under noise from legitimate relays. Ticking this hides failures that
+look like forwards: the reporter tagged them (`forwarded`, `mailing_list`,
+`trusted_forwarder`), or a DKIM signature for your own domain was present but no longer
+verified, meaning the message was signed by you and altered on the way. A spoofer has no
+signature for your domain at all. Forwarded mail that was never DKIM-signed cannot be
+told apart from spoofing and stays visible. Such records are also tagged "likely forward"
+in every record list.
+
+**Export**: every record in the selected period as CSV, honouring the search and filters.
 
 **Mailbox sync**: sync on a schedule or on demand, with live progress, a run history, and a
 list of emails whose attachments could not be read. Emails already ingested are skipped, so

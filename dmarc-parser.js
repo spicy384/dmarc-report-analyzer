@@ -227,7 +227,41 @@ function parseAggregateReport(xml) {
     };
   });
 
+  for (const r of records) {
+    r.likelyForward = isLikelyForward(r);
+  }
+
   return { metadata, policy, records };
+}
+
+// RFC 7489 PolicyOverrideType values that mean "the receiver itself thinks this was relayed".
+const FORWARD_REASONS = new Set(["forwarded", "mailing_list", "trusted_forwarder"]);
+
+function domainsAligned(domain, headerFrom) {
+  if (!domain || !headerFrom) {
+    return false;
+  }
+  return domain === headerFrom || domain.endsWith(`.${headerFrom}`) || headerFrom.endsWith(`.${domain}`);
+}
+
+/**
+ * Whether a failed record looks like legitimate mail that was forwarded or went
+ * through a mailing list rather than a spoof. Two signals count:
+ *   - the reporter tagged it (forwarded / mailing_list / trusted_forwarder), or
+ *   - a DKIM signature for the From domain was present but no longer verified,
+ *     which means the message was signed by the domain and modified in transit.
+ * A spoofer has no signature for the domain at all, so this stays a useful line
+ * even though forwarded mail without DKIM cannot be told apart.
+ */
+function isLikelyForward(record) {
+  if (record.passed) {
+    return false;
+  }
+  if ((record.reasons || []).some((reason) => FORWARD_REASONS.has(reason.type))) {
+    return true;
+  }
+  return (record.dkimResults || []).some((d) =>
+    domainsAligned(d.domain, record.headerFrom) && d.result && d.result !== "pass" && d.result !== "none");
 }
 
 /** Totals for one parsed report: messages, passes, failures. */
@@ -247,6 +281,7 @@ module.exports = {
   NotAReportError,
   extractXmlDocuments,
   parseAggregateReport,
+  isLikelyForward,
   summarizeRecords,
   looksLikeXml,
   isGzip,

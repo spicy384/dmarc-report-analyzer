@@ -42,6 +42,21 @@ body.theme-dark {
   min-width: 160px;
 }
 
+.filter-bar .filter-check input {
+  min-width: 0;
+  width: auto;
+}
+
+.filter-bar .filter-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-bottom: 9px;
+  font-size: 13px;
+  color: var(--text);
+}
+
 .filter-actions {
   display: flex;
   gap: 8px;
@@ -235,6 +250,7 @@ tr.clickable:focus-visible td {
 .pill-fail { background: var(--warning-soft); color: var(--warning-fg); }
 .pill-quarantine { background: var(--warning-soft); color: var(--chart-quarantine); }
 .pill-reject { background: var(--danger-soft); color: var(--danger); }
+.pill-forward { background: var(--primary-soft); color: var(--primary); font-weight: 500; }
 
 /* --- detail drawers ----------------------------------------------------- */
 

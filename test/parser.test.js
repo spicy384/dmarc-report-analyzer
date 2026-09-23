@@ -64,6 +64,24 @@ check("microsoft: envelope identifiers", m.records[0].envelopeTo === "contoso.te
 check("microsoft: two reasons, reject", m.records[1].reasons.length === 2 && m.records[1].disposition === "reject");
 check("microsoft: softfail is not a pass", m.records[1].passed === false);
 
+// --- likely forwards ----------------------------------------------------------
+
+check("microsoft: passing forwarded record is not flagged (it passed)", m.records[0].likelyForward === false);
+check("microsoft: failure with local_policy only is not a forward", m.records[1].likelyForward === false);
+check("google: spoof with no signature is not a forward", g.records[1].likelyForward === false);
+
+const fwd = (reasonXml, authXml) => parser.parseAggregateReport(`<feedback><report_metadata><org_name>x</org_name><report_id>1</report_id>
+<date_range><begin>1</begin><end>2</end></date_range></report_metadata><policy_published><domain>example.com</domain></policy_published>
+<record><row><source_ip>10.0.0.1</source_ip><policy_evaluated><disposition>quarantine</disposition><dkim>fail</dkim><spf>fail</spf>${reasonXml}</policy_evaluated></row>
+<identifiers><header_from>example.com</header_from></identifiers><auth_results>${authXml}</auth_results></record></feedback>`).records[0].likelyForward;
+check("reason forwarded flags a forward", fwd("<reason><type>forwarded</type></reason>", "") === true);
+check("reason mailing_list flags a forward", fwd("<reason><type>mailing_list</type></reason>", "") === true);
+check("broken DKIM signature for the From domain flags a forward", fwd("", "<dkim><domain>example.com</domain><result>fail</result></dkim>") === true);
+check("broken DKIM signature for a subdomain of From flags a forward", fwd("", "<dkim><domain>mail.example.com</domain><result>permerror</result></dkim>") === true);
+check("DKIM for an unrelated domain is not a forward", fwd("", "<dkim><domain>spammer.test</domain><result>fail</result></dkim>") === false);
+check("DKIM result none is not a forward", fwd("", "<dkim><domain>example.com</domain><result>none</result></dkim>") === false);
+check("isLikelyForward is exported", typeof parser.isLikelyForward === "function" && parser.isLikelyForward({ passed: true }) === false);
+
 // --- edge cases -------------------------------------------------------------
 
 const single = `<feedback><report_metadata><org_name>x</org_name><report_id>1</report_id>

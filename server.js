@@ -65,7 +65,9 @@ function parseFilter(query = {}) {
     throw new Error("to must not be before from");
   }
   const domain = query.domain ? String(query.domain).trim().toLowerCase() : null;
-  return { from, to, domain };
+  const q = query.q ? String(query.q).trim().slice(0, 200) : null;
+  const excludeForwards = String(query.hideForwards || "") === "1";
+  return { from, to, domain, q: q || null, excludeForwards };
 }
 
 function positiveInt(value, fallback) {

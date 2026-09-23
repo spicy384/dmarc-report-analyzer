@@ -10,6 +10,8 @@ const domainSelect = document.getElementById("domain-select");
 const rangeLabel = document.getElementById("range-label");
 const refreshBtn = document.getElementById("refresh-btn");
 const exportBtn = document.getElementById("export-btn");
+const searchInput = document.getElementById("search-input");
+const hideForwards = document.getElementById("hide-forwards");
 
 const statGrid = document.getElementById("stat-grid");
 const chartWrap = document.getElementById("chart-wrap");
@@ -262,6 +264,8 @@ function filterQuery(extra = {}) {
   if (from !== null) params.set("from", String(from));
   if (to !== null) params.set("to", String(to));
   if (domainSelect.value) params.set("domain", domainSelect.value);
+  if (searchInput.value.trim()) params.set("q", searchInput.value.trim());
+  if (hideForwards.checked) params.set("hideForwards", "1");
   for (const [k, v] of Object.entries(extra)) {
     if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
   }
@@ -287,6 +291,24 @@ fromDate.addEventListener("change", () => { reportsPage = 1; loadAll(); });
 toDate.addEventListener("change", () => { reportsPage = 1; loadAll(); });
 domainSelect.addEventListener("change", () => { reportsPage = 1; loadAll(); });
 refreshBtn.addEventListener("click", () => loadAll());
+
+let searchTimer = null;
+searchInput.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { reportsPage = 1; loadAll(); }, 350);
+});
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    clearTimeout(searchTimer);
+    reportsPage = 1;
+    loadAll();
+  }
+});
+hideForwards.addEventListener("change", () => {
+  localStorage.setItem("dmarc-hide-forwards", hideForwards.checked ? "1" : "0");
+  reportsPage = 1;
+  loadAll();
+});
 failingOnly.addEventListener("change", () => loadIps());
 reporterFilter.addEventListener("change", () => { reportsPage = 1; loadReports(); });
 
@@ -344,7 +366,10 @@ function renderStats(t) {
   statGrid.replaceChildren(
     statTile("Messages", formatNumber(t.messages), { sub: `${formatNumber(t.reports)} reports` }),
     statTile("DMARC pass", formatPct(t.passPct), { sub: `${formatNumber(t.passed)} messages`, tone: "pass" }),
-    statTile("DMARC fail", formatPct(t.failPct), { sub: `${formatNumber(t.failed)} messages`, tone: t.failed > 0 ? "fail" : "" }),
+    statTile("DMARC fail", formatPct(t.failPct), {
+      sub: `${formatNumber(t.failed)} messages${t.likelyForwards ? `, ${formatNumber(t.likelyForwards)} likely forwards` : ""}`,
+      tone: t.failed > 0 ? "fail" : ""
+    }),
     statTile("Quarantined", formatNumber(t.quarantined), { tone: t.quarantined > 0 ? "quarantine" : "" }),
     statTile("Rejected", formatNumber(t.rejected), { tone: t.rejected > 0 ? "reject" : "" }),
     statTile("Failing sources", formatNumber(t.failingIps), { sub: `of ${formatNumber(t.sourceIps)} source IPs` }),
@@ -508,6 +533,7 @@ function ipRow(r) {
   if (r.failNone) dispositions.push(`${formatNumber(r.failNone)} delivered`);
   if (r.quarantined) dispositions.push(`${formatNumber(r.quarantined)} quarantined`);
   if (r.rejected) dispositions.push(`${formatNumber(r.rejected)} rejected`);
+  if (r.likelyForwards) dispositions.push(`${formatNumber(r.likelyForwards)} likely forwards`);
 
   const failCell = textCell(formatNumber(r.failed), r.failed > 0 ? "num is-fail" : "num");
   return {
@@ -555,7 +581,19 @@ function recordRows(records, { showIp = false } = {}) {
     }
     cells.push(
       textCell(formatNumber(rec.count), "num"),
-      (() => { const td = document.createElement("td"); td.appendChild(resultBadge(rec.passed, rec.disposition)); return td; })(),
+      (() => {
+        const td = document.createElement("td");
+        td.className = "nowrap";
+        td.appendChild(resultBadge(rec.passed, rec.disposition));
+        if (rec.likelyForward) {
+          const fwd = document.createElement("span");
+          fwd.className = "pill pill-forward";
+          fwd.textContent = "likely forward";
+          fwd.title = "The reporter tagged this as forwarded or list mail, or a DKIM signature for the From domain was present but broken";
+          td.append(" ", fwd);
+        }
+        return td;
+      })(),
       textCell(`${rec.spfEval || "-"} / ${rec.dkimEval || "-"}`, "mono"),
       textCell(rec.headerFrom || "", "mono"),
       textCell(rec.envelopeFrom || "", "mono muted"),
@@ -1365,6 +1403,7 @@ async function onSignedIn() {
 
 (async function init() {
   applyTheme(localStorage.getItem("dmarc-theme") || "light");
+  hideForwards.checked = localStorage.getItem("dmarc-hide-forwards") === "1";
   const savedRange = localStorage.getItem("dmarc-range");
   if (savedRange && [...rangeSelect.options].some((o) => o.value === savedRange)) {
     rangeSelect.value = savedRange;
