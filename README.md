@@ -198,6 +198,8 @@ Data lives in `./data` unless `DATA_DIR` says otherwise.
 | `DMARC_FOLDER` | `Inbox` | Folder to read. A display name, or a `Parent/Child` path |
 | `SYNC_INTERVAL_MINUTES` | `60` | Scheduled sync interval. `0` turns it off; **Sync now** still works |
 | `BACKFILL_DAYS` | `90` | How far back the very first sync looks |
+| `GEOIP_CITY_DB`, `GEOIP_ASN_DB` | `<data>/geoip/GeoLite2-*.mmdb` | MaxMind database files, if you have them |
+| `GEOIP_ONLINE` | `true` | Fall back to ip-api.com for IPs the files cannot answer |
 | `PORT` | `3000` | Listening port |
 | `DATA_DIR` | `./data` | Accounts, sessions, the SQLite database, generated TLS files |
 | `TZ` | `UTC` | Timezone for the container |
@@ -211,6 +213,21 @@ Data lives in `./data` unless `DATA_DIR` says otherwise.
 Nothing in the mailbox is changed: the app only reads. It remembers which emails it has
 ingested by their Graph message ID, and a report delivered twice (same reporter, report ID
 and domain) is stored once.
+
+### Country and network of source IPs
+
+Every source IP is looked up for country, city and network (ASN) after each sync, shown
+in the **Network** column and searchable. Two sources, files preferred:
+
+- **MaxMind GeoLite2 files**, read locally so no IP leaves your network. Create a free
+  MaxMind account, download `GeoLite2-City.mmdb` and `GeoLite2-ASN.mmdb`, and put them in
+  `geoip/` inside the data directory (`/data/geoip` in the container, or point
+  `GEOIP_CITY_DB` and `GEOIP_ASN_DB` at them). Restart, or use **Re-run GeoIP lookups**
+  under Mailbox sync to resolve everything again with the files.
+- **ip-api.com**, used for whatever the files cannot answer, or for everything when there
+  are no files. It is queried over plain HTTP in batches of 100, at most 15 requests a
+  minute, and its free tier is for non-commercial use; every unknown source IP is sent to
+  it. Set `GEOIP_ONLINE=false` to never use it.
 
 ### What gets ingested
 

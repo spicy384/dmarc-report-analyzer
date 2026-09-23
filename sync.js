@@ -36,12 +36,13 @@ const COUNTERS = ["seen", "skipped", "added", "duplicates", "noReport", "errors"
  * `mailboxes` is a mailbox store (enabledWithClients()). `graph` alone is still
  * accepted for a single client, which the older tests use.
  */
-function createSync({ db, mailboxes, graph, logger = console, backfillDays = 90, resolver, onRunFinished } = {}) {
+function createSync({ db, mailboxes, graph, geoip = null, logger = console, backfillDays = 90, resolver, onRunFinished } = {}) {
   const jobs = new Map();
   let running = null;
   let nextJobId = 1;
   let timer = null;
   let ptrInFlight = false;
+  let geoInFlight = false;
   const reverse = resolver || (() => {
     const r = new dns.promises.Resolver({ timeout: 3000, tries: 1 });
     return (ip) => r.reverse(ip);
@@ -238,7 +239,10 @@ function createSync({ db, mailboxes, graph, logger = console, backfillDays = 90,
     }
 
     if (job.added > 0) {
-      job.ptrPromise = lookupPtrs().catch((error) => logger.warn?.(`ptr lookups failed: ${error.message}`));
+      job.ptrPromise = lookupPtrs()
+        .catch((error) => logger.warn?.(`ptr lookups failed: ${error.message}`))
+        .then(() => lookupGeo())
+        .catch((error) => logger.warn?.(`geoip lookups failed: ${error.message}`));
     }
     if (onRunFinished) {
       try {
@@ -337,6 +341,32 @@ function createSync({ db, mailboxes, graph, logger = console, backfillDays = 90,
     return done;
   }
 
+  /** Country/ASN for source IPs not yet resolved; misses are cached too so they are not retried every run. */
+  async function lookupGeo({ all = false } = {}) {
+    if (!geoip || !geoip.isEnabled() || geoInFlight) {
+      return 0;
+    }
+    geoInFlight = true;
+    let done = 0;
+    try {
+      if (all) {
+        db.clearGeo();
+      }
+      const pending = db.ipsMissingGeo(2000);
+      if (!pending.length) {
+        return 0;
+      }
+      const results = await geoip.lookup(pending);
+      for (const [ip, info] of results) {
+        db.setGeo(ip, info);
+        done += 1;
+      }
+    } finally {
+      geoInFlight = false;
+    }
+    return done;
+  }
+
   function startScheduler(intervalMinutes) {
     stopScheduler();
     const minutes = Number(intervalMinutes);
@@ -370,6 +400,7 @@ function createSync({ db, mailboxes, graph, logger = console, backfillDays = 90,
     defaultSince,
     anyConfigured,
     lookupPtrs,
+    lookupGeo,
     startScheduler,
     stopScheduler,
     isFatal

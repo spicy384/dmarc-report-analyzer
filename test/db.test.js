@@ -130,6 +130,17 @@ check("search: like wildcards are literal", db.summary({ q: "%" }).totals.messag
 check("search: no match", db.summary({ q: "nothing-here" }).totals.messages === 0 && db.reports({ q: "nothing-here" }).total === 0);
 check("search combines with excludeForwards", db.summary({ q: "10.10.10.10", excludeForwards: true }).totals.messages === 0);
 
+// --- geoip cache ------------------------------------------------------------
+check("ips missing geo: every source at first", db.ipsMissingGeo().length === 5);
+db.setGeo("192.0.2.99", { countryCode: "DE", country: "Germany", city: "Berlin", asn: 3320, asOrg: "Deutsche Telekom AG", source: "online" });
+db.setGeo("203.0.113.10", { source: "none" });
+check("geo stored and joined onto ips", db.ips().find((r) => r.ip === "192.0.2.99").countryCode === "DE" && db.ips().find((r) => r.ip === "192.0.2.99").asOrg === "Deutsche Telekom AG" && db.ips().find((r) => r.ip === "192.0.2.99").ptr === "mail.badhost.test");
+check("geo miss cached as none", db.ipsMissingGeo().length === 3 && db.geoStats().unknown === 1 && db.geoStats().fromOnline === 1);
+check("records expose geo", db.records({}, { ip: "192.0.2.99" }).rows[0].asOrg === "Deutsche Telekom AG");
+check("search matches network and country", db.summary({ q: "telekom" }).totals.messages === 7 && db.summary({ q: "germany" }).totals.messages === 7 && db.reports({ q: "telekom" }).total === 1);
+check("clearGeo forgets answers", db.clearGeo() === 2 && db.ipsMissingGeo().length === 5);
+db.setGeo("192.0.2.99", { countryCode: "DE", country: "Germany", asn: 3320, asOrg: "Deutsche Telekom AG", source: "online" });
+
 // --- dkim selectors ---------------------------------------------------------
 const sels = db.dkimSelectors("example.com");
 check("dkim selectors seen for the domain (including the forwarder's)", sels.length === 3 && sels.find((s) => s.selector === "selector1").passed === 42 && sels.find((s) => s.selector === "s1").signingDomain === "example.com" && sels.find((s) => s.selector === "fwd").signingDomain === "forwarder.test", JSON.stringify(sels));

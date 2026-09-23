@@ -334,6 +334,18 @@ tr.clickable:focus-visible td {
 .pill-kind-vendor { background: var(--primary-soft); color: var(--primary); }
 .pill-kind-other { background: var(--surface-3); color: var(--text-muted); }
 
+td.network {
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+td.network .flag {
+  font-size: 15px;
+  margin-right: 4px;
+}
+
 .small-link {
   font-size: 12px;
   padding: 0;

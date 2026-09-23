@@ -53,7 +53,12 @@ const messages = [
     if (ip === "203.0.113.10") return ["mail-a.google.test"];
     throw new Error("ENOTFOUND");
   };
-  const sync = createSync({ db, graph, backfillDays: 30, resolver, logger: { warn() {}, error() {}, log() {} } });
+  const geoCalls = [];
+  const geoip = {
+    isEnabled: () => true,
+    lookup: async (ips) => { geoCalls.push(ips); return new Map(ips.map((ip) => [ip, ip === "203.0.113.10" ? { countryCode: "US", country: "United States", asn: 15169, asOrg: "Google LLC", source: "file" } : { source: "none" }])); }
+  };
+  const sync = createSync({ db, graph, geoip, backfillDays: 30, resolver, logger: { warn() {}, error() {}, log() {} } });
 
   // --- connection test ---------------------------------------------------------
   const conn = await graph.testConnection();
@@ -101,6 +106,9 @@ const messages = [
   const ipRows = db.ips();
   check("ptr lookups cached", ipRows.find((r) => r.ip === "203.0.113.10").ptr === "mail-a.google.test" && ipRows.find((r) => r.ip === "192.0.2.99").ptr === null);
   check("no ips left to look up", db.ipsMissingPtr().length === 0);
+  check("geoip ran after ptr lookups", geoCalls.length === 1 && geoCalls[0].includes("203.0.113.10") && ipRows.find((r) => r.ip === "203.0.113.10").asOrg === "Google LLC" && ipRows.find((r) => r.ip === "203.0.113.10").countryCode === "US");
+  check("geoip misses cached, nothing left to resolve", db.ipsMissingGeo().length === 0 && db.geoStats().unknown === 3);
+  check("lookupGeo all re-resolves everything", (await sync.lookupGeo({ all: true })) === 4 && geoCalls.length === 2);
 
   // --- run 2: everything already seen except m3 ---------------------------------
   const second = sync.runSync({ trigger: "scheduled" });

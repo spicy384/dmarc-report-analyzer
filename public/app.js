@@ -53,6 +53,7 @@ const addMailboxBtn = document.getElementById("add-mailbox-btn");
 const mailboxForm = document.getElementById("mailbox-form");
 const mailboxFormTitle = document.getElementById("mailbox-form-title");
 const syncProgressList = document.getElementById("sync-progress-list");
+const geoipRefreshBtn = document.getElementById("geoip-refresh-btn");
 const mailboxSelect = document.getElementById("mailbox-select");
 const mailboxLabel = document.getElementById("mailbox-label");
 const backfillDate = document.getElementById("backfill-date");
@@ -602,6 +603,27 @@ async function loadSummary() {
 
 // --- sources ---------------------------------------------------------------
 
+function flagEmoji(cc) {
+  const code = String(cc || "").toUpperCase();
+  return /^[A-Z]{2}$/.test(code) ? String.fromCodePoint(...[...code].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : "";
+}
+
+function networkCell(r) {
+  const td = document.createElement("td");
+  td.className = "network";
+  if (!r.countryCode && !r.asOrg) {
+    td.textContent = "";
+    return td;
+  }
+  const flag = document.createElement("span");
+  flag.className = "flag";
+  flag.textContent = flagEmoji(r.countryCode);
+  td.appendChild(flag);
+  td.append(`${r.countryCode || ""}${r.asOrg ? ` ${r.asn ? "AS" + r.asn + " " : ""}${r.asOrg}` : ""}`);
+  td.title = [r.country, r.city, r.asn ? `AS${r.asn}` : null, r.asOrg].filter(Boolean).join(", ");
+  return td;
+}
+
 function ipRow(r) {
   const dispositions = [];
   if (r.failNone) dispositions.push(`${formatNumber(r.failNone)} delivered`);
@@ -630,6 +652,7 @@ function ipRow(r) {
     cells: [
       textCell(r.ip, "mono"),
       textCell(r.ptr || "", "mono muted"),
+      networkCell(r),
       senderCell,
       textCell(formatNumber(r.total), "num"),
       failCell,
@@ -649,7 +672,7 @@ async function loadIps() {
   const rows = data.ips || [];
   ipsCount.textContent = `${rows.length} source${rows.length === 1 ? "" : "s"}`;
   ipsResults.replaceChildren(buildTable(
-    ["Source IP", "Reverse DNS", "Sender", { label: "Messages", className: "num" }, { label: "Failed", className: "num" }, { label: "Fail %", className: "num" },
+    ["Source IP", "Reverse DNS", "Network", "Sender", { label: "Messages", className: "num" }, { label: "Failed", className: "num" }, { label: "Fail %", className: "num" },
       "Failures by action", { label: "SPF / DKIM pass", className: "num" }, "SPF domain", "DKIM domain", "Reported by", "Last seen"],
     rows.map(ipRow),
     { emptyText: failingOnly.checked ? "No failing sources in this period." : "No sources in this period.", onRowClick: (r) => openIpDetail(r.ip) }
@@ -702,6 +725,7 @@ async function openIpDetail(ip) {
       kv("Messages", formatNumber(d.total)),
       kv("Failed", `${formatNumber(d.failed)} (${formatPct(d.failPct)})`),
       kv("Seen", `${formatUtcDate(d.firstSeen)} to ${formatUtcDate(Math.max(d.firstSeen, d.lastSeen - 1))}`),
+      kv("Network", d.countryCode || d.asOrg ? [flagEmoji(d.countryCode), d.country, d.city, d.asn ? `AS${d.asn}` : null, d.asOrg].filter(Boolean).join(" ") : "not resolved"),
       kv("Sender", d.sender ? `${d.sender.label} (${KIND_LABEL[d.sender.kind] || d.sender.kind}, ${d.sender.pattern})` : "unknown - not labelled"),
       kv("Reported by", d.reporterNames.join(", ")),
       kv("Header From", d.headerFroms.join(", ") || "-"),
@@ -1616,7 +1640,8 @@ function renderSyncStatus(st) {
     kvRow("Scheduled sync", st.scheduler?.enabled ? `every ${st.scheduler.intervalMinutes} min` : "off"),
     kvRow("Backfill window", `${st.backfillDays} days on a mailbox's first sync`),
     kvRow("Last run", describeRun(st.lastRun)),
-    kvRow("Stored", `${formatNumber(st.stats?.reports?.reports)} reports from ${formatNumber(st.stats?.messages?.ingested)} emails`)
+    kvRow("Stored", `${formatNumber(st.stats?.reports?.reports)} reports from ${formatNumber(st.stats?.messages?.ingested)} emails`),
+    kvRow("GeoIP", describeGeoip(st.geoip))
   );
 
   const usable = st.configured && canWrite();
@@ -1707,6 +1732,27 @@ document.getElementById("mb-save").addEventListener("click", async () => {
     closeMailboxForm();
     showSyncMessage(`${editingMailboxId ? "Saved" : "Added"} ${data.mailbox.name}. Use Test to check the connection, then Sync.`);
     await loadSyncStatus();
+  } catch (error) {
+    showSyncMessage(error.message, true);
+  }
+});
+
+function describeGeoip(g) {
+  if (!g) return "unknown";
+  const src = [];
+  if (g.cityDb) src.push("city file");
+  if (g.asnDb) src.push("ASN file");
+  if (g.online) src.push(`online (${g.onlineProvider})`);
+  if (!src.length) return "off - no GeoLite2 files and GEOIP_ONLINE=false";
+  const st = g.stats || {};
+  return `${src.join(" + ")}; ${formatNumber(st.resolved || 0)} addresses resolved${st.unknown ? `, ${formatNumber(st.unknown)} unknown` : ""}${g.problems && g.problems.length ? `; ${g.problems.join("; ")}` : ""}`;
+}
+
+geoipRefreshBtn.addEventListener("click", async () => {
+  if (!confirm("Look up country and network again for every source IP? With no local files this sends every address to ip-api.com.")) return;
+  try {
+    await api("/api/geoip/refresh", { method: "POST", body: JSON.stringify({ all: true }) });
+    showSyncMessage("GeoIP lookups started in the background; refresh in a minute.");
   } catch (error) {
     showSyncMessage(error.message, true);
   }
@@ -1940,6 +1986,7 @@ function applyIdentity(user, token) {
   logoutBtn.hidden = !signedIn;
   usersBtn.hidden = !signedIn || user.role !== "admin";
   addMailboxBtn.hidden = !signedIn || user.role !== "admin";
+  geoipRefreshBtn.hidden = !signedIn || user.role !== "admin";
   if (!signedIn) mailboxForm.hidden = true;
 
   if (signedIn) {

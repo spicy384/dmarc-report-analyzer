@@ -43,6 +43,13 @@ services:
       # How far back the very first sync looks. Later runs continue from the newest email seen.
       BACKFILL_DAYS: ${BACKFILL_DAYS:-90}
 
+      # --- Country / network of source IPs -----------------------------------
+      # Put MaxMind's free GeoLite2-City.mmdb and GeoLite2-ASN.mmdb in the geoip/ folder of
+      # the data volume (docker cp them into the container at /data/geoip) for offline
+      # lookups. Without them, unknown IPs are sent to ip-api.com (free for non-commercial
+      # use, plain HTTP); set GEOIP_ONLINE=false to never do that.
+      GEOIP_ONLINE: ${GEOIP_ONLINE:-true}
+
       # Set true once HTTPS terminates in front of this, so the session cookie is marked
       # Secure. Leave false on plain HTTP or sign-in will not work at all.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}

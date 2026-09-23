@@ -10,6 +10,7 @@ const { createMailboxStore } = require("./mailboxes");
 const { createDnsRecords } = require("./dns-records");
 const { evaluateAfterSync } = require("./alerts");
 const { compileSenders, findSender } = require("./ipmatch");
+const { createGeoIp } = require("./geoip");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -33,9 +34,16 @@ const authGuard = createAuth({ dataDir: DATA_DIR });
 const db = openDatabase({ dataDir: DATA_DIR });
 const envGraph = configFromEnv();
 const mailboxes = createMailboxStore({ dataDir: DATA_DIR, env: envGraph, loginBase: envGraph.loginBase, graphBase: envGraph.graphBase });
+const geoip = createGeoIp({
+  dataDir: DATA_DIR,
+  cityDb: process.env.GEOIP_CITY_DB || undefined,
+  asnDb: process.env.GEOIP_ASN_DB || undefined,
+  online: String(process.env.GEOIP_ONLINE || "true").toLowerCase() !== "false"
+});
 const sync = createSync({
   db,
   mailboxes,
+  geoip,
   backfillDays: BACKFILL_DAYS,
   onRunFinished: (job) => {
     const { created } = evaluateAfterSync({ db, addedReportIds: job.addedReportIds });
@@ -146,6 +154,7 @@ app.get("/api/status", route(async (req, res) => {
   res.json({
     mailboxes: list,
     mailboxCounts: db.mailboxCounts(),
+    geoip: { ...geoip.describe(), stats: db.geoStats() },
     configured: list.some((m) => m.enabled),
     scheduler: { intervalMinutes: SYNC_INTERVAL_MINUTES, enabled: SYNC_INTERVAL_MINUTES > 0 && sync.anyConfigured() },
     backfillDays: BACKFILL_DAYS,
@@ -183,6 +192,18 @@ app.get("/api/sync/:id", route(async (req, res) => {
     return res.status(404).json({ error: "No such sync job." });
   }
   res.json(publicJob(job));
+}));
+
+// --- geoip ---------------------------------------------------------------------
+
+/** Re-resolves every source IP, e.g. after the GeoLite2 files were added. Runs in the background. */
+app.post("/api/geoip/refresh", authGuard.requireAdmin, route(async (req, res) => {
+  if (!geoip.isEnabled()) {
+    return res.status(400).json({ error: "GeoIP is off: no GeoLite2 files were found and GEOIP_ONLINE is false." });
+  }
+  const all = Boolean(req.body && req.body.all);
+  sync.lookupGeo({ all }).then((n) => console.log(`geoip: resolved ${n} address(es)`)).catch((error) => console.warn(`geoip: ${error.message}`));
+  res.json({ ok: true, started: true, all });
 }));
 
 // --- policy readiness ----------------------------------------------------------
@@ -491,6 +512,17 @@ if (require.main === module) {
       console.log("Mailbox: none configured - add one under Mailbox sync as an administrator, or set "
         + "GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and DMARC_MAILBOX.");
     }
+
+    geoip.open().then((g) => {
+      const parts = [];
+      if (g.cityDb) parts.push("city file");
+      if (g.asnDb) parts.push("ASN file");
+      if (g.online) parts.push(`online via ${g.onlineProvider}`);
+      console.log(`GeoIP: ${parts.length ? parts.join(", ") : "off"}${g.problems.length ? ` (problems: ${g.problems.join("; ")})` : ""}`);
+      if (!g.cityDb || !g.asnDb) {
+        console.log(`        Put GeoLite2-City.mmdb and GeoLite2-ASN.mmdb in ${path.join(DATA_DIR, "geoip")} for offline lookups.`);
+      }
+    });
 
     if (!authGuard.hasUsers()) {
       console.log("Accounts: none yet - open the app to create the first administrator.");

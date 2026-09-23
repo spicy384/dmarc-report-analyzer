@@ -17,7 +17,8 @@ const { parsePattern, compileSenders, findSender } = require("./ipmatch");
 // 3: mailbox_id on messages, reports and sync_runs (multi-mailbox / multi-tenant)
 // 4: known_senders (created by the schema; version bump only)
 // 5: alerts (created by the schema; version bump only)
-const SCHEMA_VERSION = 5;
+// 6: ip_info country/city/ASN columns
+const SCHEMA_VERSION = 6;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -86,7 +87,14 @@ CREATE INDEX IF NOT EXISTS idx_records_passed ON records(passed);
 CREATE TABLE IF NOT EXISTS ip_info (
   ip           TEXT PRIMARY KEY,
   ptr          TEXT,
-  looked_up_at INTEGER NOT NULL
+  looked_up_at INTEGER NOT NULL,
+  country_code TEXT,
+  country      TEXT,
+  city         TEXT,
+  asn          INTEGER,
+  as_org       TEXT,
+  geo_source   TEXT,               -- file | online | file+online | none
+  geo_at       INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -194,12 +202,13 @@ function buildFilter(filter = {}, { r = "r", x = null } = {}) {
     const reportCols = [`${r}.org_name`, `${r}.domain`, `${r}.report_id`];
     const recordMatch = (alias) => [
       ...SEARCH_RECORD_COLUMNS.map((c) => `${alias}.${c} LIKE ? ESCAPE '\\'`),
-      `EXISTS (SELECT 1 FROM ip_info ip2 WHERE ip2.ip = ${alias}.source_ip AND ip2.ptr LIKE ? ESCAPE '\\')`
+      `EXISTS (SELECT 1 FROM ip_info ip2 WHERE ip2.ip = ${alias}.source_ip AND (ip2.ptr LIKE ? ESCAPE '\\' OR ip2.as_org LIKE ? ESCAPE '\\' OR ip2.country LIKE ? ESCAPE '\\'))`
     ];
+    // The ip_info clause carries three placeholders (ptr, as_org, country) for its one entry.
     if (x) {
       const parts = [...reportCols.map((c) => `${c} LIKE ? ESCAPE '\\'`), ...recordMatch(x)];
       clauses.push(`(${parts.join(" OR ")})`);
-      params.push(...Array(parts.length).fill(like));
+      params.push(...Array(parts.length + 2).fill(like));
     } else {
       const inner = recordMatch("x2");
       const parts = [
@@ -207,7 +216,7 @@ function buildFilter(filter = {}, { r = "r", x = null } = {}) {
         `EXISTS (SELECT 1 FROM records x2 WHERE x2.report_id = ${r}.id AND (${inner.join(" OR ")}))`
       ];
       clauses.push(`(${parts.join(" OR ")})`);
-      params.push(...Array(reportCols.length + inner.length).fill(like));
+      params.push(...Array(reportCols.length + inner.length + 2).fill(like));
     }
   }
 
@@ -261,7 +270,10 @@ function shapeRecord(row) {
     rangeBegin: row.range_begin,
     rangeEnd: row.range_end,
     policy: row.p,
-    ptr: row.ptr === undefined ? undefined : row.ptr
+    ptr: row.ptr === undefined ? undefined : row.ptr,
+    countryCode: row.country_code === undefined ? undefined : row.country_code,
+    asn: row.asn === undefined ? undefined : row.asn,
+    asOrg: row.as_org === undefined ? undefined : row.as_org
   };
 }
 
@@ -331,6 +343,15 @@ function migrate(db) {
     }
     db.exec("UPDATE sync_runs SET mailbox_id = 'env' WHERE mailbox_id IS NULL");
     db.exec("CREATE INDEX IF NOT EXISTS idx_reports_mailbox ON reports(mailbox_id)");
+  }
+
+  if (version < 6) {
+    const cols = db.pragma("table_info(ip_info)").map((c) => c.name);
+    for (const [name, type] of [["country_code", "TEXT"], ["country", "TEXT"], ["city", "TEXT"], ["asn", "INTEGER"], ["as_org", "TEXT"], ["geo_source", "TEXT"], ["geo_at", "INTEGER"]]) {
+      if (!cols.includes(name)) {
+        db.exec(`ALTER TABLE ip_info ADD COLUMN ${name} ${type}`);
+      }
+    }
   }
 
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -557,7 +578,12 @@ function openDatabase({ dataDir, file } = {}) {
              GROUP_CONCAT(DISTINCT x.envelope_from) AS envelopeFroms,
              GROUP_CONCAT(DISTINCT x.spf_domain) AS spfDomains,
              GROUP_CONCAT(DISTINCT x.dkim_domain) AS dkimDomains,
-             MAX(i.ptr) AS ptr
+             MAX(i.ptr) AS ptr,
+             MAX(i.country_code) AS countryCode,
+             MAX(i.country) AS country,
+             MAX(i.city) AS city,
+             MAX(i.asn) AS asn,
+             MAX(i.as_org) AS asOrg
       FROM records x
       JOIN reports r ON r.id = x.report_id
       LEFT JOIN ip_info i ON i.ip = x.source_ip
@@ -614,7 +640,7 @@ function openDatabase({ dataDir, file } = {}) {
 
     const total = db.prepare(`SELECT COUNT(*) AS n FROM records x JOIN reports r ON r.id = x.report_id WHERE ${where}`).get(...params).n;
     const rows = db.prepare(`
-      SELECT x.*, r.org_name, r.domain, r.range_begin, r.range_end, r.p, i.ptr
+      SELECT x.*, r.org_name, r.domain, r.range_begin, r.range_end, r.p, i.ptr, i.country_code, i.as_org, i.asn
       FROM records x
       JOIN reports r ON r.id = x.report_id
       LEFT JOIN ip_info i ON i.ip = x.source_ip
@@ -964,6 +990,31 @@ function openDatabase({ dataDir, file } = {}) {
     stmts.setPtr.run(ip, ptr || null, now());
   }
 
+  /** Source IPs with no geo lookup yet (ip_info row missing or never geo-resolved). */
+  function ipsMissingGeo(limit = 500) {
+    return db.prepare(`SELECT DISTINCT x.source_ip AS ip FROM records x
+      LEFT JOIN ip_info i ON i.ip = x.source_ip WHERE i.geo_at IS NULL LIMIT ?`).all(limit).map((r) => r.ip);
+  }
+
+  function setGeo(ip, info = {}) {
+    db.prepare(`INSERT INTO ip_info (ip, ptr, looked_up_at, country_code, country, city, asn, as_org, geo_source, geo_at)
+      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(ip) DO UPDATE SET country_code = excluded.country_code, country = excluded.country, city = excluded.city,
+        asn = excluded.asn, as_org = excluded.as_org, geo_source = excluded.geo_source, geo_at = excluded.geo_at`)
+      .run(ip, now(), info.countryCode || null, info.country || null, info.city || null, info.asn || null, info.asOrg || null, info.source || "none", now());
+  }
+
+  /** Forgets every geo answer so the next lookup pass redoes them (after adding the MaxMind files, say). */
+  function clearGeo() {
+    return db.prepare("UPDATE ip_info SET country_code = NULL, country = NULL, city = NULL, asn = NULL, as_org = NULL, geo_source = NULL, geo_at = NULL").run().changes;
+  }
+
+  function geoStats() {
+    return db.prepare(`SELECT COUNT(*) AS resolved, SUM(CASE WHEN geo_source = 'none' THEN 1 ELSE 0 END) AS unknown,
+      SUM(CASE WHEN geo_source LIKE 'file%' THEN 1 ELSE 0 END) AS fromFiles, SUM(CASE WHEN geo_source = 'online' THEN 1 ELSE 0 END) AS fromOnline
+      FROM ip_info WHERE geo_at IS NOT NULL`).get();
+  }
+
   // --- sync runs / settings ---------------------------------------------------
 
   function startRun(trigger, since, mailboxId = "env") {
@@ -1024,6 +1075,10 @@ function openDatabase({ dataDir, file } = {}) {
     messagesWithErrors,
     ipsMissingPtr,
     setPtr,
+    ipsMissingGeo,
+    setGeo,
+    clearGeo,
+    geoStats,
     startRun,
     finishRun,
     runs,
