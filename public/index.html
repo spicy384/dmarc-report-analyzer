@@ -359,6 +359,25 @@
       </div>
     </section>
 
+    <section class="panel" id="forensic-panel" hidden>
+      <div class="panel-head">
+        <h2>Forensic reports</h2>
+        <span id="forensic-count" class="badge">0 reports</span>
+      </div>
+      <p class="bulk-hint">
+        Per-message failure reports (<span class="mono">ruf=</span>) from the few receivers that
+        still send them. Unlike aggregate reports these carry the exact time, the original
+        sender, subject and Message-ID, so a message trace can be precise. Click a row for the
+        original headers and the Exchange Online queries.
+      </p>
+      <div id="forensic-results" class="table-scroll"></div>
+      <div class="pager">
+        <button id="forensic-prev" type="button" class="secondary small">Previous</button>
+        <span id="forensic-page-label"></span>
+        <button id="forensic-next" type="button" class="secondary small">Next</button>
+      </div>
+    </section>
+
     <section class="panel" id="sync-panel">
       <div class="panel-head">
         <h2>Mailbox sync</h2>

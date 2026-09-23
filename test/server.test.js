@@ -187,6 +187,10 @@ async function waitForServer(tries = 60) {
     const runs = await req("/api/sync/runs");
     check("sync: run history", runs.body.runs.length === 1 && runs.body.runs[0].trigger === "manual" && /GRAPH_TENANT_ID/.test(runs.body.runs[0].error_text));
 
+    // --- forensic reports ---
+    check("forensic: empty list", (await req("/api/forensic")).body.total === 0 && (await req("/api/status")).body.forensicCount === 0);
+    check("forensic: unknown id is 404", (await req("/api/forensic/999")).status === 404);
+
     // --- weekly summary ---
     const wk = await req("/api/weekly?end=2025-09-19");
     check("weekly: shape and totals", wk.status === 200 && wk.body.thisWeek.totals.messages === 53 && wk.body.lastWeek.totals.messages === 0 && wk.body.newSources.length === 4 && wk.body.topFailing.length === 2);

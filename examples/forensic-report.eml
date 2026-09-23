@@ -1,0 +1,45 @@
+From: DMARC Reporter <dmarc-noreply@receiver.test>
+To: dmarc-reports@example.com
+Subject: DMARC failure report for example.com
+Date: Tue, 22 Sep 2026 09:31:07 +0000
+Message-ID: <arf-1@receiver.test>
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=feedback-report; boundary="arf-boundary"
+
+--arf-boundary
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+This is an authentication failure report for an email message received from
+IP 185.220.101.7 on Tue, 22 Sep 2026 09:30:44 +0000.
+
+--arf-boundary
+Content-Type: message/feedback-report
+
+Feedback-Type: auth-failure
+User-Agent: ReceiverMTA/2.1
+Version: 1
+Original-Mail-From: <bounce@spammy.example.net>
+Original-Rcpt-To: <someone@receiver.test>
+Arrival-Date: Tue, 22 Sep 2026 09:30:44 +0000
+Source-IP: 185.220.101.7
+Reported-Domain: example.com
+Authentication-Results: mx.receiver.test; dmarc=fail (p=quarantine dis=quarantine) header.from=example.com;
+  spf=fail smtp.mailfrom=spammy.example.net; dkim=none
+Auth-Failure: dmarc
+Delivery-Result: spam
+Reporting-MTA: dns; mx.receiver.test
+
+--arf-boundary
+Content-Type: message/rfc822
+Content-Transfer-Encoding: base64
+
+UmVjZWl2ZWQ6IGZyb20gdnBzLmV4YW1wbGUubmV0ICgxODUuMjIwLjEwMS43KSBieSBteC5yZWNl
+aXZlci50ZXN0IHdpdGggRVNNVFA7IFR1ZSwgMjIgU2VwIDIwMjYgMDk6MzA6NDQgKzAwMDANCkZy
+b206ICJBY2NvdW50cyBQYXlhYmxlIiA8ZmluYW5jZUBleGFtcGxlLmNvbT4NClRvOiBzb21lb25l
+QHJlY2VpdmVyLnRlc3QNClN1YmplY3Q6ID0/dXRmLTg/Qj9WWEpuWlc1MElHbHVkbTlwWTJVZzRv
+Q1RJSEJoZVNCMGIyUmhlUT09Pz0NCkRhdGU6IFR1ZSwgMjIgU2VwIDIwMjYgMDk6MzA6MTIgKzAw
+MDANCk1lc3NhZ2UtSUQ6IDwyMDI2MDkyMjA5MzAxMi4xMjM0NUB2cHMuZXhhbXBsZS5uZXQ+DQpD
+b250ZW50LVR5cGU6IHRleHQvcGxhaW4NCg0KUGxlYXNlIHBheSB0aGUgYXR0YWNoZWQgaW52b2lj
+ZS4NCg==
+--arf-boundary--

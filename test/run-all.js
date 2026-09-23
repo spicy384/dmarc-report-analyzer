@@ -4,6 +4,7 @@ const path = require("path");
 
 const SUITES = [
   "parser.test.js",
+  "arf.test.js",
   "ipmatch.test.js",
   "dns-records.test.js",
   "db.test.js",

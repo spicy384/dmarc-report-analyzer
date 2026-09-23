@@ -95,9 +95,15 @@ re-running is cheap; a backfill option re-scans from any date.
 
 Aggregate (`rua=`) reports cover a window, usually one UTC day, and give counts per source
 IP. They do **not** contain a timestamp for each message. The times you see here are the
-report window and when the report email arrived. Only forensic (`ruf=`) reports carry
-per-message timestamps, and almost no large provider sends those any more; they are not
-parsed yet.
+report window and when the report email arrived.
+
+**Forensic reports** (`ruf=`, ARF format) are the exception: one email per failing
+message with the exact arrival time, the source IP, the original sender, subject and
+Message-ID, and the original headers. The analyzer parses them when a receiver sends
+them (few large providers still do) and shows them in a **Forensic reports** panel that
+appears only when there are any; each row expands to the headers and an Exchange Online
+message trace scoped to the hour around the arrival time with the Message-ID, which is
+as precise as a trace gets.
 
 ### Accounts
 
@@ -303,8 +309,8 @@ aggregation, the ingest job against a mock Graph server (paging, throttling, tra
 fatal failures, deduplication, reverse DNS), the HTTP API, and the accounts/sessions/TOTP
 flow against the real server.
 
-## Not yet
+## Ideas not built
 
-- Forensic (`ruf=`) reports.
-- GeoIP / ASN lookup of source IPs.
-- Alerts when a new failing source appears.
+- Alerting by email or webhook (alerts are in-app only).
+- Full ASN-level roll-ups of sources (each IP is shown with its network; there is no
+  per-network view).

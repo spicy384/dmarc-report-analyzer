@@ -5,6 +5,9 @@
  */
 const dns = require("dns");
 const { extractXmlDocuments, parseAggregateReport } = require("./dmarc-parser");
+const { parseArf, looksLikeArf } = require("./arf-parser");
+
+const MAX_MIME_BYTES = 4 * 1024 * 1024;
 const { GraphError } = require("./graph");
 
 const DAY = 86400;
@@ -30,7 +33,7 @@ function isFatal(error) {
     || error.code === "folder_not_found" || error.code === "throttled";
 }
 
-const COUNTERS = ["seen", "skipped", "added", "duplicates", "noReport", "errors", "warnings"];
+const COUNTERS = ["seen", "skipped", "added", "duplicates", "noReport", "errors", "warnings", "forensic"];
 
 /**
  * `mailboxes` is a mailbox store (enabledWithClients()). `graph` alone is still
@@ -132,6 +135,32 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
         } else {
           bump(job, box, "added");
           job.addedReportIds.push(result.reportId);
+        }
+      }
+    }
+
+    // No aggregate report: maybe a forensic (ARF) one, whose parts are not ordinary attachments.
+    if (reportsFound === 0 && looksLikeArf({ subject: message.subject, from: message.from, attachments })) {
+      try {
+        const mime = await box.client.getMime(message.id);
+        if (mime.length > MAX_MIME_BYTES) {
+          problems.push(`forensic report is ${Math.round(mime.length / 1024 / 1024)} MB; skipped`);
+        } else {
+          const parsed = parseArf(mime);
+          const result = db.insertForensic({ messageId: message.id, mailboxId: box.id, parsed });
+          reportsFound += 1;
+          if (result.duplicate) {
+            bump(job, box, "duplicates");
+          } else {
+            bump(job, box, "forensic");
+          }
+        }
+      } catch (error) {
+        if (error.code !== "not_arf") {
+          if (isFatal(error)) {
+            throw error;
+          }
+          problems.push(`forensic report: ${error.message}`);
         }
       }
     }

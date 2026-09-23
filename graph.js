@@ -258,6 +258,11 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
     return out;
   }
 
+  /** The raw MIME of a message (for forensic reports, whose parts are not ordinary attachments). */
+  async function getMime(messageId) {
+    return graphFetch(`${userBase()}/messages/${encodeURIComponent(messageId)}/$value`, { raw: true });
+  }
+
   /** Token + folder lookup, for the Settings panel. Never throws; returns { ok, detail }. */
   async function testConnection() {
     if (!isConfigured()) {
@@ -292,6 +297,7 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
     resolveFolderId,
     listMessages,
     getAttachments,
+    getMime,
     testConnection
   };
 }

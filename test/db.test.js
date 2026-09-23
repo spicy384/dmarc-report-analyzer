@@ -141,6 +141,18 @@ check("search matches network and country", db.summary({ q: "telekom" }).totals.
 check("clearGeo forgets answers", db.clearGeo() === 2 && db.ipsMissingGeo().length === 5);
 db.setGeo("192.0.2.99", { countryCode: "DE", country: "Germany", asn: 3320, asOrg: "Deutsche Telekom AG", source: "online" });
 
+// --- forensic reports -------------------------------------------------------
+const { parseArf } = require("../arf-parser");
+const arfParsed = parseArf(fs.readFileSync(path.join(EX, "forensic-report.eml")));
+check("no forensic reports yet", db.forensicCount() === 0 && db.forensics().total === 0);
+const fr = db.insertForensic({ messageId: "arf-1", mailboxId: "env", parsed: arfParsed });
+check("forensic inserted", fr.id > 0 && !fr.duplicate && db.forensicCount() === 1);
+check("forensic duplicate by message id ignored", db.insertForensic({ messageId: "arf-1", parsed: arfParsed }).duplicate === true);
+const flist = db.forensics();
+check("forensic list joined with ip_info", flist.total === 1 && flist.rows[0].sourceIp === "185.220.101.7" && flist.rows[0].originalSubject === "Urgent invoice – pay today" && flist.rows[0].headers === undefined);
+check("forensic by id carries headers", /^Received:/.test(db.forensicById(fr.id).headers) && db.forensicById(999) === null);
+check("forensic filters: window, domain, ip, search", db.forensics({ from: arfParsed.arrivalAt + 1 }).total === 0 && db.forensics({ domain: "example.com" }).total === 1 && db.forensics({}, { ip: "1.2.3.4" }).total === 0 && db.forensics({ q: "invoice" }).total === 1 && db.forensics({ q: "spammy" }).total === 1 && db.forensics({ q: "nothing" }).total === 0);
+
 // --- first-seen sources -----------------------------------------------------
 const fresh = db.firstSeenSources({ from: 1758153600, to: 1758240000 });
 check("first-seen sources inside the window", fresh.length === 5 && fresh[0].failed >= fresh[fresh.length - 1].failed && fresh.find((r) => r.ip === "192.0.2.99").ptr === "mail.badhost.test");

@@ -868,6 +868,99 @@ function kv(label, value) {
   return div;
 }
 
+// --- forensic reports -----------------------------------------------------------
+
+const forensicPanel = document.getElementById("forensic-panel");
+const forensicResults = document.getElementById("forensic-results");
+const forensicCount = document.getElementById("forensic-count");
+const forensicPrev = document.getElementById("forensic-prev");
+const forensicNext = document.getElementById("forensic-next");
+const forensicPageLabel = document.getElementById("forensic-page-label");
+let forensicPage = 1;
+
+forensicPrev.addEventListener("click", () => { forensicPage = Math.max(1, forensicPage - 1); loadForensic(); });
+forensicNext.addEventListener("click", () => { forensicPage += 1; loadForensic(); });
+
+function forensicDetail(f) {
+  const wrap = document.createElement("div");
+  const summary = document.createElement("div");
+  summary.className = "detail-summary";
+  summary.append(
+    kv("Arrived at receiver", f.arrivalAt ? `${formatUtcDateTime(f.arrivalAt)} (${formatTimestamp(f.arrivalAt)} local)` : "-"),
+    kv("Failure", `${f.authFailure || "?"}${f.deliveryResult ? `, delivered as ${f.deliveryResult}` : ""}`),
+    kv("Reported by", f.reportingMta || f.reporterFrom || "-"),
+    kv("Original From", f.originalFrom || "-"),
+    kv("Original To", f.originalTo || f.originalRcptTo || "-"),
+    kv("Envelope From", f.originalMailFrom || "-"),
+    kv("Message-ID", f.originalMessageId || "-"),
+    kv("Authentication-Results", f.authenticationResults || "-")
+  );
+  wrap.appendChild(summary);
+
+  if (f.arrivalAt) {
+    wrap.appendChild(exoSearchBlock({
+      begin: f.arrivalAt - 3600,
+      end: f.arrivalAt + 3600,
+      ip: f.sourceIp,
+      domain: f.reportedDomain,
+      messageId: f.originalMessageId,
+      exact: true
+    }));
+  }
+
+  if (f.headers) {
+    const h = document.createElement("details");
+    const s = document.createElement("summary");
+    s.textContent = "Original message headers";
+    h.appendChild(s);
+    const pre = document.createElement("pre");
+    pre.className = "exo-code mono";
+    pre.textContent = f.headers;
+    h.appendChild(pre);
+    wrap.appendChild(h);
+  }
+  return wrap;
+}
+
+async function loadForensic() {
+  const data = await api(`/api/forensic${filterQuery({ page: forensicPage, pageSize: 50 })}`);
+  const rows = data.rows || [];
+  forensicPanel.hidden = data.total === 0 && forensicPage === 1;
+  forensicCount.textContent = `${formatNumber(data.total)} report${data.total === 1 ? "" : "s"}`;
+  const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
+  forensicPageLabel.textContent = `Page ${data.page} of ${pages}`;
+  forensicPrev.disabled = data.page <= 1;
+  forensicNext.disabled = data.page >= pages;
+
+  forensicResults.replaceChildren(buildTable(
+    ["Arrived (UTC)", "Source IP", "Network", "Domain", "Failure", "Original From", "Subject", "Reported by"],
+    rows.map((f) => ({
+      data: f,
+      cells: [
+        textCell(f.arrivalAt ? formatUtcDateTime(f.arrivalAt) : "", "nowrap"),
+        textCell(f.sourceIp || "", "mono"),
+        networkCell(f),
+        textCell(f.reportedDomain || "", "mono"),
+        textCell(`${f.authFailure || "?"}${f.deliveryResult ? ` (${f.deliveryResult})` : ""}`, "nowrap"),
+        textCell(f.originalFrom || f.originalMailFrom || "", "trunc"),
+        textCell(f.originalSubject || "", "trunc"),
+        textCell(f.reportingMta ? f.reportingMta.replace(/^dns;\s*/i, "") : f.reporterFrom || "", "muted trunc")
+      ]
+    })),
+    {
+      emptyText: "No forensic reports in this period.",
+      expand: (f) => {
+        const holder = document.createElement("div");
+        holder.textContent = "Loading...";
+        api(`/api/forensic/${encodeURIComponent(f.id)}`)
+          .then((full) => holder.replaceChildren(forensicDetail(full)))
+          .catch((error) => { holder.textContent = error.message; });
+        return holder;
+      }
+    }
+  ));
+}
+
 // --- weekly summary -----------------------------------------------------------
 
 const weeklyEnd = document.getElementById("weekly-end");
@@ -1571,7 +1664,7 @@ function exoSnippet(title, note, code) {
  * Ready-to-paste Exchange Online queries for the emails behind a report window
  * or a source IP. Message trace results carry FromIP, so an IP filter is exact.
  */
-function exoSearchBlock({ begin, end, domain, ip, headerFroms = [] }) {
+function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = null, exact = false }) {
   const wrap = document.createElement("div");
   wrap.className = "exo";
 
@@ -1583,6 +1676,7 @@ function exoSearchBlock({ begin, end, domain, ip, headerFroms = [] }) {
     ? `$_.SenderAddress -like ${psQuote(`*@${domains[0]}`)}`
     : `(${domains.map((d) => `$_.SenderAddress -like ${psQuote(`*@${d}`)}`).join(" -or ")})`;
   const ipFilter = ip ? ` -and $_.FromIP -eq ${psQuote(ip)}` : "";
+  const messageIdArg = messageId ? ` -MessageId ${psQuote(messageId)}` : "";
 
   const title = document.createElement("h4");
   title.textContent = "Find these emails in Exchange Online";
@@ -1590,7 +1684,9 @@ function exoSearchBlock({ begin, end, domain, ip, headerFroms = [] }) {
 
   const intro = document.createElement("p");
   intro.className = "exo-note";
-  intro.textContent = `Window ${start} to ${stop} (UTC), which is ${formatTimestamp(begin)} to ${formatTimestamp(end + 1)} in your local time. ` +
+  intro.textContent = (exact
+    ? `This forensic report gives the exact arrival time, so the window below is one hour either side${messageId ? " and the Message-ID makes the trace precise" : ""}. `
+    : `Window ${start} to ${stop} (UTC), which is ${formatTimestamp(begin)} to ${formatTimestamp(end + 1)} in your local time. `) +
     "A message trace only sees mail that passed through your tenant: outbound mail your Microsoft 365 sent, or inbound mail your tenant received. " +
     "Mail sent from elsewhere straight to another provider never touched Exchange Online and will not appear.";
   wrap.appendChild(intro);
@@ -1600,7 +1696,7 @@ function exoSearchBlock({ begin, end, domain, ip, headerFroms = [] }) {
     : `Message trace covers the last ${TRACE_LIMIT_DAYS} days. FromIP is the sending server, so the IP filter is exact.`;
   wrap.appendChild(exoSnippet("Message trace (PowerShell)", traceNote,
     `Connect-ExchangeOnline\n` +
-    `Get-MessageTrace -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)} -PageSize 5000 |\n` +
+    `Get-MessageTrace -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)}${messageIdArg} -PageSize 5000 |\n` +
     `  Where-Object { ${senderFilter}${ipFilter} } |\n` +
     `  Select-Object Received, SenderAddress, RecipientAddress, Subject, Status, FromIP, ToIP, MessageId`));
 
@@ -2182,6 +2278,7 @@ async function loadAll() {
     ["alerts", loadAlerts],
     ["policy", loadPolicy],
     ["weekly", loadWeekly],
+    ["forensic", loadForensic],
     ["reports", loadReports],
     ["sync status", loadSyncStatus]
   ];

@@ -160,6 +160,7 @@ app.get("/api/status", route(async (req, res) => {
     mailboxCounts: db.mailboxCounts(),
     geoip: { ...geoip.describe(), stats: db.geoStats() },
     retention: retention.describe(),
+    forensicCount: db.forensicCount(),
     configured: list.some((m) => m.enabled),
     scheduler: { intervalMinutes: SYNC_INTERVAL_MINUTES, enabled: SYNC_INTERVAL_MINUTES > 0 && sync.anyConfigured() },
     backfillDays: BACKFILL_DAYS,
@@ -197,6 +198,21 @@ app.get("/api/sync/:id", route(async (req, res) => {
     return res.status(404).json({ error: "No such sync job." });
   }
   res.json(publicJob(job));
+}));
+
+// --- forensic reports -----------------------------------------------------------
+
+app.get("/api/forensic", route(async (req, res) => {
+  const filter = filterFrom(req);
+  res.json(db.forensics(filter, { ip: req.query.ip, page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
+}));
+
+app.get("/api/forensic/:id", route(async (req, res) => {
+  const row = db.forensicById(positiveInt(req.params.id, 0));
+  if (!row) {
+    return res.status(404).json({ error: "No such forensic report." });
+  }
+  res.json(row);
 }));
 
 // --- weekly summary ------------------------------------------------------------

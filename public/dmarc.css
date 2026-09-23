@@ -501,6 +501,15 @@ td.network .flag {
   word-break: break-word;
 }
 
+/* --- forensic reports ---------------------------------------------------- */
+
+details > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 8px 0 4px;
+}
+
 /* --- weekly summary ------------------------------------------------------ */
 
 .weekly-grid {

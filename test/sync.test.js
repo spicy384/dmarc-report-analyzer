@@ -31,7 +31,10 @@ const messages = [
     attachments: [{ name: "again.zip", contentType: "application/octet-stream", bytes: zipSync({ "r.xml": new Uint8Array(googleXml) }) }] },
   { id: "m6", subject: "Bare xml on page two", receivedDateTime: "2026-09-21T07:00:00Z", from: "postmaster@small.test",
     attachments: [{ name: "report.xml", contentType: "text/xml", bytes: Buffer.from(bareXml) }, { name: "invite.ics", type: "#microsoft.graph.itemAttachment" }] },
-  { id: "m7", subject: "Plain email, no attachments", receivedDateTime: "2026-09-21T08:00:00Z", from: "human@example.org", attachments: [] }
+  { id: "m7", subject: "Plain email, no attachments", receivedDateTime: "2026-09-21T08:00:00Z", from: "human@example.org", attachments: [] },
+  { id: "m8", subject: "DMARC failure report for example.com", receivedDateTime: "2026-09-22T09:31:07Z", from: "dmarc-noreply@receiver.test",
+    attachments: [{ name: "original.eml", contentType: "message/rfc822", type: "#microsoft.graph.itemAttachment" }],
+    mime: fs.readFileSync(path.join(EX, "forensic-report.eml")) }
 ];
 
 (async () => {
@@ -62,7 +65,7 @@ const messages = [
 
   // --- connection test ---------------------------------------------------------
   const conn = await graph.testConnection();
-  check("testConnection ok", conn.ok === true && /Inbox/.test(conn.detail) && conn.totalItemCount === 7);
+  check("testConnection ok", conn.ok === true && /Inbox/.test(conn.detail) && conn.totalItemCount === 8);
   const badSecret = await makeClient({ clientSecret: "wrong" }).testConnection();
   check("testConnection bad secret", badSecret.ok === false && badSecret.stage === "token" && /Invalid client secret/.test(badSecret.detail));
   const unconfigured = createGraphClient({ tenantId: "", clientId: "", clientSecret: "", mailbox: "" });
@@ -83,7 +86,9 @@ const messages = [
   const j1 = publicJob(sync.getJob(first.job.id));
 
   check("run 1 done", j1.status === "done" && j1.finishedAt >= j1.startedAt);
-  check("run 1 paged through all messages", j1.seen === 6 && j1.skipped === 0);
+  check("run 1 paged through all messages", j1.seen === 7 && j1.skipped === 0);
+  check("run 1 ingested the forensic report from raw MIME", j1.forensic === 1 && db.forensicCount() === 1 && db.forensics().rows[0].originalMessageId === "<20260922093012.12345@vps.example.net>" && mock.state.requests.some((r) => r.path.endsWith("/messages/m8/$value")));
+  check("forensic message recorded as ingested", db.db.prepare("SELECT status FROM messages WHERE graph_id = 'm8'").get().status === "ingested");
   check("run 1 added 3 reports", j1.added === 3, JSON.stringify(j1));
   check("run 1 saw 1 duplicate", j1.duplicates === 1);
   check("run 1 errors: broken xml + transient graph failure", j1.errors === 2 && /Picture only/.test(j1.lastError));
@@ -112,10 +117,10 @@ const messages = [
 
   // --- run 2: everything already seen except m3 ---------------------------------
   const second = sync.runSync({ trigger: "scheduled" });
-  check("cursor moves to a day before the newest message", second.job.since === Date.parse("2026-09-21T07:00:00Z") / 1000 - 86400);
+  check("cursor moves to a day before the newest message", second.job.since === Date.parse("2026-09-22T09:31:07Z") / 1000 - 86400);
   await second.job.promise;
   const j2 = publicJob(second.job);
-  check("run 2 skips known messages", j2.skipped === 5 && j2.seen === 1);
+  check("run 2 skips known messages", j2.skipped === 6 && j2.seen === 1);
   check("run 2 classifies m3 as no report", j2.noReport === 1 && j2.added === 0 && j2.errors === 0);
   check("run 2 nothing new", db.stats().reports.reports === 3 && db.hasMessage("m3"));
 
@@ -123,7 +128,7 @@ const messages = [
   const third = sync.runSync({ since: 1000 });
   check("since override honoured", third.job.since === 1000);
   await third.job.promise;
-  check("run 3 all skipped", third.job.skipped === 6 && third.job.status === "done");
+  check("run 3 all skipped", third.job.skipped === 7 && third.job.status === "done");
 
   // --- fatal: permission denied --------------------------------------------------
   mock.state.listStatus = 403;
@@ -159,15 +164,15 @@ const messages = [
   const pj = publicJob(run.job);
   check("public job strips clients and report ids", pj.mailboxes.every((b) => !("client" in b)) && !("addedReportIds" in pj));
   const byName = Object.fromEntries(pj.mailboxes.map((b) => [b.name, b]));
-  check("primary mailbox ingested", byName.Primary.status === "done" && byName.Primary.added === 3 && byName.Primary.seen === 6);
+  check("primary mailbox ingested", byName.Primary.status === "done" && byName.Primary.added === 3 && byName.Primary.seen === 7);
   check("second mailbox ingested its own report", byName.Second.status === "done" && byName.Second.added === 1 && byName.Second.seen === 1);
   check("broken mailbox failed without stopping the others", byName.Broken.status === "failed" && /Invalid client secret/.test(byName.Broken.error));
-  check("job done with the failure noted", pj.status === "done" && /Broken/.test(pj.lastError) && pj.added === 4 && pj.seen === 7);
+  check("job done with the failure noted", pj.status === "done" && /Broken/.test(pj.lastError) && pj.added === 4 && pj.seen === 8);
   check("reports carry their mailbox", db2.summary({ mailbox: boxB.id }).totals.reports === 1 && db2.summary({ mailbox: boxA.id }).totals.reports === 3 && db2.summary({ mailbox: boxC.id }).totals.reports === 0);
   check("reports list exposes mailboxId", db2.reports({ mailbox: boxB.id }).rows[0].mailboxId === boxB.id && db2.reports({ mailbox: boxB.id }).rows[0].domain === "second.test");
   check("one sync_runs row per mailbox", db2.runs().length === 3 && db2.runs().every((r) => r.mailbox_id) && db2.lastRunsByMailbox().length === 3);
   check("mailbox counts", db2.mailboxCounts().length === 2 && db2.mailboxCounts().find((c) => c.id === boxB.id).reports === 1);
-  check("cursor is per mailbox", multi.defaultSince(boxB.id) === Date.parse("2026-09-21T09:00:00Z") / 1000 - 86400 && multi.defaultSince(boxA.id) === Date.parse("2026-09-21T07:00:00Z") / 1000 - 86400);
+  check("cursor is per mailbox", multi.defaultSince(boxB.id) === Date.parse("2026-09-21T09:00:00Z") / 1000 - 86400 && multi.defaultSince(boxA.id) === Date.parse("2026-09-22T09:31:07Z") / 1000 - 86400);
 
   const one = multi.runSync({ mailboxId: boxB.id });
   check("mailboxId limits the run", one.job.mailboxes.length === 1 && one.job.mailboxes[0].id === boxB.id);

@@ -19,7 +19,8 @@ const { parsePattern, compileSenders, findSender } = require("./ipmatch");
 // 5: alerts (created by the schema; version bump only)
 // 6: ip_info country/city/ASN columns
 // 7: daily_totals (retention rollups) and reports.purged_at
-const SCHEMA_VERSION = 7;
+// 8: forensic_reports (created by the schema; version bump only)
+const SCHEMA_VERSION = 8;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -163,6 +164,34 @@ CREATE TABLE IF NOT EXISTS daily_totals (
   fwd_reject      INTEGER NOT NULL DEFAULT 0,  -- so the Quarantined/Rejected tiles stay exact
   PRIMARY KEY (day, domain, mailbox_id)
 );
+
+-- Forensic (ruf) reports: one per failing message, with the original message's headers.
+CREATE TABLE IF NOT EXISTS forensic_reports (
+  id                     INTEGER PRIMARY KEY,
+  message_id             TEXT,                -- messages.graph_id of the report email
+  mailbox_id             TEXT NOT NULL DEFAULT 'env',
+  arrival_at             INTEGER,             -- when the receiver got the failing message
+  source_ip              TEXT,
+  reported_domain        TEXT,
+  auth_failure           TEXT,                -- dmarc | dkim | spf | ...
+  feedback_type          TEXT,
+  delivery_result        TEXT,
+  reporting_mta          TEXT,
+  reporter_from          TEXT,
+  original_mail_from     TEXT,
+  original_rcpt_to       TEXT,
+  original_from          TEXT,
+  original_to            TEXT,
+  original_subject       TEXT,
+  original_date          INTEGER,
+  original_message_id    TEXT,
+  authentication_results TEXT,
+  headers                TEXT,
+  ingested_at            INTEGER NOT NULL,
+  UNIQUE(message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_forensic_arrival ON forensic_reports(arrival_at);
+CREATE INDEX IF NOT EXISTS idx_forensic_ip      ON forensic_reports(source_ip);
 `;
 
 const DISPOSITIONS = ["none", "quarantine", "reject"];
@@ -937,6 +966,110 @@ function openDatabase({ dataDir, file } = {}) {
       .map((row) => ({ ...row, sender: senderFor(row.ip, row.ptr) }));
   }
 
+  // --- forensic reports -----------------------------------------------------------
+
+  function shapeForensic(row) {
+    return {
+      id: row.id,
+      messageId: row.message_id,
+      mailboxId: row.mailbox_id,
+      arrivalAt: row.arrival_at,
+      sourceIp: row.source_ip,
+      reportedDomain: row.reported_domain,
+      authFailure: row.auth_failure,
+      feedbackType: row.feedback_type,
+      deliveryResult: row.delivery_result,
+      reportingMta: row.reporting_mta,
+      reporterFrom: row.reporter_from,
+      originalMailFrom: row.original_mail_from,
+      originalRcptTo: row.original_rcpt_to,
+      originalFrom: row.original_from,
+      originalTo: row.original_to,
+      originalSubject: row.original_subject,
+      originalDate: row.original_date,
+      originalMessageId: row.original_message_id,
+      authenticationResults: row.authentication_results,
+      headers: row.headers === undefined ? undefined : row.headers,
+      ingestedAt: row.ingested_at,
+      ptr: row.ptr === undefined ? undefined : row.ptr,
+      countryCode: row.country_code === undefined ? undefined : row.country_code,
+      asOrg: row.as_org === undefined ? undefined : row.as_org
+    };
+  }
+
+  function insertForensic({ messageId, mailboxId, parsed }) {
+    const result = db.prepare(`INSERT OR IGNORE INTO forensic_reports (message_id, mailbox_id, arrival_at, source_ip, reported_domain, auth_failure,
+        feedback_type, delivery_result, reporting_mta, reporter_from, original_mail_from, original_rcpt_to, original_from, original_to,
+        original_subject, original_date, original_message_id, authentication_results, headers, ingested_at)
+      VALUES (@messageId, @mailboxId, @arrivalAt, @sourceIp, @reportedDomain, @authFailure, @feedbackType, @deliveryResult, @reportingMta,
+        @reporterFrom, @originalMailFrom, @originalRcptTo, @originalFrom, @originalTo, @originalSubject, @originalDate, @originalMessageId,
+        @authenticationResults, @headers, @ingestedAt)`).run({
+      messageId: messageId || null,
+      mailboxId: mailboxId || "env",
+      arrivalAt: parsed.arrivalAt || null,
+      sourceIp: parsed.sourceIp || null,
+      reportedDomain: parsed.reportedDomain || null,
+      authFailure: parsed.authFailure || null,
+      feedbackType: parsed.feedbackType || null,
+      deliveryResult: parsed.deliveryResult || null,
+      reportingMta: parsed.reportingMta || null,
+      reporterFrom: parsed.reporterFrom || null,
+      originalMailFrom: parsed.originalMailFrom || null,
+      originalRcptTo: parsed.originalRcptTo || null,
+      originalFrom: parsed.originalFrom || null,
+      originalTo: parsed.originalTo || null,
+      originalSubject: parsed.originalSubject || null,
+      originalDate: parsed.originalDate || null,
+      originalMessageId: parsed.originalMessageId || null,
+      authenticationResults: parsed.authenticationResults || null,
+      headers: parsed.headers || null,
+      ingestedAt: now()
+    });
+    return { id: result.changes ? Number(result.lastInsertRowid) : null, duplicate: result.changes === 0 };
+  }
+
+  function forensicFilter(filter = {}, { ip } = {}) {
+    const clauses = [];
+    const params = [];
+    const from = toInt(filter.from);
+    const to = toInt(filter.to);
+    if (from !== null) { clauses.push("f.arrival_at >= ?"); params.push(from); }
+    if (to !== null) { clauses.push("f.arrival_at < ?"); params.push(to); }
+    if (filter.domain) { clauses.push("f.reported_domain = ?"); params.push(String(filter.domain).toLowerCase()); }
+    if (filter.mailbox) { clauses.push("f.mailbox_id = ?"); params.push(String(filter.mailbox)); }
+    if (ip) { clauses.push("f.source_ip = ?"); params.push(ip); }
+    const q = filter.q && String(filter.q).trim();
+    if (q) {
+      const like = likePattern(q);
+      const cols = ["f.source_ip", "f.reported_domain", "f.auth_failure", "f.original_from", "f.original_to", "f.original_subject", "f.original_mail_from", "f.reporter_from", "f.original_message_id", "i.ptr", "i.as_org"];
+      clauses.push(`(${cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
+      params.push(...Array(cols.length).fill(like));
+    }
+    return { sql: clauses.length ? clauses.join(" AND ") : "1=1", params };
+  }
+
+  function forensics(filter = {}, { ip, page = 1, pageSize = 50 } = {}) {
+    const f = forensicFilter(filter, { ip });
+    const size = Math.min(Math.max(1, toInt(pageSize, 50)), 1000);
+    const offset = (Math.max(1, toInt(page, 1)) - 1) * size;
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM forensic_reports f LEFT JOIN ip_info i ON i.ip = f.source_ip WHERE ${f.sql}`).get(...f.params).n;
+    const rows = db.prepare(`SELECT f.id, f.message_id, f.mailbox_id, f.arrival_at, f.source_ip, f.reported_domain, f.auth_failure, f.feedback_type,
+        f.delivery_result, f.reporting_mta, f.reporter_from, f.original_mail_from, f.original_rcpt_to, f.original_from, f.original_to,
+        f.original_subject, f.original_date, f.original_message_id, f.authentication_results, f.ingested_at, i.ptr, i.country_code, i.as_org
+      FROM forensic_reports f LEFT JOIN ip_info i ON i.ip = f.source_ip
+      WHERE ${f.sql} ORDER BY f.arrival_at DESC, f.id DESC LIMIT ? OFFSET ?`).all(...f.params, size, offset);
+    return { total, page: Math.max(1, toInt(page, 1)), pageSize: size, rows: rows.map(shapeForensic) };
+  }
+
+  function forensicById(id) {
+    const row = db.prepare("SELECT f.*, i.ptr, i.country_code, i.as_org FROM forensic_reports f LEFT JOIN ip_info i ON i.ip = f.source_ip WHERE f.id = ?").get(id);
+    return row ? shapeForensic(row) : null;
+  }
+
+  function forensicCount() {
+    return db.prepare("SELECT COUNT(*) AS n FROM forensic_reports").get().n;
+  }
+
   // --- retention: rollups and purge ----------------------------------------------
 
   /** Daily totals of purged reports inside the filter's window, domain and mailbox. */
@@ -1252,6 +1385,10 @@ function openDatabase({ dataDir, file } = {}) {
     dailyTotals,
     purgeBefore,
     retentionInfo,
+    insertForensic,
+    forensics,
+    forensicById,
+    forensicCount,
     insertAlert,
     openAlerts,
     recentAlerts,

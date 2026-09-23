@@ -99,6 +99,16 @@ function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", mes
       return json(res, 200, body);
     }
 
+    const mimeMatch = rest.match(/^\/messages\/([^/]+)\/\$value$/);
+    if (mimeMatch && req.method === "GET") {
+      const message = boxMessages.find((m) => m.id === decodeURIComponent(mimeMatch[1]));
+      if (!message || !message.mime) {
+        return json(res, 404, { error: { code: "ErrorItemNotFound", message: "not found" } });
+      }
+      res.writeHead(200, { "Content-Type": "message/rfc822" });
+      return res.end(message.mime);
+    }
+
     const attMatch = rest.match(/^\/messages\/([^/]+)\/attachments$/);
     if (attMatch && req.method === "GET") {
       const id = decodeURIComponent(attMatch[1]);
