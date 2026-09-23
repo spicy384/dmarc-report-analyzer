@@ -317,6 +317,22 @@ tr.clickable:focus-visible td {
   word-break: break-word;
 }
 
+/* --- expandable rows ----------------------------------------------------- */
+
+tr.is-expanded td {
+  background: var(--primary-soft);
+}
+
+tr.expansion-row td {
+  padding: 10px 12px 14px;
+  background: var(--surface-2);
+  white-space: normal;
+}
+
+tr.expansion-row .exo {
+  margin: 0;
+}
+
 /* --- Exchange Online search block -------------------------------------- */
 
 .exo {

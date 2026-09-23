@@ -172,7 +172,11 @@ function textCell(text, className) {
   return td;
 }
 
-function buildTable(headers, rows, { emptyText = "Nothing to show.", onRowClick } = {}) {
+/**
+ * Renders a table. `onRowClick(data)` makes rows clickable; `expand(data)` instead
+ * toggles a panel (the element it returns) directly under the clicked row.
+ */
+function buildTable(headers, rows, { emptyText = "Nothing to show.", onRowClick, expand } = {}) {
   if (!rows.length) {
     const p = document.createElement("p");
     p.className = "empty-state";
@@ -202,12 +206,33 @@ function buildTable(headers, rows, { emptyText = "Nothing to show.", onRowClick 
     for (const cell of row.cells) {
       tr.appendChild(cell instanceof HTMLElement ? cell : textCell(cell));
     }
-    if (onRowClick) {
+    const activate = expand
+      ? () => {
+        const open = tr.nextElementSibling;
+        const wasOpen = open && open.classList.contains("expansion-row") && open.dataset.owner === "1";
+        for (const old of tbody.querySelectorAll("tr.expansion-row")) old.remove();
+        for (const r of tbody.querySelectorAll("tr.is-expanded")) r.classList.remove("is-expanded");
+        if (wasOpen) return;
+        const panel = expand(row.data);
+        if (!panel) return;
+        const holder = document.createElement("tr");
+        holder.className = "expansion-row";
+        holder.dataset.owner = "1";
+        const td = document.createElement("td");
+        td.colSpan = headers.length;
+        td.appendChild(panel);
+        holder.appendChild(td);
+        tr.after(holder);
+        tr.classList.add("is-expanded");
+      }
+      : onRowClick ? () => onRowClick(row.data) : null;
+
+    if (activate) {
       tr.className = "clickable";
       tr.tabIndex = 0;
-      tr.addEventListener("click", () => onRowClick(row.data));
+      tr.addEventListener("click", activate);
       tr.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") onRowClick(row.data);
+        if (e.key === "Enter") activate();
       });
     }
     tbody.appendChild(tr);
@@ -641,12 +666,14 @@ async function openIpDetail(ip) {
       kv("SPF domains", d.spfDomains.join(", ") || "-"),
       kv("DKIM domains", d.dkimDomains.join(", ") || "-")
     );
-    ipDetailExo.replaceChildren(exoSearchBlock({
-      begin: d.firstSeen, end: d.lastSeen, ip, domain: domainSelect.value || (d.domains.length === 1 ? d.domains[0] : null), headerFroms: d.headerFroms
-    }));
+    const hint = document.createElement("p");
+    hint.className = "bulk-hint";
+    hint.textContent = "Click a report below for Exchange Online queries scoped to that report's window and this IP.";
+    ipDetailExo.replaceChildren(hint);
     ipDetailBody.replaceChildren(buildTable(
       ["Window", "Reporter", { label: "Count", className: "num" }, "Result", "SPF / DKIM", "Header From", "Envelope From", "Auth results", "Reasons"],
-      recordRows(d.records || [])
+      recordRows(d.records || []),
+      { expand: (rec) => exoSearchBlock({ begin: rec.rangeBegin, end: rec.rangeEnd, ip: rec.sourceIp, domain: rec.domain, headerFroms: [rec.headerFrom] }) }
     ));
     ipDetail.hidden = false;
     ipDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -879,7 +906,8 @@ async function openReportDetail(id) {
     reportDetailExo.replaceChildren(exoSearchBlock({ begin: r.rangeBegin, end: r.rangeEnd, domain: r.domain }));
     reportDetailBody.replaceChildren(buildTable(
       ["Window", "Reporter", "Source IP", { label: "Count", className: "num" }, "Result", "SPF / DKIM", "Header From", "Envelope From", "Auth results", "Reasons"],
-      recordRows(r.records || [], { showIp: true })
+      recordRows(r.records || [], { showIp: true }),
+      { expand: (rec) => exoSearchBlock({ begin: rec.rangeBegin, end: rec.rangeEnd, ip: rec.sourceIp, domain: rec.domain, headerFroms: [rec.headerFrom] }) }
     ));
     reportDetail.hidden = false;
     reportDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });

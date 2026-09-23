@@ -38,11 +38,12 @@ signature for your domain at all. Forwarded mail that was never DKIM-signed cann
 told apart from spoofing and stays visible. Such records are also tagged "likely forward"
 in every record list.
 
-**Find the emails in Exchange Online**: opening a report or a source IP shows
-ready-to-paste queries for that window: a `Get-MessageTrace` command (last 10 days, with
-an exact `FromIP` filter when you came from an IP), a `Start-HistoricalSearch` command
-(up to 90 days, emails a CSV), a Purview content-search KQL string, and the local-time
-range to type into the admin center's message trace. A trace only sees mail that passed
+**Find the emails in Exchange Online**: opening a report shows ready-to-paste queries
+for its window, and clicking any individual record (inside a report, or one of the
+reports listed under a source IP) shows queries scoped to that record's window and IP:
+a `Get-MessageTrace` command (last 10 days, with an exact `FromIP` filter), a
+`Start-HistoricalSearch` command (up to 90 days, emails a CSV), a Purview content-search
+KQL string, and the local-time range to type into the admin center's message trace. A trace only sees mail that passed
 through your tenant, so it finds outbound mail your Microsoft 365 sent and inbound mail it
 received; mail sent from elsewhere straight to another provider never touched Exchange
 Online.
