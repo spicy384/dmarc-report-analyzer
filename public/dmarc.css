@@ -317,6 +317,54 @@ tr.clickable:focus-visible td {
   word-break: break-word;
 }
 
+/* --- Exchange Online search block -------------------------------------- */
+
+.exo {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.exo h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.exo-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.exo-item {
+  margin-top: 10px;
+}
+
+.exo-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.exo-code {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  user-select: all;
+}
+
 .button-link {
   display: inline-flex;
   align-items: center;

@@ -42,6 +42,8 @@ const reportDetailTitle = document.getElementById("report-detail-title");
 const reportDetailXml = document.getElementById("report-detail-xml");
 const reportDetailSummary = document.getElementById("report-detail-summary");
 const reportDetailBody = document.getElementById("report-detail-body");
+const reportDetailExo = document.getElementById("report-detail-exo");
+const ipDetailExo = document.getElementById("ip-detail-exo");
 
 const syncState = document.getElementById("sync-state");
 const graphConfig = document.getElementById("graph-config");
@@ -639,6 +641,9 @@ async function openIpDetail(ip) {
       kv("SPF domains", d.spfDomains.join(", ") || "-"),
       kv("DKIM domains", d.dkimDomains.join(", ") || "-")
     );
+    ipDetailExo.replaceChildren(exoSearchBlock({
+      begin: d.firstSeen, end: d.lastSeen, ip, domain: domainSelect.value || (d.domains.length === 1 ? d.domains[0] : null), headerFroms: d.headerFroms
+    }));
     ipDetailBody.replaceChildren(buildTable(
       ["Window", "Reporter", { label: "Count", className: "num" }, "Result", "SPF / DKIM", "Header From", "Envelope From", "Auth results", "Reasons"],
       recordRows(d.records || [])
@@ -663,6 +668,123 @@ function kv(label, value) {
   dd.textContent = value;
   div.append(dt, dd);
   return div;
+}
+
+// --- Exchange Online search helpers ----------------------------------------
+
+const TRACE_LIMIT_DAYS = 10;
+const HISTORICAL_LIMIT_DAYS = 90;
+
+function isoUtc(seconds) {
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function psQuote(text) {
+  return `"${String(text).replace(/[`"$]/g, "`$&")}"`;
+}
+
+function exoSnippet(title, note, code) {
+  const item = document.createElement("div");
+  item.className = "exo-item";
+
+  const head = document.createElement("div");
+  head.className = "exo-item-head";
+  const h = document.createElement("strong");
+  h.textContent = title;
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "secondary small";
+  copy.textContent = "Copy";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+    } catch {
+      copy.textContent = "Select and copy";
+    }
+  });
+  head.append(h, copy);
+  item.appendChild(head);
+
+  if (note) {
+    const p = document.createElement("p");
+    p.className = "exo-note";
+    p.textContent = note;
+    item.appendChild(p);
+  }
+
+  const pre = document.createElement("pre");
+  pre.className = "exo-code mono";
+  pre.textContent = code;
+  item.appendChild(pre);
+  return item;
+}
+
+/**
+ * Ready-to-paste Exchange Online queries for the emails behind a report window
+ * or a source IP. Message trace results carry FromIP, so an IP filter is exact.
+ */
+function exoSearchBlock({ begin, end, domain, ip, headerFroms = [] }) {
+  const wrap = document.createElement("div");
+  wrap.className = "exo";
+
+  const start = isoUtc(begin);
+  const stop = isoUtc(end + 1);
+  const ageDays = (Date.now() / 1000 - begin) / DAY;
+  const domains = domain ? [domain] : headerFroms.filter(Boolean);
+  const senderFilter = domains.length === 1
+    ? `$_.SenderAddress -like ${psQuote(`*@${domains[0]}`)}`
+    : `(${domains.map((d) => `$_.SenderAddress -like ${psQuote(`*@${d}`)}`).join(" -or ")})`;
+  const ipFilter = ip ? ` -and $_.FromIP -eq ${psQuote(ip)}` : "";
+
+  const title = document.createElement("h4");
+  title.textContent = "Find these emails in Exchange Online";
+  wrap.appendChild(title);
+
+  const intro = document.createElement("p");
+  intro.className = "exo-note";
+  intro.textContent = `Window ${start} to ${stop} (UTC), which is ${formatTimestamp(begin)} to ${formatTimestamp(end + 1)} in your local time. ` +
+    "A message trace only sees mail that passed through your tenant: outbound mail your Microsoft 365 sent, or inbound mail your tenant received. " +
+    "Mail sent from elsewhere straight to another provider never touched Exchange Online and will not appear.";
+  wrap.appendChild(intro);
+
+  const traceNote = ageDays > TRACE_LIMIT_DAYS
+    ? `This window is ${Math.floor(ageDays)} days old. Get-MessageTrace only reaches back ${TRACE_LIMIT_DAYS} days, so use the historical search below.`
+    : `Message trace covers the last ${TRACE_LIMIT_DAYS} days. FromIP is the sending server, so the IP filter is exact.`;
+  wrap.appendChild(exoSnippet("Message trace (PowerShell)", traceNote,
+    `Connect-ExchangeOnline\n` +
+    `Get-MessageTrace -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)} -PageSize 5000 |\n` +
+    `  Where-Object { ${senderFilter}${ipFilter} } |\n` +
+    `  Select-Object Received, SenderAddress, RecipientAddress, Subject, Status, FromIP, ToIP, MessageId`));
+
+  const histNote = ageDays > HISTORICAL_LIMIT_DAYS
+    ? `This window is older than ${HISTORICAL_LIMIT_DAYS} days, which is as far back as a historical search goes; only an audit log or journal will have it now.`
+    : "Runs in the background and emails a CSV. In the CSV, sender_address and original_client_ip are the columns to filter on.";
+  const reportTitle = `DMARC ${domains[0] || "report"} ${start.slice(0, 10)}${ip ? ` from ${ip}` : ""}`;
+  wrap.appendChild(exoSnippet("Historical search (up to 90 days)", histNote,
+    `Start-HistoricalSearch -ReportTitle ${psQuote(reportTitle)} -ReportType MessageTrace \`\n` +
+    `  -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)} -NotifyAddress ${psQuote(`you@${domains[0] || "example.com"}`)}\n` +
+    `# Later: Get-HistoricalSearch | Sort-Object SubmitDate -Descending | Select-Object -First 1 | Select-Object ReportTitle, Status, FileUrl`));
+
+  const dayStart = start.slice(0, 10);
+  const dayEnd = isoUtc(Math.max(begin, end - 1)).slice(0, 10);
+  const kqlFrom = domains.length ? ` AND (${domains.map((d) => `from:${d}`).join(" OR ")})` : "";
+  wrap.appendChild(exoSnippet("Content search (Purview, KQL)",
+    "For mail still sitting in your mailboxes, for example spoofs your own tenant received. Dates are whole days; Purview has no sender-IP field.",
+    `sent>=${dayStart} AND sent<=${dayEnd}${kqlFrom}`));
+
+  const portal = document.createElement("p");
+  portal.className = "exo-note";
+  const link = document.createElement("a");
+  link.href = "https://admin.exchange.microsoft.com/#/messagetrace";
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.textContent = "Open message trace in the Exchange admin center";
+  portal.append(link, document.createTextNode(` and use a custom range of ${formatTimestamp(begin)} to ${formatTimestamp(end + 1)} (the portal works in your local time).`));
+  wrap.appendChild(portal);
+
+  return wrap;
 }
 
 // --- reporters -------------------------------------------------------------
@@ -754,6 +876,7 @@ async function openReportDetail(id) {
       kv("Subject", r.subject || "-"),
       kv("Attachment", r.attachmentName || "-")
     );
+    reportDetailExo.replaceChildren(exoSearchBlock({ begin: r.rangeBegin, end: r.rangeEnd, domain: r.domain }));
     reportDetailBody.replaceChildren(buildTable(
       ["Window", "Reporter", "Source IP", { label: "Count", className: "num" }, "Result", "SPF / DKIM", "Header From", "Envelope From", "Auth results", "Reasons"],
       recordRows(r.records || [], { showIp: true })
