@@ -8,6 +8,7 @@ const { openDatabase } = require("./db");
 const { configFromEnv } = require("./graph");
 const { createMailboxStore } = require("./mailboxes");
 const { createDnsRecords } = require("./dns-records");
+const { evaluateAfterSync } = require("./alerts");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -31,7 +32,17 @@ const authGuard = createAuth({ dataDir: DATA_DIR });
 const db = openDatabase({ dataDir: DATA_DIR });
 const envGraph = configFromEnv();
 const mailboxes = createMailboxStore({ dataDir: DATA_DIR, env: envGraph, loginBase: envGraph.loginBase, graphBase: envGraph.graphBase });
-const sync = createSync({ db, mailboxes, backfillDays: BACKFILL_DAYS });
+const sync = createSync({
+  db,
+  mailboxes,
+  backfillDays: BACKFILL_DAYS,
+  onRunFinished: (job) => {
+    const { created } = evaluateAfterSync({ db, addedReportIds: job.addedReportIds });
+    if (created.length) {
+      console.log(`alerts: ${created.length} new (${created.map((a) => a.type).join(", ")})`);
+    }
+  }
+});
 const dnsRecords = createDnsRecords();
 
 // The sign-in endpoints must be reachable while signed out; everything else under /api is gated.
@@ -171,6 +182,24 @@ app.get("/api/sync/:id", route(async (req, res) => {
     return res.status(404).json({ error: "No such sync job." });
   }
   res.json(publicJob(job));
+}));
+
+// --- alerts ------------------------------------------------------------------
+
+app.get("/api/alerts", route(async (req, res) => {
+  const open = String(req.query.open || "1") !== "0";
+  res.json({ alerts: open ? db.openAlerts(positiveInt(req.query.limit, 100)) : db.recentAlerts(positiveInt(req.query.limit, 50)), openCount: db.openAlertCount() });
+}));
+
+app.post("/api/alerts/ack-all", authGuard.requireWriter, route(async (req, res) => {
+  res.json({ ok: true, acknowledged: db.ackAllAlerts(req.user?.username || null) });
+}));
+
+app.post("/api/alerts/:id/ack", authGuard.requireWriter, route(async (req, res) => {
+  if (!db.ackAlert(positiveInt(req.params.id, 0), req.user?.username || null)) {
+    return res.status(404).json({ error: "No such open alert." });
+  }
+  res.json({ ok: true, openCount: db.openAlertCount() });
 }));
 
 // --- known senders -----------------------------------------------------------

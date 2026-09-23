@@ -8,6 +8,7 @@ const SUITES = [
   "dns-records.test.js",
   "db.test.js",
   "mailboxes.test.js",
+  "alerts.test.js",
   "sync.test.js",
   "server.test.js",
   "auth.test.js"

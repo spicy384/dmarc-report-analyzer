@@ -187,6 +187,11 @@ async function waitForServer(tries = 60) {
     const runs = await req("/api/sync/runs");
     check("sync: run history", runs.body.runs.length === 1 && runs.body.runs[0].trigger === "manual" && /GRAPH_TENANT_ID/.test(runs.body.runs[0].error_text));
 
+    // --- alerts ---
+    check("alerts: none open", (await req("/api/alerts")).body.openCount === 0);
+    check("alerts: ack unknown is 404", (await req("/api/alerts/999/ack", { method: "POST", body: {} })).status === 404);
+    check("alerts: ack-all with nothing open", (await req("/api/alerts/ack-all", { method: "POST", body: {} })).body.acknowledged === 0);
+
     // --- known senders ---
     check("known senders: empty", (await req("/api/known-senders")).body.senders.length === 0);
     const ksAdd = await req("/api/known-senders", { method: "POST", body: { pattern: "203.0.113.0/24", kind: "ours", label: "Our relay" } });

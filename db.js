@@ -16,7 +16,8 @@ const { parsePattern, compileSenders, findSender } = require("./ipmatch");
 // 2: records.forwarded (likely forward / mailing list, derived from reasons and DKIM results)
 // 3: mailbox_id on messages, reports and sync_runs (multi-mailbox / multi-tenant)
 // 4: known_senders (created by the schema; version bump only)
-const SCHEMA_VERSION = 4;
+// 5: alerts (created by the schema; version bump only)
+const SCHEMA_VERSION = 5;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -121,7 +122,24 @@ CREATE TABLE IF NOT EXISTS known_senders (
 
 const SENDER_KINDS = ["ours", "vendor", "other"];
 
+const ALERTS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS alerts (
+  id              INTEGER PRIMARY KEY,
+  created_at      INTEGER NOT NULL,
+  type            TEXT NOT NULL,        -- new_source | spike | new_reporter
+  key             TEXT NOT NULL,        -- the IP or reporter the alert is about
+  severity        TEXT NOT NULL,        -- info | medium | high
+  title           TEXT NOT NULL,
+  detail          TEXT,                 -- JSON
+  acknowledged_at INTEGER,
+  acknowledged_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(acknowledged_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_alerts_key  ON alerts(type, key, created_at);
+`;
+
 const DISPOSITIONS = ["none", "quarantine", "reject"];
+const DAY_SECONDS = 86400;
 
 function now() {
   return Math.floor(Date.now() / 1000);
@@ -332,6 +350,7 @@ function openDatabase({ dataDir, file } = {}) {
   db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
   db.exec(SCHEMA);
+  db.exec(ALERTS_SCHEMA);
   migrate(db);
 
   const stmts = {
@@ -819,6 +838,101 @@ function openDatabase({ dataDir, file } = {}) {
     return out;
   }
 
+  // --- alerts -------------------------------------------------------------------
+
+  function shapeAlert(row) {
+    return { ...row, detail: parseJson(row.detail, {}) };
+  }
+
+  function insertAlert({ type, key, severity = "medium", title, detail = {}, createdAt }) {
+    const result = db.prepare("INSERT INTO alerts (created_at, type, key, severity, title, detail) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(toInt(createdAt, now()), type, String(key), severity, title, JSON.stringify(detail));
+    return shapeAlert(db.prepare("SELECT * FROM alerts WHERE id = ?").get(Number(result.lastInsertRowid)));
+  }
+
+  function openAlerts(limit = 100) {
+    return db.prepare("SELECT * FROM alerts WHERE acknowledged_at IS NULL ORDER BY created_at DESC, id DESC LIMIT ?").all(limit).map(shapeAlert);
+  }
+
+  function recentAlerts(limit = 50) {
+    return db.prepare("SELECT * FROM alerts ORDER BY created_at DESC, id DESC LIMIT ?").all(limit).map(shapeAlert);
+  }
+
+  function openAlertCount() {
+    return db.prepare("SELECT COUNT(*) AS n FROM alerts WHERE acknowledged_at IS NULL").get().n;
+  }
+
+  /** Whether an alert of this type exists for the key: open ones by default, or any since a time. */
+  function alertExists(type, key, { openOnly = true, since = null } = {}) {
+    const clauses = ["type = ?", "key = ?"];
+    const params = [type, String(key)];
+    if (openOnly) clauses.push("acknowledged_at IS NULL");
+    if (since !== null) {
+      clauses.push("created_at >= ?");
+      params.push(since);
+    }
+    return Boolean(db.prepare(`SELECT 1 FROM alerts WHERE ${clauses.join(" AND ")} LIMIT 1`).get(...params));
+  }
+
+  function ackAlert(id, user = null) {
+    return db.prepare("UPDATE alerts SET acknowledged_at = ?, acknowledged_by = ? WHERE id = ? AND acknowledged_at IS NULL").run(now(), user, id).changes > 0;
+  }
+
+  function ackAllAlerts(user = null) {
+    return db.prepare("UPDATE alerts SET acknowledged_at = ?, acknowledged_by = ? WHERE acknowledged_at IS NULL").run(now(), user).changes;
+  }
+
+  /** Failing IPs whose only records are in the given (just added) reports. */
+  function newFailingSources(reportIds) {
+    const json = JSON.stringify(reportIds);
+    return db.prepare(`
+      SELECT x.source_ip AS ip,
+             SUM(x.count) AS total,
+             SUM(CASE WHEN x.passed = 0 THEN x.count ELSE 0 END) AS failed,
+             MIN(r.range_begin) AS firstSeen,
+             GROUP_CONCAT(DISTINCT r.org_name) AS reporters,
+             GROUP_CONCAT(DISTINCT x.header_from) AS headerFroms,
+             MAX(i.ptr) AS ptr
+      FROM records x
+      JOIN reports r ON r.id = x.report_id
+      LEFT JOIN ip_info i ON i.ip = x.source_ip
+      WHERE x.report_id IN (SELECT value FROM json_each(?))
+        AND NOT EXISTS (SELECT 1 FROM records y WHERE y.source_ip = x.source_ip AND y.report_id NOT IN (SELECT value FROM json_each(?)))
+      GROUP BY x.source_ip
+      HAVING failed > 0
+      ORDER BY failed DESC`).all(json, json)
+      .map((row) => ({ ...row, reporters: splitList(row.reporters), headerFroms: splitList(row.headerFroms) }));
+  }
+
+  /** Reporting organisations whose only reports are the given (just added) ones. */
+  function newReporters(reportIds) {
+    const json = JSON.stringify(reportIds);
+    return db.prepare(`
+      SELECT r.org_name AS orgName, COUNT(*) AS reports, SUM(r.messages) AS messages
+      FROM reports r
+      WHERE r.id IN (SELECT value FROM json_each(?))
+        AND NOT EXISTS (SELECT 1 FROM reports o WHERE o.org_name = r.org_name AND o.id NOT IN (SELECT value FROM json_each(?)))
+      GROUP BY r.org_name`).all(json, json);
+  }
+
+  /** IPs whose non-forward failures in the last `days` days are at least `factor` times the previous window. */
+  function spikeCandidates({ now: at = now(), days = 7, minFailed = 20, factor = 3 } = {}) {
+    const recentFrom = at - days * DAY_SECONDS;
+    const previousFrom = recentFrom - days * DAY_SECONDS;
+    return db.prepare(`
+      SELECT x.source_ip AS ip,
+             SUM(CASE WHEN r.range_begin >= ? THEN x.count ELSE 0 END) AS recent,
+             SUM(CASE WHEN r.range_begin < ? THEN x.count ELSE 0 END) AS previous,
+             MAX(i.ptr) AS ptr
+      FROM records x
+      JOIN reports r ON r.id = x.report_id
+      LEFT JOIN ip_info i ON i.ip = x.source_ip
+      WHERE x.passed = 0 AND x.forwarded = 0 AND r.range_begin >= ?
+      GROUP BY x.source_ip
+      HAVING recent >= ? AND recent >= ? * MAX(previous, 1)
+      ORDER BY recent DESC`).all(recentFrom, recentFrom, previousFrom, minFailed, factor);
+  }
+
   // --- ip_info ----------------------------------------------------------------
 
   function ipsMissingPtr(limit = 200) {
@@ -901,6 +1015,16 @@ function openDatabase({ dataDir, file } = {}) {
     removeKnownSender,
     senderFor,
     bySender,
+    insertAlert,
+    openAlerts,
+    recentAlerts,
+    openAlertCount,
+    alertExists,
+    ackAlert,
+    ackAllAlerts,
+    newFailingSources,
+    newReporters,
+    spikeCandidates,
     getSetting,
     setSetting,
     close

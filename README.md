@@ -26,6 +26,14 @@ yours (fix SPF or DKIM) and not yours (spoofing), and **Import from SPF** resolv
 SPF record through its includes and proposes the networks it authorises, for you to tick
 and add. Nothing is added automatically.
 
+**Alerts**: after every sync that adds reports, the analyzer flags a **new source** (an IP
+failing DMARC that had never appeared before and is not a known sender), a **spike** (a
+source whose non-forward failures in the last 7 days are at least three times the previous
+7 days, with at least 20 messages) and, for information, the **first reports** from a new
+reporting service. Open alerts sit in a banner at the top of the page with a Show button
+that searches for the source, and they stay until someone acknowledges them. The count
+also appears in the browser tab title.
+
 **Reporting services**: which receivers (Google, Microsoft, Yahoo, ...) sent reports, how
 many, and the failure rate each of them saw.
 
