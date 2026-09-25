@@ -464,7 +464,10 @@ function openDatabase({ dataDir, file } = {}) {
     setPtr: db.prepare("INSERT INTO ip_info (ip, ptr, looked_up_at) VALUES (?, ?, ?) ON CONFLICT(ip) DO UPDATE SET ptr = excluded.ptr, looked_up_at = excluded.looked_up_at"),
     reportXml: db.prepare("SELECT xml_gz, attachment_name, org_name, report_id FROM reports WHERE id = ?"),
     reportById: db.prepare("SELECT r.*, m.received_at, m.subject FROM reports r LEFT JOIN messages m ON m.graph_id = r.message_id WHERE r.id = ?"),
-    recordsForReport: db.prepare(`SELECT x.*, i.ptr FROM records x LEFT JOIN ip_info i ON i.ip = x.source_ip
+    // Joins the report so each record carries its window, domain and policy: the
+    // Exchange Online block under a record needs the window.
+    recordsForReport: db.prepare(`SELECT x.*, r.org_name, r.domain, r.range_begin, r.range_end, r.p, i.ptr
+      FROM records x JOIN reports r ON r.id = x.report_id LEFT JOIN ip_info i ON i.ip = x.source_ip
       WHERE x.report_id = ? ORDER BY x.passed ASC, x.count DESC`)
   };
 

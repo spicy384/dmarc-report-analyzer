@@ -82,9 +82,14 @@ in every record list.
 **Find the emails in Exchange Online**: opening a report shows ready-to-paste queries
 for its window, and clicking any individual record (inside a report, or one of the
 reports listed under a source IP) shows queries scoped to that record's window and IP:
-a `Get-MessageTrace` command (last 10 days, with an exact `FromIP` filter), a
-`Start-HistoricalSearch` command (up to 90 days, emails a CSV), a Purview content-search
-KQL string, and the local-time range to type into the admin center's message trace. A trace only sees mail that passed
+a `Get-MessageTraceV2` command (the current cmdlet, ExchangeOnlineManagement 3.7.0 or
+later; reaches back 90 days, at most 10 days per query, with an exact `-FromIP` filter and
+a `Get-MessageTraceDetailV2` follow-up for the hops of one message), a
+`Start-HistoricalSearch` command (up to 90 days, emails a CSV, useful for more than 5000
+results; it needs a sender, recipient or Message-ID, so a placeholder sender is filled in
+unless the record carries one), a Purview content-search KQL string, and the local-time
+range to type into the admin center's message trace. The older `Get-MessageTrace` is being
+retired by Microsoft and is no longer generated. A trace only sees mail that passed
 through your tenant, so it finds outbound mail your Microsoft 365 sent and inbound mail it
 received; mail sent from elsewhere straight to another provider never touched Exchange
 Online.

@@ -904,6 +904,7 @@ function forensicDetail(f) {
       ip: f.sourceIp,
       domain: f.reportedDomain,
       messageId: f.originalMessageId,
+      sender: bareAddress(f.originalFrom) || bareAddress(f.originalMailFrom),
       exact: true
     }));
   }
@@ -1883,11 +1884,23 @@ document.getElementById("spf-add-btn").addEventListener("click", async () => {
 
 // --- Exchange Online search helpers ----------------------------------------
 
-const TRACE_LIMIT_DAYS = 10;
+// Get-MessageTraceV2 (ExchangeOnlineManagement 3.7.0+) reaches back 90 days but
+// takes at most 10 days per query; Get-MessageTrace (10 days) is being retired.
+const TRACE_LIMIT_DAYS = 90;
+const TRACE_SPAN_DAYS = 10;
 const HISTORICAL_LIMIT_DAYS = 90;
 
 function isoUtc(seconds) {
   return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+const PS_CONTINUE = String.fromCharCode(96);
+
+function bareAddress(header) {
+  const text = String(header || "").trim();
+  const angled = text.match(/<([^>]+)>/);
+  const addr = (angled ? angled[1] : text).trim();
+  return /^[^\s@]+@[^\s@]+$/.test(addr) ? addr : null;
 }
 
 function psQuote(text) {
@@ -1936,7 +1949,7 @@ function exoSnippet(title, note, code) {
  * Ready-to-paste Exchange Online queries for the emails behind a report window
  * or a source IP. Message trace results carry FromIP, so an IP filter is exact.
  */
-function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = null, exact = false }) {
+function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = null, sender = null, exact = false }) {
   const wrap = document.createElement("div");
   wrap.className = "exo";
 
@@ -1963,23 +1976,38 @@ function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = 
     "Mail sent from elsewhere straight to another provider never touched Exchange Online and will not appear.";
   wrap.appendChild(intro);
 
+  // A full sender address is an exact server-side filter; a bare domain has to be
+  // matched client-side because SenderAddress takes no wildcards.
+  const senderArg = sender ? ` -SenderAddress ${psQuote(sender)}` : "";
+  const ipArg = ip ? ` -FromIP ${psQuote(ip)}` : "";
+  const spanDays = (end + 1 - begin) / DAY;
   const traceNote = ageDays > TRACE_LIMIT_DAYS
-    ? `This window is ${Math.floor(ageDays)} days old. Get-MessageTrace only reaches back ${TRACE_LIMIT_DAYS} days, so use the historical search below.`
-    : `Message trace covers the last ${TRACE_LIMIT_DAYS} days. FromIP is the sending server, so the IP filter is exact.`;
+    ? `This window is ${Math.floor(ageDays)} days old. Message trace only reaches back ${TRACE_LIMIT_DAYS} days; only an audit log or journal will have it now.`
+    : spanDays > TRACE_SPAN_DAYS
+      ? `This window spans ${Math.ceil(spanDays)} days. Get-MessageTraceV2 accepts at most ${TRACE_SPAN_DAYS} days per query, so run it once per ${TRACE_SPAN_DAYS}-day slice.`
+      : `Needs ExchangeOnlineManagement 3.7.0 or later (Get-MessageTrace is being retired). Reaches back ${TRACE_LIMIT_DAYS} days${ip ? "; FromIP is the sending server, so the IP filter is exact" : ""}. Results are capped at 5000: if you hit that, narrow the window or continue with -StartingRecipientAddress and -EndDate taken from the last row.`;
   wrap.appendChild(exoSnippet("Message trace (PowerShell)", traceNote,
-    `Connect-ExchangeOnline\n` +
-    `Get-MessageTrace -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)}${messageIdArg} -PageSize 5000 |\n` +
-    `  Where-Object { ${senderFilter}${ipFilter} } |\n` +
-    `  Select-Object Received, SenderAddress, RecipientAddress, Subject, Status, FromIP, ToIP, MessageId`));
+    "Connect-ExchangeOnline\n" +
+    `$trace = Get-MessageTraceV2 -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)}${ipArg}${messageIdArg}${senderArg} -ResultSize 5000` +
+    (sender ? "\n" : ` |\n  Where-Object { ${senderFilter} }\n`) +
+    "$trace | Select-Object Received, SenderAddress, RecipientAddress, Subject, Status, FromIP, ToIP, MessageId, MessageTraceId\n" +
+    "# Hops for one of them: $trace | Select-Object -First 1 | Get-MessageTraceDetailV2"));
 
   const histNote = ageDays > HISTORICAL_LIMIT_DAYS
-    ? `This window is older than ${HISTORICAL_LIMIT_DAYS} days, which is as far back as a historical search goes; only an audit log or journal will have it now.`
-    : "Runs in the background and emails a CSV. In the CSV, sender_address and original_client_ip are the columns to filter on.";
+    ? `This window is older than ${HISTORICAL_LIMIT_DAYS} days, which is as far back as a historical search goes.`
+    : "Runs in the background and emails a CSV, so it suits more than 5000 results or a spreadsheet. A sender, recipient or Message-ID is required; only -RecipientAddress takes wildcards. In the CSV, sender_address and original_client_ip are the columns to filter on.";
   const reportTitle = `DMARC ${domains[0] || "report"} ${start.slice(0, 10)}${ip ? ` from ${ip}` : ""}`;
-  wrap.appendChild(exoSnippet("Historical search (up to 90 days)", histNote,
-    `Start-HistoricalSearch -ReportTitle ${psQuote(reportTitle)} -ReportType MessageTrace \`\n` +
-    `  -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)} -NotifyAddress ${psQuote(`you@${domains[0] || "example.com"}`)}\n` +
-    `# Later: Get-HistoricalSearch | Sort-Object SubmitDate -Descending | Select-Object -First 1 | Select-Object ReportTitle, Status, FileUrl`));
+  const exampleDomain = domains[0] || "example.com";
+  const histWho = messageId
+    ? ` -MessageID ${psQuote(messageId)}`
+    : ` -SenderAddress ${psQuote(sender || `someone@${exampleDomain}`)}`;
+  const histHint = messageId || sender ? "" : `# Put a real sender here, or use -RecipientAddress ${psQuote(`*@${exampleDomain}`)} for mail your tenant received\n`;
+  wrap.appendChild(exoSnippet("Historical search (up to 90 days, CSV by email)", histNote,
+    histHint +
+    `Start-HistoricalSearch -ReportTitle ${psQuote(reportTitle)} -ReportType MessageTrace ${PS_CONTINUE}\n` +
+    `  -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)}${histWho}${ip ? ` -OriginalClientIP ${psQuote(ip)}` : ""} ${PS_CONTINUE}\n` +
+    `  -NotifyAddress ${psQuote(`you@${exampleDomain}`)}\n` +
+    "# Later: Get-HistoricalSearch | Sort-Object SubmitDate -Descending | Select-Object -First 1 ReportTitle, Status, FileUrl"));
 
   const dayStart = start.slice(0, 10);
   const dayEnd = isoUtc(Math.max(begin, end - 1)).slice(0, 10);
@@ -2096,7 +2124,7 @@ async function openReportDetail(id) {
     reportDetailBody.replaceChildren(buildTable(
       ["Window", "Reporter", "Source IP", { label: "Count", className: "num" }, "Result", "SPF / DKIM", "Header From", "Envelope From", "Auth results", "Reasons"],
       recordRows(r.records || [], { showIp: true }),
-      { expand: (rec) => exoSearchBlock({ begin: rec.rangeBegin, end: rec.rangeEnd, ip: rec.sourceIp, domain: rec.domain, headerFroms: [rec.headerFrom] }) }
+      { expand: (rec) => exoSearchBlock({ begin: rec.rangeBegin ?? r.rangeBegin, end: rec.rangeEnd ?? r.rangeEnd, ip: rec.sourceIp, domain: rec.domain || r.domain, headerFroms: [rec.headerFrom] }) }
     ));
     reportDetail.hidden = false;
     reportDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
