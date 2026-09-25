@@ -20,9 +20,17 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY server.js auth.js auth-routes.js tls-setup.js db.js graph.js dmarc-parser.js sync.js ./
+# Every top-level module, so a new file cannot be left out of the image by mistake
+# (test/ is a directory and does not match the glob).
+COPY *.js ./
 COPY public ./public
 COPY examples ./examples
+
+# Fail the build, not the first container start, if a module is missing:
+# server.js only listens when it is the main module, so requiring it just
+# resolves the whole dependency graph. A throwaway DATA_DIR keeps the check from
+# leaving a database or key material in the image.
+RUN DATA_DIR=/tmp/smoke node -e "require('./server.js')" && rm -rf /tmp/smoke
 
 # The image ships no data; /data is a volume that outlives the container.
 # node:alpine already provides an unprivileged `node` user (uid 1000).
