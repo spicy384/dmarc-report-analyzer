@@ -1987,7 +1987,8 @@ function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = 
       ? `This window spans ${Math.ceil(spanDays)} days. Get-MessageTraceV2 accepts at most ${TRACE_SPAN_DAYS} days per query, so run it once per ${TRACE_SPAN_DAYS}-day slice.`
       : `Needs ExchangeOnlineManagement 3.7.0 or later (Get-MessageTrace is being retired). Reaches back ${TRACE_LIMIT_DAYS} days${ip ? "; FromIP is the sending server, so the IP filter is exact" : ""}. Results are capped at 5000: if you hit that, narrow the window or continue with -StartingRecipientAddress and -EndDate taken from the last row.`;
   wrap.appendChild(exoSnippet("Message trace (PowerShell)", traceNote,
-    "Connect-ExchangeOnline\n" +
+    // Only connects when no session is open, so the same paste works the second time.
+    "if (-not (Get-ConnectionInformation | Where-Object State -eq 'Connected')) { Connect-ExchangeOnline }\n" +
     `$trace = Get-MessageTraceV2 -StartDate ${psQuote(start)} -EndDate ${psQuote(stop)}${ipArg}${messageIdArg}${senderArg} -ResultSize 5000` +
     (sender ? "\n" : ` |\n  Where-Object { ${senderFilter} }\n`) +
     "$trace | Select-Object Received, SenderAddress, RecipientAddress, Subject, Status, FromIP, ToIP, MessageId, MessageTraceId\n" +
