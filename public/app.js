@@ -966,6 +966,7 @@ async function loadForensic() {
 const weeklyEnd = document.getElementById("weekly-end");
 const weeklyBody = document.getElementById("weekly-body");
 const weeklyBadge = document.getElementById("weekly-badge");
+const weeklyTabState = { tab: "totals" };
 let weeklyData = null;
 
 function shiftWeek(days) {
@@ -1033,33 +1034,32 @@ function renderWeekly(w) {
       cells: [textCell(label, label.startsWith("  ") ? "muted" : ""), textCell(cur, "num"), textCell(prev, "num muted"), (() => { const td = document.createElement("td"); td.appendChild(change); return td; })()]
     }))
   );
-  const left = document.createElement("div");
-  left.className = "weekly-col";
-  left.appendChild(table);
-  weeklyBody.appendChild(left);
+  // One tab per section: the two-column layout squeezed the table and the lists.
+  const totalsBox = policyBox("Totals");
+  const scroll = document.createElement("div");
+  scroll.className = "table-scroll";
+  scroll.appendChild(table);
+  totalsBox.appendChild(scroll);
+  const tabs = [{ key: "totals", label: "Totals", box: totalsBox }];
 
-  const right = document.createElement("div");
-  right.className = "weekly-col";
-  const section = (title, rows, render) => {
-    const h = document.createElement("h3");
-    h.className = "account-heading";
-    h.textContent = title;
-    right.appendChild(h);
+  const section = (key, title, rows, render) => {
+    const box = policyBox(title, { badge: String(rows.length) });
     if (!rows.length) {
       const none = document.createElement("p");
       none.className = "empty-state small";
-      none.textContent = "None.";
-      right.appendChild(none);
-      return;
+      none.textContent = "None this week.";
+      box.appendChild(none);
+    } else {
+      const ul = document.createElement("ul");
+      ul.className = "weekly-list";
+      for (const r of rows) {
+        const li = document.createElement("li");
+        render(li, r);
+        ul.appendChild(li);
+      }
+      box.appendChild(ul);
     }
-    const ul = document.createElement("ul");
-    ul.className = "weekly-list";
-    for (const r of rows) {
-      const li = document.createElement("li");
-      render(li, r);
-      ul.appendChild(li);
-    }
-    right.appendChild(ul);
+    tabs.push({ key, label: title, box });
   };
   const ipLine = (li, r, what) => {
     const a = document.createElement("a");
@@ -1070,11 +1070,11 @@ function renderWeekly(w) {
     li.appendChild(a);
     li.append(` ${what}${r.sender ? ` - ${r.sender.label}` : r.ptr ? ` - ${r.ptr}` : r.asOrg ? ` - ${r.asOrg}` : ""}`);
   };
-  section("New sources this week", w.newSources, (li, r) => ipLine(li, r, `${formatNumber(r.failed)} of ${formatNumber(r.total)} failed`));
-  section("Top failing sources", w.topFailing, (li, r) => ipLine(li, r, `${formatNumber(r.failed)} failed of ${formatNumber(r.total)}${r.likelyForwards ? ` (${formatNumber(r.likelyForwards)} likely forwards)` : ""}`));
-  section("Top forwarders", w.topForwards, (li, r) => ipLine(li, r, `${formatNumber(r.likelyForwards)} likely forwards`));
-  section("Reporting services", w.thisWeek.reporters, (li, r) => { li.textContent = `${r.orgName}: ${formatNumber(r.reports)} reports, ${formatNumber(r.messages)} messages, ${formatPct(r.failPct)} failed`; });
-  weeklyBody.appendChild(right);
+  section("new", "New sources", w.newSources, (li, r) => ipLine(li, r, `${formatNumber(r.failed)} of ${formatNumber(r.total)} failed`));
+  section("failing", "Top failing sources", w.topFailing, (li, r) => ipLine(li, r, `${formatNumber(r.failed)} failed of ${formatNumber(r.total)}${r.likelyForwards ? ` (${formatNumber(r.likelyForwards)} likely forwards)` : ""}`));
+  section("forwards", "Top forwarders", w.topForwards, (li, r) => ipLine(li, r, `${formatNumber(r.likelyForwards)} likely forwards`));
+  section("reporters", "Reporting services", w.thisWeek.reporters, (li, r) => { li.textContent = `${r.orgName}: ${formatNumber(r.reports)} reports, ${formatNumber(r.messages)} messages, ${formatPct(r.failPct)} failed`; });
+  policyTabs(tabs, weeklyBody, weeklyTabState);
 }
 
 async function loadWeekly() {

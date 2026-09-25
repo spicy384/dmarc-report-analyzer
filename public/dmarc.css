@@ -546,20 +546,13 @@ details > summary {
 
 /* --- weekly summary ------------------------------------------------------ */
 
+/* One section at a time, chosen with tabs (same helper as the policy panel). */
 .weekly-grid {
-  display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(0, 1.2fr);
-  gap: 16px 28px;
+  display: block;
 }
 
-.weekly-grid > .weekly-col {
-  min-width: 0;
-}
-
-@media (max-width: 900px) {
-  .weekly-grid {
-    grid-template-columns: 1fr;
-  }
+.weekly-grid .policy-box table {
+  max-width: 720px;
 }
 
 .weekly-change {
