@@ -557,10 +557,31 @@ details > summary {
 
 /* --- policy readiness ---------------------------------------------------- */
 
+/* One section at a time, chosen with tabs; four columns squeezed each other. */
 .policy-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 14px;
+  display: block;
+}
+
+.policy-tabs {
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.policy-tabs .tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.policy-tabs .tab .pill {
+  font-weight: 500;
+}
+
+/* Records and facts read best at a column width, not the full panel. */
+.policy-box .policy-record,
+.policy-box .policy-facts,
+.policy-box .policy-warnings {
+  max-width: 900px;
 }
 
 .policy-box {
@@ -621,9 +642,24 @@ body.theme-dark .policy-warnings li {
   font-size: 12px;
 }
 
+.policy-reject {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
 .policy-reject-row {
-  margin-top: 8px;
   font-size: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.policy-reject-row .policy-sources {
+  margin-top: 8px;
+  margin-bottom: 0;
 }
 
 .policy-reject-row strong {

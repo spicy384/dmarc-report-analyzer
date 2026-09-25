@@ -1128,6 +1128,7 @@ function policyBox(title, { badge, badgeClass } = {}) {
     head.appendChild(b);
   }
   box.appendChild(head);
+  box.policyBadge = badge ? { badge, badgeClass } : null;
   return box;
 }
 
@@ -1164,9 +1165,54 @@ function sourceList(sources, unit) {
   return ul;
 }
 
+// The four sections are tabs: side by side they squeezed each other and the
+// DKIM table spilled into the next column. The chosen tab survives a re-render
+// (domain change, Re-check DNS) so the user stays where they were.
+let policyTab = "dmarc";
+
+function policyTabs(boxes) {
+  const bar = document.createElement("div");
+  bar.className = "tabs policy-tabs";
+  bar.setAttribute("role", "tablist");
+  const show = (key) => {
+    policyTab = key;
+    for (const b of boxes) {
+      const active = b.key === key;
+      b.button.classList.toggle("is-active", active);
+      b.button.setAttribute("aria-selected", active ? "true" : "false");
+      b.box.hidden = !active;
+    }
+  };
+  for (const b of boxes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tab";
+    button.setAttribute("role", "tab");
+    button.textContent = b.label;
+    const badge = b.box.policyBadge;
+    if (badge) {
+      const pill = document.createElement("span");
+      pill.className = `pill ${badge.badgeClass || ""}`;
+      pill.textContent = badge.badge;
+      button.append(" ", pill);
+    }
+    // The tab already carries the title and badge.
+    const head = b.box.querySelector(".policy-box-head");
+    if (head) head.remove();
+    button.addEventListener("click", () => show(b.key));
+    b.button = button;
+    b.box.classList.add("tab-panel");
+    bar.appendChild(button);
+  }
+  policyBody.appendChild(bar);
+  for (const b of boxes) policyBody.appendChild(b.box);
+  show(boxes.some((b) => b.key === policyTab) ? policyTab : boxes[0].key);
+}
+
 function renderPolicy(p) {
   policyBody.replaceChildren();
   const tags = p.dmarc.tags || {};
+  const tabs = [];
 
   // --- DMARC record ---
   const level = !p.dmarc.found ? "none" : tags.p || "none";
@@ -1184,7 +1230,7 @@ function renderPolicy(p) {
     dmarcBox.appendChild(warningList(facts, "policy-facts"));
   }
   if (p.dmarc.warnings && p.dmarc.warnings.length) dmarcBox.appendChild(warningList(p.dmarc.warnings));
-  policyBody.appendChild(dmarcBox);
+  tabs.push({ key: "dmarc", label: "DMARC record", box: dmarcBox });
 
   // --- SPF record ---
   const spfBox = policyBox("SPF record", {
@@ -1203,7 +1249,7 @@ function renderPolicy(p) {
   if (p.failingInsideSpf.length) {
     spfBox.appendChild(warningList([`${p.failingInsideSpf.length} source${p.failingInsideSpf.length === 1 ? "" : "s"} authorised by SPF still fail DMARC (alignment or DKIM problem, or a shared provider range): ${p.failingInsideSpf.slice(0, 5).map((s) => `${s.ip} via ${s.via}`).join(", ")}${p.failingInsideSpf.length > 5 ? ", ..." : ""}.`], "policy-facts"));
   }
-  policyBody.appendChild(spfBox);
+  tabs.push({ key: "spf", label: "SPF record", box: spfBox });
 
   // --- DKIM selectors ---
   const dkimBox = policyBox("DKIM selectors seen", { badge: `${p.dkim.length} selector${p.dkim.length === 1 ? "" : "s"}` });
@@ -1213,7 +1259,10 @@ function renderPolicy(p) {
     none.textContent = "No DKIM signatures for this domain appear in the period's reports. Sign outbound mail with DKIM so forwarded mail can still pass.";
     dkimBox.appendChild(none);
   } else {
-    dkimBox.appendChild(buildTable(
+    const scroll = document.createElement("div");
+    scroll.className = "table-scroll";
+    dkimBox.appendChild(scroll);
+    scroll.appendChild(buildTable(
       ["Selector", "Signing domain", "In DNS", { label: "Pass", className: "num" }, { label: "Fail", className: "num" }, "Last seen"],
       p.dkim.map((s) => ({
         data: s,
@@ -1228,7 +1277,7 @@ function renderPolicy(p) {
       }))
     ));
   }
-  policyBody.appendChild(dkimBox);
+  tabs.push({ key: "dkim", label: "DKIM selectors", box: dkimBox });
 
   // --- what reject would do ---
   const r = p.reject;
@@ -1242,6 +1291,7 @@ function renderPolicy(p) {
   const row = (label, value, sub, tone) => {
     const div = document.createElement("div");
     div.className = `policy-reject-row${tone ? ` tone-${tone}` : ""}`;
+    lines.appendChild(div);
     const v = document.createElement("strong");
     v.textContent = formatNumber(value);
     const l = document.createElement("span");
@@ -1255,15 +1305,16 @@ function renderPolicy(p) {
     }
     return div;
   };
-  lines.appendChild(row("legitimate messages rejected", r.legitimateRejected.messages, "from sources you labelled ours or vendor that fail DMARC; fix their SPF/DKIM before tightening", r.legitimateRejected.messages ? "bad" : "good"));
-  if (r.legitimateRejected.sources.length) lines.appendChild(sourceList(r.legitimateRejected.sources, "failed"));
-  lines.appendChild(row("spoofed messages blocked", r.spoofingBlocked.messages, `from ${r.unlabelledFailingSources ? `${r.unlabelledFailingSources} unlabelled and ` : ""}other sources; the point of the policy`, "good"));
-  if (r.spoofingBlocked.sources.length) lines.appendChild(sourceList(r.spoofingBlocked.sources, "failed"));
-  lines.appendChild(row("forwarded messages lost", r.forwardsLost.messages, "likely forwards and list mail that fails because it was modified in transit; unavoidable with reject, acceptable for most domains", r.forwardsLost.messages ? "warn" : "good"));
-  if (r.forwardsLost.sources.length) lines.appendChild(sourceList(r.forwardsLost.sources, "forwarded"));
-  lines.appendChild(row("messages unaffected", r.passing, "passed DMARC and would still be delivered"));
+  let card = row("legitimate messages rejected", r.legitimateRejected.messages, "from sources you labelled ours or vendor that fail DMARC; fix their SPF/DKIM before tightening", r.legitimateRejected.messages ? "bad" : "good");
+  if (r.legitimateRejected.sources.length) card.appendChild(sourceList(r.legitimateRejected.sources, "failed"));
+  card = row("spoofed messages blocked", r.spoofingBlocked.messages, `from ${r.unlabelledFailingSources ? `${r.unlabelledFailingSources} unlabelled and ` : ""}other sources; the point of the policy`, "good");
+  if (r.spoofingBlocked.sources.length) card.appendChild(sourceList(r.spoofingBlocked.sources, "failed"));
+  card = row("forwarded messages lost", r.forwardsLost.messages, "likely forwards and list mail that fails because it was modified in transit; unavoidable with reject, acceptable for most domains", r.forwardsLost.messages ? "warn" : "good");
+  if (r.forwardsLost.sources.length) card.appendChild(sourceList(r.forwardsLost.sources, "forwarded"));
+  row("messages unaffected", r.passing, "passed DMARC and would still be delivered");
   rejectBox.appendChild(lines);
-  policyBody.appendChild(rejectBox);
+  tabs.push({ key: "reject", label: "If p=reject", box: rejectBox });
+  policyTabs(tabs);
 
   policyBadge.textContent = ready ? "Ready for reject" : r.legitimateRejected.messages > 0 ? "Fix your senders first" : "Label your sources";
   policyBadge.className = `badge ${ready ? "badge-ok" : "badge-warn"}`;
