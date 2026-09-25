@@ -51,38 +51,39 @@
 body.theme-dark {
   color-scheme: dark;
 
-  --bg: #0b1120;
-  --bg-accent: #111c31;
-  --surface: #151e2f;
-  --surface-2: #1b2639;
-  --surface-3: #212e45;
+  /* Warm neutral grays (a touch of brown, no blue cast); blue stays an accent only. */
+  --bg: #131211;
+  --bg-accent: #1d1b18;
+  --surface: #1c1b19;
+  --surface-2: #232220;
+  --surface-3: #2b2927;
 
-  --border: #253248;
-  --border-strong: #35455f;
+  --border: #302e2b;
+  --border-strong: #433f3a;
 
-  --text: #e8eef8;
-  --text-muted: #9fb0c7;
-  --text-subtle: #7788a0;
+  --text: #ece8e2;
+  --text-muted: #aca59c;
+  --text-subtle: #867f76;
 
-  --primary: #60a5fa;
-  --primary-hover: #93c5fd;
-  --primary-soft: #17263f;
-  --primary-ring: rgba(96, 165, 250, 0.4);
+  --primary: #6aabf7;
+  --primary-hover: #9cc6fa;
+  --primary-soft: #272b30;
+  --primary-ring: rgba(106, 171, 247, 0.4);
   /* Dark theme uses lighter accent fills, so filled buttons need dark text
-     to stay legible (white on #60a5fa is only ~2.5:1). */
-  --primary-fg: #0a1626;
+     to stay legible (white on #6aabf7 is only ~2.5:1). */
+  --primary-fg: #121417;
 
   --danger: #f87171;
   --danger-hover: #fca5a5;
-  --danger-soft: #2a1a1d;
+  --danger-soft: #2d1e1c;
   --danger-fg: #260a0c;
 
   --success: #34d399;
-  --success-soft: #12291f;
+  --success-soft: #16281f;
 
-  --secondary-bg: #24314a;
-  --secondary-hover: #2e3d59;
-  --secondary-text: #dbe7f7;
+  --secondary-bg: #2b2927;
+  --secondary-hover: #373430;
+  --secondary-text: #e6e1da;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.3), 0 8px 20px rgba(0, 0, 0, 0.35);
@@ -339,7 +340,7 @@ select {
 }
 
 body.theme-dark select {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237788a0' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23867f76' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 }
 
 .search-field input {
