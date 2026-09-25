@@ -78,6 +78,49 @@ const JOB_POLL_MS = 1500;
 
 // --- generic helpers -------------------------------------------------------
 
+/**
+ * Copies text, falling back to a hidden textarea and execCommand when the
+ * Clipboard API is unavailable (plain HTTP on a LAN address is not a secure
+ * context, so navigator.clipboard is undefined there). Returns true on success.
+ */
+async function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Permission denied or unfocused document: try the legacy path.
+    }
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "0";
+  area.style.left = "0";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  return ok;
+}
+
+/** Selects an element's text so a plain Ctrl+C / Cmd+C copies it. */
+function selectText(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle("is-error", isError);
@@ -982,10 +1025,9 @@ weeklyEnd.addEventListener("change", () => loadWeekly());
 
 document.getElementById("weekly-copy").addEventListener("click", async () => {
   if (!weeklyData) return;
-  try {
-    await navigator.clipboard.writeText(weeklyData.text);
+  if (await copyToClipboard(weeklyData.text)) {
     setStatus("Weekly summary copied to the clipboard.");
-  } catch {
+  } else {
     setStatus("Could not copy; select the text below and copy it yourself.", true);
     const pre = document.createElement("pre");
     pre.className = "exo-code mono";
@@ -1920,13 +1962,16 @@ function exoSnippet(title, note, code) {
   copy.className = "secondary small";
   copy.textContent = "Copy";
   copy.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(code);
+    if (await copyToClipboard(code)) {
       copy.textContent = "Copied";
       setTimeout(() => { copy.textContent = "Copy"; }, 1500);
-    } catch {
-      copy.textContent = "Select and copy";
+      return;
     }
+    // Nothing worked: at least select the script so Ctrl+C / Cmd+C copies it.
+    const pre = item.querySelector("pre");
+    if (pre) selectText(pre);
+    copy.textContent = "Selected: press Ctrl+C";
+    setTimeout(() => { copy.textContent = "Copy"; }, 3000);
   });
   head.append(h, copy);
   item.appendChild(head);
@@ -2847,9 +2892,9 @@ document.getElementById("enrol-skip").addEventListener("click", async () => {
   await onSignedIn();
 });
 
-document.getElementById("recovery-copy").addEventListener("click", () => {
-  navigator.clipboard?.writeText(issuedRecoveryCodes.join("\n"));
-  setAuthMessage("Copied to clipboard.", false);
+document.getElementById("recovery-copy").addEventListener("click", async () => {
+  const ok = await copyToClipboard(issuedRecoveryCodes.join("\n"));
+  setAuthMessage(ok ? "Copied to clipboard." : "Could not copy; select the codes and copy them yourself.", !ok);
 });
 
 document.getElementById("recovery-download").addEventListener("click", () => {
