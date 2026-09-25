@@ -313,6 +313,40 @@ td.is-fail {
   font-weight: 600;
 }
 
+td.is-pass {
+  color: var(--success);
+  font-weight: 600;
+}
+
+/* --- DNS lookup ---------------------------------------------------------- */
+
+.lookup-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.lookup-form input {
+  flex: 1 1 260px;
+  max-width: 420px;
+}
+
+.lookup-link {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.lookup-link:hover {
+  text-decoration: underline;
+}
+
+.lookup-networks {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 td.trunc {
   max-width: 220px;
   overflow: hidden;

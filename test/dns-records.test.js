@@ -20,9 +20,14 @@ const zone = {
     "s1._domainkey.example.com": [["v=DKIM1; k=rsa; p=MIIBIjANBgkq"]],
     "old._domainkey.example.com": [["v=DKIM1; p="]]
   },
-  a: { "example.com": ["198.51.100.5"], "mx1.example.com": ["198.51.100.10"] },
-  aaaa: { "example.com": ["2001:db8::5"] },
-  mx: { "example.com": [{ exchange: "mx1.example.com", priority: 10 }] }
+  a: { "example.com": ["198.51.100.5"], "mx1.example.com": ["198.51.100.10"], "mx2.example.com": ["198.51.100.11"], "mail.good.test": ["203.0.113.7"], "lies.bad.test": ["203.0.113.99"] },
+  aaaa: { "example.com": ["2001:db8::5"], "mail.good.test": ["2001:db8:0:0:0:0:0:7"] },
+  mx: {
+    "example.com": [{ exchange: "mx1.example.com", priority: 10 }],
+    "multi.test": [{ exchange: "mx2.example.com", priority: 20 }, { exchange: "mx1.example.com", priority: 10 }, { exchange: "gone.example.com", priority: 30 }],
+    "nomail.test": [{ exchange: ".", priority: 0 }]
+  },
+  ptr: { "203.0.113.7": ["mail.good.test"], "2001:db8::7": ["mail.good.test."], "203.0.113.8": ["lies.bad.test"], "203.0.113.9": ["203-0-113-9.static.isp.test"] }
 };
 for (let i = 0; i < 12; i += 1) zone.txt[`inc${i}.test`] = [[`v=spf1 ip4:10.${i}.0.0/16 -all`]];
 
@@ -32,7 +37,8 @@ const resolvers = {
   resolveTxt: async (name) => { calls += 1; return zone.txt[name] || notFound(); },
   resolve4: async (name) => zone.a[name] || notFound(),
   resolve6: async (name) => zone.aaaa[name] || notFound(),
-  resolveMx: async (name) => zone.mx[name] || notFound()
+  resolveMx: async (name) => zone.mx[name] || notFound(),
+  reverse: async (ip) => zone.ptr[ip] || notFound()
 };
 
 let clock = 1000;
@@ -85,6 +91,37 @@ const dnsr = createDnsRecords({ resolvers, now: () => clock, cacheTtlMs: 1000 })
   check("dkim: revoked key", revoked.found && revoked.revoked === true);
   const nok = await dnsr.checkDkim("example.com", "nope");
   check("dkim: missing selector", nok.found === false);
+
+  // --- mx ---
+  const mx = await dnsr.getMx("multi.test");
+  check("mx: sorted by priority with addresses", mx.found && mx.hosts.map((h) => h.host).join(",") === "mx1.example.com,mx2.example.com,gone.example.com" && mx.hosts[0].addresses[0] === "198.51.100.10");
+  check("mx: host without addresses warned", mx.hosts[2].addresses.length === 0 && mx.warnings.some((w) => /gone.example.com has no A/.test(w)));
+  const nullMx = await dnsr.getMx("nomail.test");
+  check("mx: null MX", nullMx.found && nullMx.nullMx === true && nullMx.hosts.length === 0 && nullMx.warnings.some((w) => /Null MX/.test(w)));
+  const noMx = await dnsr.getMx("nothing.test");
+  check("mx: absent", noMx.found === false && noMx.warnings.length === 1);
+
+  // --- ptr ---
+  const good = await dnsr.getPtr("203.0.113.7");
+  check("ptr: forward-confirmed", good.found && good.names[0].name === "mail.good.test" && good.names[0].confirmed === true && good.warnings.length === 0, JSON.stringify(good));
+  const good6 = await dnsr.getPtr("2001:db8::7");
+  check("ptr: IPv6 compared by value, trailing dot stripped", good6.found && good6.names[0].name === "mail.good.test" && good6.names[0].confirmed === true);
+  const lies = await dnsr.getPtr("203.0.113.8");
+  check("ptr: not forward-confirmed", lies.found && lies.names[0].confirmed === false && lies.warnings.some((w) => /forward-confirmed/.test(w)));
+  const generic = await dnsr.getPtr("203.0.113.9");
+  check("ptr: generic name flagged", generic.warnings.some((w) => /generic/.test(w)));
+  const noPtr = await dnsr.getPtr("203.0.113.10");
+  check("ptr: absent", noPtr.found === false && noPtr.warnings.some((w) => /No PTR/.test(w)));
+
+  // --- lookup ---
+  const ld = await dnsr.lookup(" Example.COM. ");
+  check("lookup: domain gets all four", ld.type === "domain" && ld.query === "example.com" && ld.dmarc.found && ld.spf.found && ld.mx.found && ld.addresses.length === 2);
+  const li = await dnsr.lookup("203.0.113.7");
+  check("lookup: ip gets ptr", li.type === "ip" && li.ptr.found && li.ptr.names[0].confirmed);
+  const junk = await dnsr.lookup("not a domain").catch((e) => e);
+  check("lookup: junk is a 400", junk instanceof Error && junk.status === 400);
+  const empty = await dnsr.lookup("").catch((e) => e);
+  check("lookup: empty is a 400", empty instanceof Error && empty.status === 400);
 
   // --- cache ---
   const before = calls;

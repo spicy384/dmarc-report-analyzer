@@ -34,6 +34,15 @@ that would have been rejected (from sources labelled yours or vendor), spoofing 
 have been blocked, and forwards that would have been lost. A domain is called ready when
 nothing legitimate would be rejected and every failing source has a label.
 
+**DNS lookup**: check any domain or IP address, whether or not it appears in your reports.
+A domain gets its DMARC record (with the same warnings as the policy panel), its SPF record
+expanded into the networks it authorises, its MX hosts with their addresses (null MX and
+hosts that do not resolve are called out) and its A/AAAA addresses. An IP gets its reverse
+DNS with a forward check (a PTR name that resolves back to the address is forward-confirmed,
+which is what receivers expect from a mail server) plus what the analyzer already knows about
+it: label, report totals, network. Hosts and addresses in the results are clickable to look
+them up in turn, and the query is kept in the page link.
+
 **Known senders**: label the sources you recognise so the analyzer can tell "yours" from
 "not yours". A pattern is an IP, a CIDR block, a host name or `*.suffix` matched against
 reverse DNS; the kind is **ours** (your tenant, your relay), **vendor** (sends on your

@@ -319,6 +319,26 @@ function topSources(rows, key, limit = 5) {
 }
 
 /**
+ * Ad-hoc DNS lookup: DMARC, SPF, MX and addresses for a domain, reverse DNS for
+ * an IP. For an IP the response also says what the analyzer already knows about
+ * it (label, reverse name from sync, geo, report totals) so the two views agree.
+ */
+app.get("/api/lookup", route(async (req, res) => {
+  const refresh = String(req.query.refresh || "") === "1";
+  const result = await dnsRecords.lookup(req.query.q, { refresh });
+  if (result.type === "ip") {
+    const [seen] = db.ips({}, { ip: result.query, limit: 1 });
+    result.known = db.senderFor(result.query, seen ? seen.ptr : null);
+    result.seen = seen ? {
+      ptr: seen.ptr, total: seen.total, failed: seen.failed, likelyForwards: seen.likelyForwards || 0,
+      firstSeen: seen.firstSeen, lastSeen: seen.lastSeen, country: seen.country || null, countryCode: seen.countryCode || null,
+      city: seen.city || null, asn: seen.asn || null, asOrg: seen.asOrg || null
+    } : null;
+  }
+  res.json(result);
+}));
+
+/**
  * Everything needed to decide whether the domain is ready for p=reject: the DNS
  * records with warnings, and what rejecting would have done in the period.
  */

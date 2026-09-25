@@ -1,9 +1,11 @@
 /**
  * DNS lookups for the records DMARC depends on: the DMARC policy record, the SPF
- * record (expanded through includes to the networks it authorises) and DKIM
- * selector keys. Resolvers are injectable so tests run without the network.
+ * record (expanded through includes to the networks it authorises), DKIM
+ * selector keys, MX hosts and reverse DNS. Resolvers are injectable so tests run
+ * without the network.
  */
 const dns = require("dns");
+const { parseIp } = require("./ipmatch");
 
 const SPF_LOOKUP_LIMIT = 10;
 const MAX_DEPTH = 10;
@@ -14,7 +16,8 @@ function defaultResolvers({ timeoutMs }) {
     resolveTxt: (name) => r.resolveTxt(name),
     resolve4: (name) => r.resolve4(name),
     resolve6: (name) => r.resolve6(name),
-    resolveMx: (name) => r.resolveMx(name)
+    resolveMx: (name) => r.resolveMx(name),
+    reverse: (ip) => r.reverse(ip)
   };
 }
 
@@ -241,11 +244,137 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
     });
   }
 
+  /** A and AAAA addresses of a name; a missing record type is an empty list, not an error. */
+  async function getAddresses(name) {
+    const [v4, v6] = await Promise.all([
+      r.resolve4(name).catch((e) => (isNotFound(e) ? [] : Promise.reject(e))),
+      r.resolve6(name).catch((e) => (isNotFound(e) ? [] : Promise.reject(e)))
+    ]);
+    return [...v4, ...v6];
+  }
+
+  /** MX hosts in priority order, each with its addresses. A lone "." MX means "no mail". */
+  async function getMx(domain, { refresh = false } = {}) {
+    const d = String(domain || "").trim().toLowerCase();
+    return cached(`mx:${d}`, refresh, async () => {
+      let rows;
+      try {
+        rows = await r.resolveMx(d);
+      } catch (error) {
+        if (!isNotFound(error)) {
+          return { domain: d, found: false, hosts: [], nullMx: false, error: error.code || error.message, warnings: [`MX lookup failed: ${error.code || error.message}`] };
+        }
+        rows = [];
+      }
+      const warnings = [];
+      if (!rows.length) {
+        warnings.push("No MX record: receivers fall back to the domain's A record, which is rarely what you want.");
+        return { domain: d, found: false, hosts: [], nullMx: false, warnings };
+      }
+      if (rows.length === 1 && (rows[0].exchange === "" || rows[0].exchange === ".")) {
+        warnings.push("Null MX (RFC 7505): this domain does not accept mail at all.");
+        return { domain: d, found: true, hosts: [], nullMx: true, warnings };
+      }
+      const hosts = await Promise.all(rows
+        .slice()
+        .sort((a, b) => a.priority - b.priority || String(a.exchange).localeCompare(String(b.exchange)))
+        .map(async (row) => {
+          const host = String(row.exchange).toLowerCase().replace(/\.$/, "");
+          try {
+            const addresses = await getAddresses(host);
+            if (!addresses.length) warnings.push(`${host} has no A or AAAA record, so it cannot receive mail.`);
+            return { host, priority: row.priority, addresses };
+          } catch (error) {
+            return { host, priority: row.priority, addresses: [], error: error.code || error.message };
+          }
+        }));
+      return { domain: d, found: true, hosts, nullMx: false, warnings };
+    });
+  }
+
+  /**
+   * Reverse DNS for an IP, with each PTR name checked in the forward direction:
+   * a name that resolves back to the IP is forward-confirmed (FCrDNS), which is
+   * what most receivers want to see from a mail server.
+   */
+  async function getPtr(ip, { refresh = false } = {}) {
+    const address = String(ip || "").trim();
+    return cached(`ptr:${address}`, refresh, async () => {
+      let names;
+      try {
+        names = await r.reverse(address);
+      } catch (error) {
+        if (!isNotFound(error)) {
+          return { ip: address, found: false, names: [], error: error.code || error.message, warnings: [`Reverse lookup failed: ${error.code || error.message}`] };
+        }
+        names = [];
+      }
+      const warnings = [];
+      if (!names.length) {
+        warnings.push("No PTR record: many receivers reject or heavily penalise mail from an address with no reverse DNS.");
+        return { ip: address, found: false, names: [], warnings };
+      }
+      const wanted = parseIp(address);
+      const out = await Promise.all(names.map(async (raw) => {
+        const name = String(raw).toLowerCase().replace(/\.$/, "");
+        try {
+          const addresses = await getAddresses(name);
+          const confirmed = addresses.some((a) => {
+            const parsed = parseIp(a);
+            return Boolean(parsed && wanted && parsed.version === wanted.version && parsed.value === wanted.value);
+          });
+          return { name, addresses, confirmed };
+        } catch (error) {
+          return { name, addresses: [], confirmed: false, error: error.code || error.message };
+        }
+      }));
+      if (!out.some((n) => n.confirmed)) warnings.push("No PTR name resolves back to this address (no forward-confirmed reverse DNS).");
+      if (out.some((n) => /(^|[.-])(\d{1,3}[-.]){3}\d{1,3}([.-]|$)|static|dynamic|dhcp|pool|\bdyn/i.test(n.name))) {
+        warnings.push("The PTR looks generic (provider-assigned); receivers treat that like a residential or unmanaged host.");
+      }
+      return { ip: address, found: true, names: out, warnings };
+    });
+  }
+
+  /** Everything for one query: DMARC, SPF, MX and addresses for a domain; reverse DNS for an IP. */
+  async function lookup(query, { refresh = false } = {}) {
+    const q = String(query || "").trim().toLowerCase().replace(/\.$/, "");
+    if (!q) {
+      const error = new Error("Enter a domain or an IP address.");
+      error.status = 400;
+      throw error;
+    }
+    if (parseIp(q)) {
+      return { query: q, type: "ip", ptr: await getPtr(q, { refresh }) };
+    }
+    if (!/^(?=.{1,253}$)([a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z0-9-]{2,}$/.test(q)) {
+      const error = new Error("That is not a domain name or an IP address.");
+      error.status = 400;
+      throw error;
+    }
+    const fail = (error) => ({ found: false, error: error.code || error.message, warnings: [`DNS lookup failed: ${error.code || error.message}`] });
+    const [dmarc, spf, mx, addresses] = await Promise.all([
+      getDmarc(q, { refresh }).catch((e) => ({ domain: q, tags: {}, ...fail(e) })),
+      getSpf(q, { refresh }).catch((e) => ({ domain: q, networks: [], errors: [], ...fail(e) })),
+      getMx(q, { refresh }).catch((e) => ({ domain: q, hosts: [], ...fail(e) })),
+      getAddresses(q).catch((e) => ({ error: e.code || e.message }))
+    ]);
+    return {
+      query: q,
+      type: "domain",
+      dmarc,
+      spf,
+      mx,
+      addresses: Array.isArray(addresses) ? addresses : [],
+      addressError: Array.isArray(addresses) ? null : addresses.error
+    };
+  }
+
   function clearCache() {
     cache.clear();
   }
 
-  return { getDmarc, getSpf, checkDkim, clearCache, organizationalDomain, parseDmarcTags };
+  return { getDmarc, getSpf, checkDkim, getMx, getPtr, getAddresses, lookup, clearCache, organizationalDomain, parseDmarcTags };
 }
 
 module.exports = { createDnsRecords, organizationalDomain, parseDmarcTags, SPF_LOOKUP_LIMIT };

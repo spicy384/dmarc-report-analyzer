@@ -243,6 +243,26 @@
       </div>
     </section>
 
+    <section class="panel" id="lookup-panel">
+      <div class="panel-head">
+        <h2>DNS lookup</h2>
+        <span id="lookup-badge" class="badge"></span>
+      </div>
+      <p class="bulk-hint">
+        Check any domain or IP address, not just the ones in your reports. A domain gets its DMARC,
+        SPF (expanded through includes), MX hosts and addresses; an IP gets its reverse DNS with a
+        forward check, plus whatever the analyzer has already seen from it.
+      </p>
+      <form id="lookup-form" class="lookup-form">
+        <input id="lookup-input" type="search" class="small" placeholder="example.com or 203.0.113.5" autocomplete="off" spellcheck="false">
+        <button id="lookup-submit" type="submit" class="small">Look up</button>
+        <button id="lookup-refresh" type="button" class="secondary small" hidden>Re-check</button>
+      </form>
+      <div id="lookup-body" class="policy-grid">
+        <p class="empty-state">Enter a domain or an IP address.</p>
+      </div>
+    </section>
+
     <section class="panel" id="sources-panel">
       <div class="panel-head">
         <h2>Sending sources</h2>

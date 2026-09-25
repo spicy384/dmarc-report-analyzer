@@ -207,6 +207,16 @@ async function waitForServer(tries = 60) {
     check("policy: dkim selectors checked", polEx.body.dkim.some((s) => s.selector === "selector1" && typeof s.found === "boolean"));
     check("policy: dmarc warnings is an array", Array.isArray(polEx.body.dmarc.warnings));
 
+    // --- DNS lookup ---
+    check("lookup: empty query is 400", (await req("/api/lookup")).status === 400);
+    check("lookup: junk is 400", (await req("/api/lookup?q=not%20a%20name")).status === 400);
+    const ld = await req("/api/lookup?q=no-such-domain-for-tests.invalid");
+    check("lookup: domain shape", ld.status === 200 && ld.body.type === "domain" && ld.body.dmarc.found === false && ld.body.spf.found === false && ld.body.mx.found === false && Array.isArray(ld.body.addresses));
+    const lip = await req("/api/lookup?q=192.0.2.99");
+    check("lookup: ip seen in reports", lip.status === 200 && lip.body.type === "ip" && lip.body.ptr && Array.isArray(lip.body.ptr.names) && lip.body.seen && lip.body.seen.total > 0);
+    const lunseen = await req("/api/lookup?q=192.0.2.250");
+    check("lookup: ip never seen", lunseen.status === 200 && lunseen.body.seen === null && lunseen.body.known === null);
+
     // --- alerts ---
     check("alerts: none open", (await req("/api/alerts")).body.openCount === 0);
     check("alerts: ack unknown is 404", (await req("/api/alerts/999/ack", { method: "POST", body: {} })).status === 404);
