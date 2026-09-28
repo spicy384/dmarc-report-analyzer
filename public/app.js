@@ -2759,6 +2759,8 @@ function setAuthStep(step) {
   }
   authTitle.textContent = AUTH_TITLES[step] || "Sign in";
   setAuthMessage("");
+  // The passkey button only helps where the browser can actually use one.
+  document.getElementById("auth-passkey-block").hidden = step !== "login" || Boolean(passkeyBlocker());
 
   const focus = {
     login: "auth-username", mfa: "auth-mfa-code", recovery: "auth-recovery-code",
@@ -2995,11 +2997,159 @@ usersBtn.addEventListener("click", async () => {
   }
 });
 
+// --- passkeys (WebAuthn) ---------------------------------------------------------
+//
+// The browser API wants ArrayBuffers where the server speaks base64url; the newer
+// PublicKeyCredential JSON helpers do that conversion natively and are used when
+// present, with a small fallback for browsers that lack them.
+
+function b64urlToBuffer(s) {
+  const b64 = String(s).replace(/-/g, "+").replace(/_/g, "/") + "===".slice((String(s).length + 3) % 4);
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+
+function bufferToB64url(buf) {
+  let bin = "";
+  for (const b of new Uint8Array(buf)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function webauthnOptionsFromJson(options, kind) {
+  if (kind === "create" && PublicKeyCredential.parseCreationOptionsFromJSON) return PublicKeyCredential.parseCreationOptionsFromJSON(options);
+  if (kind === "get" && PublicKeyCredential.parseRequestOptionsFromJSON) return PublicKeyCredential.parseRequestOptionsFromJSON(options);
+  const out = { ...options, challenge: b64urlToBuffer(options.challenge) };
+  if (options.user) out.user = { ...options.user, id: b64urlToBuffer(options.user.id) };
+  for (const key of ["excludeCredentials", "allowCredentials"]) {
+    if (options[key]) out[key] = options[key].map((c) => ({ ...c, id: b64urlToBuffer(c.id) }));
+  }
+  return out;
+}
+
+function webauthnCredentialToJson(cred) {
+  if (typeof cred.toJSON === "function") return cred.toJSON();
+  const r = cred.response;
+  const response = { clientDataJSON: bufferToB64url(r.clientDataJSON) };
+  if (r.attestationObject) {
+    response.attestationObject = bufferToB64url(r.attestationObject);
+    if (r.getTransports) response.transports = r.getTransports();
+  } else {
+    response.authenticatorData = bufferToB64url(r.authenticatorData);
+    response.signature = bufferToB64url(r.signature);
+    response.userHandle = r.userHandle ? bufferToB64url(r.userHandle) : null;
+  }
+  return { id: cred.id, rawId: bufferToB64url(cred.rawId), type: cred.type, response, clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}, authenticatorAttachment: cred.authenticatorAttachment || null };
+}
+
+/** Why passkeys cannot be used on this page, or null when they can. */
+function passkeyBlocker() {
+  if (!window.PublicKeyCredential || !navigator.credentials) return "This browser does not support passkeys.";
+  if (!window.isSecureContext) return "Passkeys need HTTPS (or localhost).";
+  const host = location.hostname;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.startsWith("[")) return "Passkeys need a hostname, not an IP address; open the app by its DNS name.";
+  return null;
+}
+
+async function signInWithPasskey() {
+  const btn = document.getElementById("auth-passkey-btn");
+  btn.disabled = true;
+  try {
+    const { token, options } = await api("/api/auth/passkeys/login/options", { method: "POST", body: "{}" });
+    const cred = await navigator.credentials.get({ publicKey: webauthnOptionsFromJson(options, "get") });
+    const data = await api("/api/auth/passkeys/login/verify", { method: "POST", body: JSON.stringify({ token, response: webauthnCredentialToJson(cred) }) });
+    applyIdentity(data.user, data.csrfToken);
+    await onSignedIn();
+  } catch (error) {
+    // The browser throws NotAllowedError when the prompt is cancelled or times out.
+    setAuthMessage(error.name === "NotAllowedError" ? "Passkey prompt cancelled." : error.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("auth-passkey-btn").addEventListener("click", signInWithPasskey);
+
+async function addPasskey() {
+  const name = prompt("Name this passkey (for example: work laptop, phone):", "");
+  if (name === null) return;
+  try {
+    const { options } = await api("/api/auth/passkeys/register/options", { method: "POST", body: "{}" });
+    const cred = await navigator.credentials.create({ publicKey: webauthnOptionsFromJson(options, "create") });
+    const data = await api("/api/auth/passkeys/register/verify", { method: "POST", body: JSON.stringify({ name, response: webauthnCredentialToJson(cred) }) });
+    renderPasskeys(data.passkeys);
+    await refreshIdentity();
+    setStatus(`Passkey "${data.passkey.name}" added.`);
+  } catch (error) {
+    setStatus(error.name === "NotAllowedError" ? "Passkey prompt cancelled." : error.name === "InvalidStateError" ? "This device already holds a passkey for your account." : error.message, true);
+  }
+}
+
+document.getElementById("acct-add-passkey").addEventListener("click", addPasskey);
+
+function renderPasskeys(list) {
+  const ul = document.getElementById("acct-passkeys");
+  ul.replaceChildren();
+  for (const p of list) {
+    const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "passkey-row";
+    const text = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "passkey-name";
+    name.textContent = p.name;
+    const meta = document.createElement("div");
+    meta.className = "passkey-meta";
+    meta.textContent = `Added ${formatTimestamp(Math.floor(p.createdAt / 1000))}${p.lastUsedAt ? `, last used ${formatTimestamp(Math.floor(p.lastUsedAt / 1000))}` : ", never used"}${p.backedUp ? ", synced" : ""}`;
+    text.append(name, meta);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost-danger small";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", async () => {
+      if (!confirm(`Remove the passkey "${p.name}"? You can still sign in with your password.`)) return;
+      try {
+        const data = await api(`/api/auth/passkeys/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+        renderPasskeys(data.passkeys);
+        await refreshIdentity();
+        setStatus("Passkey removed.");
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+    row.append(text, remove);
+    li.appendChild(row);
+    ul.appendChild(li);
+  }
+  if (!list.length) {
+    const li = document.createElement("li");
+    li.className = "passkey-meta";
+    li.textContent = "No passkeys yet.";
+    ul.appendChild(li);
+  }
+}
+
+async function loadPasskeys() {
+  const blocker = passkeyBlocker();
+  const note = document.getElementById("acct-passkey-note");
+  note.hidden = !blocker;
+  note.textContent = blocker || "";
+  document.getElementById("acct-add-passkey").hidden = Boolean(blocker);
+  try {
+    const data = await api("/api/auth/passkeys");
+    renderPasskeys(data.passkeys || []);
+  } catch (error) {
+    renderPasskeys([]);
+  }
+}
+
 function renderAccountPanel() {
   const enrolled = Boolean(currentUser?.mfaEnrolled);
   document.getElementById("account-mfa-state").textContent = `Two-factor: ${enrolled ? "on" : "off"}`;
   document.getElementById("acct-enable-mfa").hidden = enrolled;
   document.getElementById("acct-disable-mfa").hidden = !enrolled;
+  if (currentUser) loadPasskeys();
 }
 
 document.getElementById("acct-enable-mfa").addEventListener("click", beginEnrolment);

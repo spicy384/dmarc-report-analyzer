@@ -1058,3 +1058,64 @@ body.theme-dark td.is-warn {
   color: var(--text-muted);
   word-break: break-word;
 }
+
+/* --- passkeys ------------------------------------------------------------ */
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0;
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.passkey-list {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.passkey-list li {
+  cursor: default;
+}
+
+.passkey-list li:hover {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.passkey-name {
+  font-weight: 600;
+}
+
+.passkey-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.passkey-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+
+#auth-passkey-block {
+  display: grid;
+  gap: 10px;
+}
+
+#auth-passkey-btn {
+  width: 100%;
+}

@@ -11,8 +11,18 @@ const express = require("express");
 const QRCode = require("qrcode");
 
 const auth = require("./auth");
+const webauthn = require("@simplewebauthn/server");
 
 const SESSION_COOKIE = "dmarc_session";
+const RP_NAME = "DMARC Report Analyzer";
+const PASSKEY_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const MAX_PASSKEYS_PER_USER = 10;
+
+// Passkeys are bound to a domain (the relying party ID). Normally both come from
+// the Origin header of the browser's request; these override them for setups where
+// the app sits behind a proxy that rewrites hosts, or for tests.
+const PASSKEY_RP_ID = process.env.PASSKEY_RP_ID || "";
+const PASSKEY_ORIGIN = process.env.PASSKEY_ORIGIN || "";
 const CSRF_HEADER = "x-csrf-token";
 
 // Session lifetimes.
@@ -239,9 +249,59 @@ function createAuth({ dataDir }) {
       username: user.username,
       role: user.role,
       mfaEnrolled: Boolean(user.totpSecret && user.mfaEnrolled),
+      passkeys: (user.passkeys || []).length,
       createdAt: user.createdAt,
       lastLoginAt: user.lastLoginAt || null
     };
+  }
+
+  // --- passkeys (WebAuthn) -------------------------------------------------
+  //
+  // A passkey signs in on its own: the authenticator requires the device plus a
+  // biometric or PIN, which is the two-factor guarantee the password path gets
+  // from TOTP. Passwords and TOTP stay exactly as they are for every account.
+
+  // Challenges in flight, keyed by a random token (sign-in) or "reg:<user id>".
+  const passkeyChallenges = new Map();
+
+  function rememberChallenge(key, challenge) {
+    for (const [k, v] of passkeyChallenges) if (Date.now() > v.expiresAt) passkeyChallenges.delete(k);
+    passkeyChallenges.set(key, { challenge, expiresAt: Date.now() + PASSKEY_CHALLENGE_TTL_MS });
+  }
+
+  function takeChallenge(key) {
+    const entry = passkeyChallenges.get(key);
+    passkeyChallenges.delete(key);
+    return entry && Date.now() <= entry.expiresAt ? entry.challenge : null;
+  }
+
+  /** The origin and relying-party ID this request's ceremony must match. */
+  function passkeyContext(req) {
+    let origin = PASSKEY_ORIGIN || String(req.headers.origin || "");
+    if (!origin) {
+      const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim();
+      origin = `${proto}://${req.headers.host || "localhost"}`;
+    }
+    let url;
+    try {
+      url = new URL(origin);
+    } catch {
+      return null;
+    }
+    return { origin: url.origin, rpID: PASSKEY_RP_ID || url.hostname };
+  }
+
+  /** What the browser stores and what the API shows; the public key stays server-side. */
+  function publicPasskey(p) {
+    return { id: p.id, name: p.name, createdAt: p.createdAt, lastUsedAt: p.lastUsedAt || null, deviceType: p.deviceType || null, backedUp: Boolean(p.backedUp), transports: p.transports || [] };
+  }
+
+  function findUserByPasskey(credentialId) {
+    for (const user of loadUsers()) {
+      const passkey = (user.passkeys || []).find((p) => p.id === credentialId);
+      if (passkey) return { user, passkey };
+    }
+    return null;
   }
 
   /** Resolves the caller, from a trusted proxy header if enabled, else the session cookie. */
@@ -492,6 +552,159 @@ function createAuth({ dataDir }) {
     const session = createSession(user.id);
     setSessionCookie(res, session.id);
     return res.json({ ok: true, user: publicUser(user), csrfToken: session.csrfToken, recoveryCodesRemaining: remaining.length });
+  });
+
+  // --- passkey routes ------------------------------------------------------
+
+  router.get("/api/auth/passkeys", requireAuth, (req, res) => {
+    const user = findUserById(req.user.id);
+    res.json({ passkeys: (user?.passkeys || []).map(publicPasskey) });
+  });
+
+  /** Step 1 of adding a passkey: options the browser hands to the authenticator. */
+  router.post("/api/auth/passkeys/register/options", requireAuth, async (req, res) => {
+    const ctx = passkeyContext(req);
+    if (!ctx) return res.status(400).json({ error: "Could not work out this site's origin." });
+    const user = findUserById(req.user.id);
+    if ((user.passkeys || []).length >= MAX_PASSKEYS_PER_USER) {
+      return res.status(400).json({ error: `At most ${MAX_PASSKEYS_PER_USER} passkeys per account; remove one first.` });
+    }
+    try {
+      const options = await webauthn.generateRegistrationOptions({
+        rpName: RP_NAME,
+        rpID: ctx.rpID,
+        userName: user.username,
+        userDisplayName: user.username,
+        userID: Buffer.from(user.id, "utf8"),
+        attestationType: "none",
+        excludeCredentials: (user.passkeys || []).map((p) => ({ id: p.id, transports: p.transports })),
+        // A discoverable credential with user verification, so it can sign in by itself.
+        authenticatorSelection: { residentKey: "required", userVerification: "preferred" }
+      });
+      rememberChallenge(`reg:${user.id}`, options.challenge);
+      res.json({ options });
+    } catch (error) {
+      res.status(500).json({ error: `Could not start passkey registration: ${error.message}` });
+    }
+  });
+
+  /** Step 2: the authenticator's answer, checked and stored. */
+  router.post("/api/auth/passkeys/register/verify", requireAuth, async (req, res) => {
+    const ctx = passkeyContext(req);
+    const expectedChallenge = takeChallenge(`reg:${req.user.id}`);
+    if (!ctx || !expectedChallenge) return res.status(400).json({ error: "Registration expired. Start again." });
+    const name = String(req.body?.name || "").trim().slice(0, 60) || "Passkey";
+    let verification;
+    try {
+      verification = await webauthn.verifyRegistrationResponse({
+        response: req.body?.response,
+        expectedChallenge,
+        expectedOrigin: ctx.origin,
+        expectedRPID: ctx.rpID,
+        requireUserVerification: false
+      });
+    } catch (error) {
+      return res.status(400).json({ error: `The passkey could not be verified: ${error.message}` });
+    }
+    if (!verification.verified || !verification.registrationInfo) {
+      return res.status(400).json({ error: "The passkey could not be verified." });
+    }
+    const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+    if (findUserByPasskey(credential.id)) {
+      return res.status(409).json({ error: "That passkey is already registered." });
+    }
+    const user = findUserById(req.user.id);
+    const stored = {
+      id: credential.id,
+      publicKey: Buffer.from(credential.publicKey).toString("base64url"),
+      counter: credential.counter || 0,
+      transports: credential.transports || [],
+      deviceType: credentialDeviceType,
+      backedUp: Boolean(credentialBackedUp),
+      name,
+      createdAt: Date.now(),
+      lastUsedAt: null
+    };
+    const passkeys = [...(user.passkeys || []), stored];
+    updateUser(user.id, { passkeys });
+    res.json({ ok: true, passkey: publicPasskey(stored), passkeys: passkeys.map(publicPasskey) });
+  });
+
+  router.delete("/api/auth/passkeys/:id", requireAuth, (req, res) => {
+    const user = findUserById(req.user.id);
+    const passkeys = (user?.passkeys || []).filter((p) => p.id !== req.params.id);
+    if (passkeys.length === (user?.passkeys || []).length) {
+      return res.status(404).json({ error: "No such passkey." });
+    }
+    updateUser(user.id, { passkeys });
+    res.json({ ok: true, passkeys: passkeys.map(publicPasskey) });
+  });
+
+  /** Sign-in step 1: a challenge any registered passkey may answer (no username needed). */
+  router.post("/api/auth/passkeys/login/options", async (req, res) => {
+    if (!hasUsers()) return res.status(409).json({ error: "Setup required.", setupRequired: true });
+    const ctx = passkeyContext(req);
+    if (!ctx) return res.status(400).json({ error: "Could not work out this site's origin." });
+    try {
+      const options = await webauthn.generateAuthenticationOptions({
+        rpID: ctx.rpID,
+        userVerification: "required",
+        allowCredentials: []
+      });
+      const token = auth.randomToken(24);
+      rememberChallenge(token, options.challenge);
+      res.json({ token, options });
+    } catch (error) {
+      res.status(500).json({ error: `Could not start passkey sign-in: ${error.message}` });
+    }
+  });
+
+  /** Sign-in step 2: the signed challenge, which identifies the account by credential ID. */
+  router.post("/api/auth/passkeys/login/verify", async (req, res) => {
+    const ctx = passkeyContext(req);
+    const expectedChallenge = takeChallenge(String(req.body?.token || ""));
+    const response = req.body?.response;
+    if (!ctx || !expectedChallenge || !response || typeof response.id !== "string") {
+      return res.status(401).json({ error: "Passkey sign-in expired. Try again." });
+    }
+    const refuse = () => res.status(401).json({ error: "That passkey is not recognised here." });
+    const found = findUserByPasskey(response.id);
+    if (!found) return refuse();
+    const { user, passkey } = found;
+    if (isLockedOut(user)) {
+      return res.status(429).json({ error: "Too many failed attempts. Try again later." });
+    }
+    let verification;
+    try {
+      verification = await webauthn.verifyAuthenticationResponse({
+        response,
+        expectedChallenge,
+        expectedOrigin: ctx.origin,
+        expectedRPID: ctx.rpID,
+        // The passkey stands in for password + code, so the device must have checked the person.
+        requireUserVerification: true,
+        credential: {
+          id: passkey.id,
+          publicKey: Buffer.from(passkey.publicKey, "base64url"),
+          counter: passkey.counter || 0,
+          transports: passkey.transports || []
+        }
+      });
+    } catch (error) {
+      registerFailure(user);
+      return res.status(401).json({ error: `Passkey sign-in failed: ${error.message}` });
+    }
+    if (!verification.verified) {
+      registerFailure(user);
+      return refuse();
+    }
+    const passkeys = (user.passkeys || []).map((p) => (p.id === passkey.id
+      ? { ...p, counter: verification.authenticationInfo.newCounter, lastUsedAt: Date.now() }
+      : p));
+    updateUser(user.id, { passkeys, lastLoginAt: Date.now(), failedAttempts: 0, lockedUntil: null });
+    const session = createSession(user.id);
+    setSessionCookie(res, session.id);
+    return res.json({ ok: true, user: publicUser(findUserById(user.id)), csrfToken: session.csrfToken });
   });
 
   router.post("/api/auth/logout", requireAuth, (req, res) => {

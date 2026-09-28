@@ -62,7 +62,8 @@ const PROTECTED = [
 (async () => {
   const app = spawn("node", ["server.js"], {
     cwd: PROJECT,
-    env: { ...process.env, PORT: String(APP_PORT), DATA_DIR },
+    // Passkeys are bound to a hostname; pin the relying party so the fake authenticator can match it.
+    env: { ...process.env, PORT: String(APP_PORT), DATA_DIR, PASSKEY_RP_ID: "localhost", PASSKEY_ORIGIN: `http://localhost:${APP_PORT}` },
     stdio: ["ignore", "pipe", "pipe"]
   });
   app.stderr.on("data", (d) => console.error("[app stderr]", d.toString().trim()));
@@ -259,6 +260,65 @@ const PROTECTED = [
 
     const spoofRes = await fetch(`http://127.0.0.1:${APP_PORT}/api/reports`, { headers: { "Remote-User": "admin" } });
     check("Remote-User header alone grants nothing by default", spoofRes.status === 401, String(spoofRes.status));
+
+    // === passkeys ===
+    const { createFakeAuthenticator } = require("./helpers/fake-authenticator");
+    const authenticator = createFakeAuthenticator({ rpId: "localhost", origin: `http://localhost:${APP_PORT}` });
+    cookie = adminCookie; csrf = adminCsrf;
+    check("passkeys: none to start", (await req("/api/auth/passkeys")).body.passkeys.length === 0);
+    const regOpts = await req("/api/auth/passkeys/register/options", { method: "POST", body: {} });
+    check("passkeys: registration options ask for a discoverable, verified credential", regOpts.status === 200 && regOpts.body.options.rp.id === "localhost" && regOpts.body.options.authenticatorSelection.residentKey === "required" && typeof regOpts.body.options.challenge === "string");
+    const regBad = await req("/api/auth/passkeys/register/verify", { method: "POST", body: { name: "x", response: { id: "nope", rawId: "nope", type: "public-key", response: {} } } });
+    check("passkeys: garbage registration is refused and burns the challenge", regBad.status === 400);
+    const regOpts2 = await req("/api/auth/passkeys/register/options", { method: "POST", body: {} });
+    const reg = await req("/api/auth/passkeys/register/verify", { method: "POST", body: { name: "  Work laptop  ", response: authenticator.register(regOpts2.body.options) } });
+    check("passkeys: registration verified and stored", reg.status === 200 && reg.body.passkey.name === "Work laptop" && reg.body.passkeys.length === 1 && reg.body.passkey.id === authenticator.credentialId, JSON.stringify(reg.body));
+    check("passkeys: listing never carries the public key", !JSON.stringify((await req("/api/auth/passkeys")).body).includes("publicKey"));
+    check("passkeys: /me counts them", (await req("/api/auth/me")).body.user.passkeys === 1);
+    const regDup = await req("/api/auth/passkeys/register/options", { method: "POST", body: {} });
+    check("passkeys: registered credential is excluded from new registrations", regDup.body.options.excludeCredentials.some((c) => c.id === authenticator.credentialId));
+
+    // Sign in with it: no cookie, no username.
+    cookie = null; csrf = null;
+    const loginOpts = await req("/api/auth/passkeys/login/options", { method: "POST", body: {} });
+    check("passkeys: sign-in options need no username and require verification", loginOpts.status === 200 && loginOpts.body.token && loginOpts.body.options.userVerification === "required" && loginOpts.body.options.allowCredentials.length === 0);
+    const assertion = authenticator.assert(loginOpts.body.options);
+    const pkLogin = await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: loginOpts.body.token, response: assertion } });
+    check("passkeys: sign-in succeeds with a session and no MFA step", pkLogin.status === 200 && pkLogin.body.user.username === "admin" && pkLogin.body.csrfToken && Boolean(cookie), JSON.stringify(pkLogin.body));
+    csrf = pkLogin.body.csrfToken;
+    check("passkeys: session is real", (await req("/api/auth/me")).body.authenticated === true);
+    check("passkeys: last used recorded", (await req("/api/auth/passkeys")).body.passkeys[0].lastUsedAt > 0);
+    const passkeyCookie = cookie;
+    const passkeyCsrf = csrf;
+
+    cookie = null; csrf = null;
+    const pkReplay = await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: loginOpts.body.token, response: assertion } });
+    check("passkeys: a challenge cannot be reused", pkReplay.status === 401);
+    const opts3 = await req("/api/auth/passkeys/login/options", { method: "POST", body: {} });
+    const stranger = createFakeAuthenticator({ rpId: "localhost", origin: `http://localhost:${APP_PORT}` });
+    const unknown2 = await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: opts3.body.token, response: stranger.assert(opts3.body.options) } });
+    check("passkeys: unknown credential is refused", unknown2.status === 401 && !cookie);
+    const opts4 = await req("/api/auth/passkeys/login/options", { method: "POST", body: {} });
+    const forged = authenticator.assert(opts4.body.options, { signWith: require("crypto").generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey });
+    const forgedRes = await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: opts4.body.token, response: forged } });
+    check("passkeys: bad signature is refused", forgedRes.status === 401 && !cookie);
+    const opts5 = await req("/api/auth/passkeys/login/options", { method: "POST", body: {} });
+    const noUv = await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: opts5.body.token, response: authenticator.assert(opts5.body.options, { userVerified: false }) } });
+    check("passkeys: sign-in without user verification is refused", noUv.status === 401 && !cookie);
+    const opts6 = await req("/api/auth/passkeys/login/options", { method: "POST", body: {} });
+    const wrongOrigin = createFakeAuthenticator({ rpId: "localhost", origin: "https://evil.example" });
+    // Same key material is not shared between instances, so this fails on signature or origin; either is a refusal.
+    check("passkeys: wrong origin is refused", (await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: opts6.body.token, response: wrongOrigin.assert(opts6.body.options) } })).status === 401);
+
+    // Remove it, then it no longer signs in.
+    cookie = passkeyCookie; csrf = passkeyCsrf;
+    const removed = await req(`/api/auth/passkeys/${authenticator.credentialId}`, { method: "DELETE" });
+    check("passkeys: remove", removed.status === 200 && removed.body.passkeys.length === 0);
+    check("passkeys: remove unknown is 404", (await req("/api/auth/passkeys/nope", { method: "DELETE" })).status === 404);
+    cookie = null; csrf = null;
+    const opts7 = await req("/api/auth/passkeys/login/options", { method: "POST", body: {} });
+    check("passkeys: removed credential no longer signs in", (await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: opts7.body.token, response: authenticator.assert(opts7.body.options) } })).status === 401);
+    check("passkeys: options require CSRF-free public access but not before setup", (await req("/api/auth/passkeys/register/options", { method: "POST", body: {}, cookieOverride: null })).status === 401);
 
     // === secrets on disk ===
     const usersRaw = fs.readFileSync(path.join(DATA_DIR, "users.json"), "utf8");

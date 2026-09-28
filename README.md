@@ -126,6 +126,17 @@ Administrators manage accounts and can test the mailbox connection, users can st
 sync, viewers can only look. It can also run behind an authentication reverse proxy
 (Authelia, Authentik, oauth2-proxy) using the `TRUST_PROXY_AUTH` option.
 
+**Passkeys**: anyone can add passkeys under **Account** (a phone, a laptop, a hardware
+key; up to ten) and then use **Sign in with a passkey** on the sign-in card. No username,
+password or code is asked for: the passkey needs the device plus a fingerprint, face or
+PIN, which is the same two-factor guarantee TOTP gives the password path. The password
+path stays exactly as it is, so a lost device just means signing in with the password and
+adding a new passkey. Two things the browser requires: HTTPS (localhost excepted), and
+reaching the app by a **hostname**, because a passkey is bound to the domain it was
+created on. On plain HTTP or an IP address the passkey button is simply not shown. The
+domain and origin are taken from the request; `PASSKEY_RP_ID` and `PASSKEY_ORIGIN`
+override them for a proxy that rewrites hosts.
+
 ## Requirements
 
 - A Microsoft 365 mailbox that receives the reports: the address in your domain's DMARC
@@ -273,6 +284,7 @@ Data lives in `./data` unless `DATA_DIR` says otherwise.
 | `GEOIP_CITY_DB`, `GEOIP_ASN_DB` | `<data>/geoip/GeoLite2-*.mmdb` | MaxMind database files, if you have them |
 | `GEOIP_ONLINE` | `true` | Fall back to ip-api.com for IPs the files cannot answer |
 | `PORT` | `3000` | Listening port |
+| `PASSKEY_RP_ID`, `PASSKEY_ORIGIN` | from the request | Domain and origin passkeys are bound to, when a proxy hides the real ones |
 | `DATA_DIR` | `./data` | Accounts, sessions, the SQLite database, generated TLS files |
 | `TZ` | `UTC` | Timezone for the container |
 | `COOKIE_SECURE` | `false` | Mark the session cookie Secure. Set `true` behind HTTPS |

@@ -148,6 +148,10 @@
         <label>Username <input id="auth-username" autocomplete="username" required /></label>
         <label>Password <input id="auth-password" type="password" autocomplete="current-password" required /></label>
         <button type="submit">Sign in</button>
+        <div id="auth-passkey-block" hidden>
+          <div class="auth-divider">or</div>
+          <button type="button" id="auth-passkey-btn" class="secondary">Sign in with a passkey</button>
+        </div>
       </form>
 
       <!-- Step 2: authenticator code -->
@@ -631,6 +635,19 @@
           <div class="actions">
             <button id="acct-enable-mfa" type="button">Set up two-factor</button>
             <button id="acct-disable-mfa" type="button" class="ghost-danger" hidden>Turn off two-factor</button>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="account-heading">Passkeys</h3>
+          <p class="bulk-hint">
+            Sign in with a fingerprint, face or PIN instead of a password and code. Your password
+            and two-factor settings stay as they are for when a passkey is not to hand.
+          </p>
+          <ul id="acct-passkeys" class="passkey-list"></ul>
+          <p id="acct-passkey-note" class="bulk-hint" hidden></p>
+          <div class="actions">
+            <button id="acct-add-passkey" type="button">Add a passkey</button>
           </div>
         </div>
       </div>
