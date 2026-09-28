@@ -105,6 +105,8 @@ async function waitForServer(tries = 60) {
     const status = await req("/api/status");
     check("status: no mailboxes configured", status.body.configured === false && Array.isArray(status.body.mailboxes) && status.body.mailboxes.length === 0);
     check("status: never exposes a secret field", !JSON.stringify(status.body).includes("clientSecret"));
+    check("status: walkthrough offered while no mailbox exists", status.body.setup && status.body.setup.needed === true && status.body.setup.dismissed === false);
+    check("setup: dismiss sticks", (await req("/api/setup/dismiss", { method: "POST", body: {} })).status === 200 && (await req("/api/status")).body.setup.dismissed === true);
     check("status: scheduler off", status.body.scheduler.enabled === false);
     check("status: stats and errors", status.body.stats.reports.reports === 2 && status.body.errors.length === 1 && status.body.errors[0].graph_id === "m3");
 

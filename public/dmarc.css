@@ -972,3 +972,89 @@ td.is-warn {
 body.theme-dark td.is-warn {
   color: var(--chart-fail-none);
 }
+
+/* --- first-run walkthrough ------------------------------------------------ */
+
+.wizard-card {
+  max-width: 680px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+/* styles.css turns every li into a clickable card; these are plain numbered steps. */
+.wizard-list li,
+.wizard-list li:hover {
+  display: list-item;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: default;
+}
+
+.wizard-card .auth-brand {
+  align-items: flex-start;
+}
+
+.wizard-card .auth-brand h2 {
+  margin: 0;
+}
+
+.wizard-progress {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-subtle);
+}
+
+.wizard-lead {
+  margin: 8px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wizard-list {
+  margin: 0 0 10px;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.wizard-list li {
+  margin-bottom: 4px;
+}
+
+.wizard-step .mb-auth {
+  margin-top: 4px;
+}
+
+.wizard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wizard-spacer {
+  flex: 1;
+}
+
+.wizard-result {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.wizard-status {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.wizard-status.is-ok { color: var(--success); }
+.wizard-status.is-bad { color: var(--danger); }
+
+.wizard-detail {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  word-break: break-word;
+}

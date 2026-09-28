@@ -42,6 +42,93 @@
   </header>
 
   <!-- Covers the app until the user is signed in. -->
+  <!-- First-run walkthrough: shown to an administrator while no mailbox is configured. -->
+  <div id="setup-wizard" class="auth-overlay wizard-overlay" hidden>
+    <div class="auth-card wizard-card">
+      <div class="auth-brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="m9 12 2 2 4-4" />
+          </svg>
+        </span>
+        <div>
+          <h2>Connect your reports mailbox</h2>
+          <p id="sw-progress" class="wizard-progress">Step 1 of 4</p>
+        </div>
+      </div>
+
+      <p id="sw-message" class="auth-message" hidden></p>
+
+      <div id="sw-step-1" class="auth-form wizard-step">
+        <p class="auth-hint">
+          Nothing is reading reports yet. This walkthrough connects the Microsoft 365 mailbox that
+          receives your DMARC reports (the <span class="mono">rua=</span> address). It takes a few minutes.
+        </p>
+        <p class="wizard-lead">You will need, from the Entra admin center:</p>
+        <ol class="wizard-list">
+          <li>An <strong>app registration</strong> with the Microsoft Graph <strong>application</strong> permission
+            <span class="mono">Mail.Read</span>, with admin consent granted.</li>
+          <li>Its <strong>Directory (tenant) ID</strong> and <strong>Application (client) ID</strong> from the Overview page.</li>
+          <li>A credential: a <strong>client secret</strong>, or a <strong>certificate</strong> whose public part is uploaded
+            to the registration and whose private key you have as PEM.</li>
+          <li>The <strong>mailbox address</strong> the reports land in.</li>
+        </ol>
+        <p class="auth-hint">
+          The README's <em>Entra app registration</em> section walks through creating these, and how to
+          restrict the app to this one mailbox. Everything you enter here can be changed later under Mailbox sync.
+        </p>
+      </div>
+
+      <div id="sw-step-2" class="auth-form wizard-step" hidden>
+        <label>Directory (tenant) ID <input id="sw-tenant" class="mono" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off" /></label>
+        <label>Application (client) ID <input id="sw-client" class="mono" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off" /></label>
+        <fieldset class="mb-auth">
+          <legend>Credential</legend>
+          <div class="mb-auth-choice">
+            <label class="check-inline"><input type="radio" name="sw-auth" value="secret" checked /> Client secret</label>
+            <label class="check-inline"><input type="radio" name="sw-auth" value="certificate" /> Certificate</label>
+          </div>
+          <div id="sw-auth-secret">
+            <label>Client secret <input id="sw-secret" type="password" class="mono" autocomplete="new-password" /></label>
+            <p class="auth-hint">The secret's <strong>Value</strong>, shown once when it was created. Not the secret ID.</p>
+          </div>
+          <div id="sw-auth-certificate" hidden>
+            <label>Certificate (PEM)
+              <textarea id="sw-cert" class="mono" rows="4" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea>
+            </label>
+            <label>Private key (PEM)
+              <textarea id="sw-key" class="mono" rows="4" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea>
+            </label>
+            <label>Key passphrase (only if the key is encrypted) <input id="sw-key-pass" type="password" class="mono" autocomplete="new-password" /></label>
+          </div>
+        </fieldset>
+      </div>
+
+      <div id="sw-step-3" class="auth-form wizard-step" hidden>
+        <label>Mailbox address (UPN) <input id="sw-mailbox" class="mono" placeholder="dmarc-reports@contoso.com" autocomplete="off" /></label>
+        <label>Folder <input id="sw-folder" value="Inbox" /></label>
+        <p class="auth-hint">Inbox needs no lookup. A folder name or a <span class="mono">Parent/Child</span> path is resolved at sync time.</p>
+        <label>Name <input id="sw-name" placeholder="Contoso" /></label>
+        <p class="auth-hint">How this mailbox is labelled in the app. Defaults to the address.</p>
+      </div>
+
+      <div id="sw-step-4" class="auth-form wizard-step" hidden>
+        <div id="sw-result" class="wizard-result"></div>
+        <p id="sw-result-hint" class="auth-hint"></p>
+      </div>
+
+      <div class="actions wizard-actions">
+        <button type="button" id="sw-back" class="secondary" hidden>Back</button>
+        <button type="button" id="sw-next">Get started</button>
+        <button type="button" id="sw-sync" hidden>Run the first sync</button>
+        <button type="button" id="sw-finish" class="secondary" hidden>Finish</button>
+        <span class="wizard-spacer"></span>
+        <button type="button" id="sw-skip" class="link-btn">Skip for now</button>
+      </div>
+    </div>
+  </div>
+
   <div id="auth-overlay" class="auth-overlay" hidden>
     <div class="auth-card">
       <div class="auth-brand">
@@ -414,6 +501,7 @@
       <div class="actions">
         <button id="sync-now-btn" type="button" class="writer-only">Sync all now</button>
         <button id="add-mailbox-btn" type="button" class="secondary" hidden>Add mailbox</button>
+        <button id="setup-guide-btn" type="button" class="secondary" hidden title="Step-by-step walkthrough for connecting a mailbox">Setup guide</button>
         <button id="geoip-refresh-btn" type="button" class="secondary" hidden title="Look up country and network again for every source IP, for example after adding the GeoLite2 files">Re-run GeoIP lookups</button>
       </div>
 

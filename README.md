@@ -230,9 +230,14 @@ Then:
 docker compose up -d
 ```
 
-Open <http://localhost:3000>, create the first administrator, and check the **Mailbox
-sync** panel: **Test connection** confirms the token and the folder, **Sync now** pulls
-the reports. The first sync looks back `BACKFILL_DAYS` (90 by default); later runs continue
+Open <http://localhost:3000> and create the first administrator. If no mailbox is
+configured yet (no `GRAPH_*` variables and none added in the app), a four-step
+walkthrough opens right after sign-in: what to collect from Entra, the app registration
+and its credential (secret or certificate), the mailbox, then a connection test with a
+plain-language reading of any failure and a button to run the first sync. **Skip for now**
+puts it away; **Setup guide** under Mailbox sync reopens it at any time. Otherwise check
+the **Mailbox sync** panel: **Test** confirms the token and the folder, **Sync all now**
+pulls the reports. The first sync looks back `BACKFILL_DAYS` (90 by default); later runs continue
 from the newest email seen, and a scheduled run happens every `SYNC_INTERVAL_MINUTES`.
 
 The compose file publishes the port on loopback only, because the app serves plain HTTP.

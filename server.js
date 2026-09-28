@@ -162,6 +162,9 @@ app.get("/api/status", route(async (req, res) => {
     retention: retention.describe(),
     forensicCount: db.forensicCount(),
     configured: list.some((m) => m.enabled),
+    // First-run walkthrough: offered while no mailbox exists (no env variables, nothing
+    // added in the app) until an administrator dismisses it.
+    setup: { needed: list.length === 0, dismissed: db.getSetting("setup_dismissed") === "1" },
     scheduler: { intervalMinutes: SYNC_INTERVAL_MINUTES, enabled: SYNC_INTERVAL_MINUTES > 0 && sync.anyConfigured() },
     backfillDays: BACKFILL_DAYS,
     currentJob: publicJob(sync.currentJob()),
@@ -479,6 +482,12 @@ app.post("/api/known-senders/from-spf", authGuard.requireWriter, route(async (re
 }));
 
 // --- mailboxes (admin) -------------------------------------------------------
+
+// The walkthrough can be put away for good; it can still be reopened from the sync panel.
+app.post("/api/setup/dismiss", authGuard.requireAdmin, route(async (req, res) => {
+  db.setSetting("setup_dismissed", "1");
+  res.json({ ok: true });
+}));
 
 app.get("/api/mailboxes", authGuard.requireAdmin, route(async (req, res) => {
   res.json({ mailboxes: mailboxes.list() });
