@@ -144,8 +144,25 @@ in and it keeps working unattended.
 2. On the Overview page note the **Application (client) ID** and **Directory (tenant) ID**.
 3. **API permissions** → **Add a permission** → **Microsoft Graph** →
    **Application permissions** → tick **Mail.Read** → Add. Then **Grant admin consent**.
-4. **Certificates & secrets** → **New client secret**. Copy the **Value** immediately; it
-   is shown once. Note the expiry and put a reminder in your calendar.
+4. Give the app a credential. Either kind works, per mailbox:
+   - **Client secret**: **Certificates & secrets** → **New client secret**. Copy the
+     **Value** immediately; it is shown once. Note the expiry and put a reminder in your
+     calendar.
+   - **Certificate** (nothing to copy out of the portal, and the private key never leaves
+     your server): create a key and a self-signed certificate, then upload the certificate
+     under **Certificates & secrets** → **Certificates** → **Upload certificate**.
+
+     ```bash
+     openssl req -x509 -newkey rsa:2048 -sha256 -days 730 -nodes \
+       -subj "/CN=dmarc-report-analyzer" -keyout graph-key.pem -out graph-cert.pem
+     ```
+
+     Upload `graph-cert.pem`; keep `graph-key.pem` private. Entra identifies the
+     certificate by its SHA-1 thumbprint, which the app shows next to the mailbox. If you
+     already have a `.pfx`, split it into the two PEM files with
+     `openssl pkcs12 -in app.pfx -clcerts -nokeys -out graph-cert.pem` and
+     `openssl pkcs12 -in app.pfx -nocerts -nodes -out graph-key.pem`. An encrypted key is
+     fine too; give the passphrase alongside it.
 5. Recommended: restrict the app to just this mailbox. `Mail.Read` as an application
    permission otherwise covers every mailbox in the tenant. In Exchange Online PowerShell:
 
@@ -158,21 +175,24 @@ in and it keeps working unattended.
    The policy can take up to 30 minutes to apply. `PolicyScopeGroupId` can also be a
    mail-enabled security group if you want to allow several mailboxes.
 
-That gives you the four values the app needs: tenant ID, client ID, client secret, and the
-mailbox address.
+That gives you the four values the app needs: tenant ID, client ID, the credential (a
+client secret, or a certificate and its private key), and the mailbox address.
 
 ## Several mailboxes and tenants
 
 Administrators add mailboxes under **Mailbox sync** in the app: a name, the mailbox
-address, the tenant ID, client ID and client secret of an app registration in that
-mailbox's tenant, and optionally a folder. Each mailbox is synced on its own with its own
-cursor, a failure in one (expired secret, consent revoked) does not stop the others, and
-every report remembers which mailbox it came from. When more than one is configured a
-**Mailbox** dropdown joins the filter bar.
+address, the tenant ID and client ID of an app registration in that mailbox's tenant, the
+credential (**Client secret**, or **Certificate** with the PEM certificate, its private key
+and the key's passphrase if it has one), and optionally a folder. Each mailbox is synced on
+its own with its own cursor, a failure in one (expired secret or certificate, consent
+revoked) does not stop the others, and every report remembers which mailbox it came from.
+When more than one is configured a **Mailbox** dropdown joins the filter bar. The mailbox
+table shows which credential each one uses and, for certificates, the thumbprint and expiry
+date; a certificate within 30 days of expiry is highlighted.
 
 The mailbox given through `GRAPH_*` and `DMARC_MAILBOX` still works and shows up as the
 read-only **(env)** entry. Mailboxes added in the app are stored in `mailboxes.json` in
-the data directory with their client secrets, so keep that directory private.
+the data directory with their secrets or private keys, so keep that directory private.
 
 ## Run it
 
@@ -190,6 +210,17 @@ file:
 GRAPH_TENANT_ID=00000000-0000-0000-0000-000000000000
 GRAPH_CLIENT_ID=00000000-0000-0000-0000-000000000000
 GRAPH_CLIENT_SECRET=the-secret-value
+DMARC_MAILBOX=dmarc-reports@example.com
+```
+
+For a certificate instead of a secret, put the PEM files in a `certs/` folder next to the
+compose file (it is mounted read-only at `/certs`) and point at them:
+
+```
+GRAPH_TENANT_ID=00000000-0000-0000-0000-000000000000
+GRAPH_CLIENT_ID=00000000-0000-0000-0000-000000000000
+GRAPH_CERT_FILE=/certs/graph-cert.pem
+GRAPH_KEY_FILE=/certs/graph-key.pem
 DMARC_MAILBOX=dmarc-reports@example.com
 ```
 
@@ -224,7 +255,11 @@ Data lives in `./data` unless `DATA_DIR` says otherwise.
 |---|---|---|
 | `GRAPH_TENANT_ID` | | Directory (tenant) ID of the app registration |
 | `GRAPH_CLIENT_ID` | | Application (client) ID |
-| `GRAPH_CLIENT_SECRET` | | Client secret value |
+| `GRAPH_CLIENT_SECRET` | | Client secret value (leave unset when using a certificate) |
+| `GRAPH_CERT_FILE` | | Path to the certificate PEM; may hold the key too. Used instead of the secret |
+| `GRAPH_KEY_FILE` | | Path to the private key PEM, when it is a separate file |
+| `GRAPH_KEY_PASSPHRASE` | | Passphrase of the private key, if it is encrypted |
+| `GRAPH_CERT_PEM`, `GRAPH_KEY_PEM` | | The same as inline PEM text, for setups that inject secrets as variables |
 | `DMARC_MAILBOX` | | The mailbox receiving reports, as a UPN / email address |
 | `DMARC_FOLDER` | `Inbox` | Folder to read. A display name, or a `Parent/Child` path |
 | `SYNC_INTERVAL_MINUTES` | `60` | Scheduled sync interval. `0` turns it off; **Sync now** still works |

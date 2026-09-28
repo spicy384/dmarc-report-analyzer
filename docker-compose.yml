@@ -33,7 +33,14 @@ services:
       # so the client secret never ends up in version control.
       GRAPH_TENANT_ID: ${GRAPH_TENANT_ID:-}
       GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID:-}
+      # Either a client secret...
       GRAPH_CLIENT_SECRET: ${GRAPH_CLIENT_SECRET:-}
+      # ...or a certificate: PEM files in ./certs (mounted read-only at /certs below), e.g.
+      # GRAPH_CERT_FILE=/certs/graph-cert.pem and GRAPH_KEY_FILE=/certs/graph-key.pem.
+      # Upload the certificate (not the key) to the app registration in Entra.
+      GRAPH_CERT_FILE: ${GRAPH_CERT_FILE:-}
+      GRAPH_KEY_FILE: ${GRAPH_KEY_FILE:-}
+      GRAPH_KEY_PASSPHRASE: ${GRAPH_KEY_PASSPHRASE:-}
       # The mailbox that receives the reports (the rua= address), as a UPN.
       DMARC_MAILBOX: ${DMARC_MAILBOX:-}
       # Folder to read. "Inbox" needs no lookup; a name or "Parent/Child" path is resolved.
@@ -84,8 +91,10 @@ services:
     # TOTP secrets and a private key.
     volumes:
       - dmarc-data:/data
-      # To supply your own certificate, mount it read-only and set TLS_CERT/TLS_KEY above.
-      # - /etc/letsencrypt/live/dmarc.example.com:/certs:ro
+      # Graph certificate credential (see GRAPH_CERT_FILE above): PEM files from ./certs.
+      - ./certs:/certs:ro
+      # To supply your own TLS certificate, mount it read-only and set TLS_CERT/TLS_KEY above.
+      # - /etc/letsencrypt/live/dmarc.example.com:/tls:ro
 
     # Run exactly one instance: the sync job and its progress are held in memory, and
     # SQLite wants a single writer.

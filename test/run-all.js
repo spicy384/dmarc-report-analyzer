@@ -8,6 +8,7 @@ const SUITES = [
   "ipmatch.test.js",
   "dns-records.test.js",
   "db.test.js",
+  "graph.test.js",
   "mailboxes.test.js",
   "alerts.test.js",
   "geoip.test.js",

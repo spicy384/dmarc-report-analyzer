@@ -405,7 +405,7 @@
       </div>
 
       <p class="bulk-hint">
-        Each mailbox is an Entra app registration (tenant, client ID, client secret) plus the
+        Each mailbox is an Entra app registration (tenant, client ID, and a client secret or a certificate) plus the
         address that receives the reports. Mailboxes can live in different tenants. The one set
         through environment variables appears as <strong>(env)</strong> and is managed there.
       </p>
@@ -424,9 +424,35 @@
           <label>Mailbox address (UPN) <input id="mb-mailbox" class="mono" placeholder="dmarc-reports@contoso.com" /></label>
           <label>Directory (tenant) ID <input id="mb-tenant" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
           <label>Application (client) ID <input id="mb-client" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
-          <label>Client secret <input id="mb-secret" type="password" class="mono" autocomplete="new-password" /></label>
           <label>Folder <input id="mb-folder" placeholder="Inbox" /></label>
         </div>
+        <fieldset class="mb-auth">
+          <legend>Authentication</legend>
+          <div class="mb-auth-choice">
+            <label class="check-inline"><input type="radio" name="mb-auth" value="secret" checked /> Client secret</label>
+            <label class="check-inline"><input type="radio" name="mb-auth" value="certificate" /> Certificate</label>
+          </div>
+          <div id="mb-auth-secret" class="mailbox-form-grid">
+            <label>Client secret <input id="mb-secret" type="password" class="mono" autocomplete="new-password" /></label>
+          </div>
+          <div id="mb-auth-certificate" class="mailbox-form-grid" hidden>
+            <label>Certificate (PEM)
+              <textarea id="mb-cert" class="mono" rows="5" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea>
+            </label>
+            <label>Private key (PEM)
+              <textarea id="mb-key" class="mono" rows="5" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea>
+            </label>
+            <label>Key passphrase (only if the key is encrypted)
+              <input id="mb-key-pass" type="password" class="mono" autocomplete="new-password" />
+            </label>
+            <p class="bulk-hint mb-auth-hint">
+              Upload the same certificate (the .cer or .pem, not the key) under
+              <strong>Certificates &amp; secrets → Certificates</strong> on the app registration. The
+              README shows how to create one with openssl. A combined PEM holding both the certificate
+              and the key can go in the first box alone.
+            </p>
+          </div>
+        </fieldset>
         <label class="check-inline"><input type="checkbox" id="mb-enabled" checked /> Enabled (included in scheduled and Sync all runs)</label>
         <p class="bulk-hint">
           The app registration needs the Microsoft Graph application permission <strong>Mail.Read</strong>

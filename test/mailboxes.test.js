@@ -70,6 +70,34 @@ threw = null;
 try { store.remove("nope"); } catch (e) { threw = e; }
 check("remove of unknown id is 404", threw && threw.status === 404);
 
+// --- certificate credentials ----------------------------------------------------
+const certPem = fs.readFileSync(path.join(__dirname, "helpers", "test-cert.pem"), "utf8");
+const keyPem = fs.readFileSync(path.join(__dirname, "helpers", "test-key.pem"), "utf8");
+threw = null;
+try { store.add({ tenantId: "t-3", clientId: "c-3", authMethod: "certificate", mailbox: "cert@contoso.test" }); } catch (e) { threw = e; }
+check("certificate: PEM required when chosen", threw && threw.status === 400 && /Certificate/.test(threw.message));
+threw = null;
+try { store.add({ tenantId: "t-3", clientId: "c-3", authMethod: "certificate", certPem, keyPem: "garbage", mailbox: "cert@contoso.test" }); } catch (e) { threw = e; }
+check("certificate: unreadable key is 400 with the reason", threw && threw.status === 400 && /private key/i.test(threw.message));
+const certBox = store.add({ name: "Cert box", tenantId: "t-3", clientId: "c-3", authMethod: "certificate", certPem, keyPem, mailbox: "cert@contoso.test" });
+check("certificate: add reports the method and thumbprint, never the key", certBox.authMethod === "certificate" && certBox.hasCertificate && !certBox.hasSecret && /^[0-9A-F]{40}$/.test(certBox.certificate.thumbprint) && certBox.certificate.notAfter > 0 && !JSON.stringify(certBox).includes("PRIVATE KEY"));
+check("certificate: file holds the PEM pair", (() => { const row = JSON.parse(fs.readFileSync(store.file, "utf8")).find((m) => m.id === certBox.id); return row.certPem.includes("BEGIN CERTIFICATE") && row.keyPem.includes("PRIVATE KEY") && row.clientSecret === ""; })());
+check("certificate: clientFor builds a certificate client", store.clientFor(certBox.id).authMethod() === "certificate" && store.clientFor(certBox.id).isConfigured());
+const keptCert = store.update(certBox.id, { name: "Cert box 2", certPem: "", keyPem: "" });
+check("certificate: update keeps the pair when omitted", keptCert.hasCertificate && store.get(certBox.id).keyPem === keyPem.trim());
+const switched = store.update(certBox.id, { authMethod: "secret", clientSecret: "s-3" });
+check("switching to a secret drops the certificate", switched.authMethod === "secret" && switched.hasSecret && !switched.hasCertificate && store.get(certBox.id).certPem === "");
+const back = store.update(certBox.id, { authMethod: "certificate", certPem, keyPem });
+check("switching back to a certificate drops the secret", back.authMethod === "certificate" && !back.hasSecret && store.get(certBox.id).clientSecret === "");
+const combined = store.add({ tenantId: "t-4", clientId: "c-4", authMethod: "certificate", certPem: `${certPem}\n${keyPem}`, mailbox: "combined@contoso.test" });
+check("certificate: combined PEM accepted without a key field", combined.hasCertificate && combined.certificate.error === null);
+store.remove(combined.id);
+store.remove(certBox.id);
+
+const envCertStore = createMailboxStore({ dataDir, env: { tenantId: "t-env", clientId: "c-env", certificate: { cert: certPem, key: keyPem, passphrase: "" }, mailbox: "dmarc@env.test" } });
+const envCert = envCertStore.list()[0];
+check("env entry can use a certificate", envCert.id === ENV_ID && envCert.authMethod === "certificate" && envCert.hasCertificate && envCert.certificate.thumbprint && envCertStore.clientFor(ENV_ID).authMethod() === "certificate");
+
 // --- without env --------------------------------------------------------------
 const bare = createMailboxStore({ dataDir, env: {} });
 check("no env entry when variables are missing; file entries still load", bare.list().length === 1 && bare.list()[0].id === added.id);

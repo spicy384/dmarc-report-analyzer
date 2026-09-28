@@ -7,6 +7,9 @@
  * Retry-After; permission problems are turned into messages that say what to fix.
  */
 
+const crypto = require("crypto");
+const fs = require("fs");
+
 class GraphError extends Error {
   constructor(message, { status, code, retryable = false } = {}) {
     super(message);
@@ -31,15 +34,122 @@ function odataString(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+// --- certificate credentials --------------------------------------------------
+//
+// Entra accepts a signed JWT (a "client assertion", RFC 7523) in place of a client
+// secret. The app signs it with the certificate's private key; Entra checks the
+// signature against the public certificate uploaded to the app registration,
+// matched by the SHA-1 thumbprint in the token header (x5t). Nothing but Node's
+// crypto module is needed.
+
+function base64url(input) {
+  return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * Parses a certificate and private key (PEM) and checks they belong together.
+ * `cert` may be a combined PEM holding both; `key` is then optional.
+ * Returns { cert (X509Certificate), key (KeyObject), thumbprint, subject, notAfter }.
+ */
+function loadCertificate({ cert, key, passphrase } = {}) {
+  const certPem = String(cert || "").trim();
+  const keyPem = String(key || "").trim() || certPem;
+  if (!certPem) {
+    throw new GraphError("No certificate given.", { code: "certificate" });
+  }
+  let x509;
+  try {
+    x509 = new crypto.X509Certificate(certPem);
+  } catch (error) {
+    throw new GraphError(`The certificate could not be read (expected PEM with a BEGIN CERTIFICATE block): ${error.message}`, { code: "certificate" });
+  }
+  let privateKey;
+  try {
+    privateKey = crypto.createPrivateKey(passphrase ? { key: keyPem, passphrase: String(passphrase) } : { key: keyPem });
+  } catch (error) {
+    const hint = /passphrase|bad decrypt|password/i.test(error.message)
+      ? "the key is encrypted and the passphrase is missing or wrong"
+      : "expected PEM with a BEGIN PRIVATE KEY or BEGIN RSA PRIVATE KEY block";
+    throw new GraphError(`The private key could not be read (${hint}): ${error.message}`, { code: "certificate" });
+  }
+  if (!x509.checkPrivateKey(privateKey)) {
+    throw new GraphError("The private key does not match the certificate.", { code: "certificate" });
+  }
+  const notAfter = Date.parse(x509.validTo);
+  return {
+    cert: x509,
+    key: privateKey,
+    thumbprint: x509.fingerprint.replace(/:/g, ""),
+    subject: x509.subject,
+    notAfter: Number.isFinite(notAfter) ? Math.floor(notAfter / 1000) : null,
+    expired: Number.isFinite(notAfter) && notAfter < Date.now()
+  };
+}
+
+/** A secret-free description of a certificate for the UI, or the error if it is unusable. */
+function certificateInfo(certificate) {
+  if (!certificate || !certificate.cert) return null;
+  try {
+    const loaded = loadCertificate(certificate);
+    return { thumbprint: loaded.thumbprint, subject: loaded.subject, notAfter: loaded.notAfter, expired: loaded.expired, error: null };
+  } catch (error) {
+    return { thumbprint: null, subject: null, notAfter: null, expired: false, error: error.message };
+  }
+}
+
+/** The signed JWT Entra accepts instead of a client secret. Valid for ten minutes. */
+function buildClientAssertion({ clientId, tenantId, loginBase, certificate, now = Date.now }) {
+  const loaded = loadCertificate(certificate);
+  const seconds = Math.floor(now() / 1000);
+  const header = {
+    alg: "RS256",
+    typ: "JWT",
+    x5t: base64url(Buffer.from(loaded.thumbprint, "hex"))
+  };
+  const claims = {
+    aud: `${loginBase}/${tenantId}/oauth2/v2.0/token`,
+    iss: clientId,
+    sub: clientId,
+    jti: crypto.randomUUID(),
+    nbf: seconds - 60,
+    exp: seconds + 10 * 60
+  };
+  const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`;
+  const signature = crypto.sign("sha256", Buffer.from(signingInput), loaded.key);
+  return `${signingInput}.${base64url(signature)}`;
+}
+
+/** True when the config carries a usable credential of either kind. */
+function hasCredential(cfg) {
+  return Boolean(cfg.clientSecret || (cfg.certificate && cfg.certificate.cert));
+}
+
 /**
  * Reads the client's settings from the environment. Everything is optional so the
  * app can start unconfigured and say so in the UI.
  */
 function configFromEnv(env = process.env) {
+  // A certificate can be given as files (GRAPH_CERT_FILE, optionally GRAPH_KEY_FILE when
+  // the key is not in the same file) or inline PEM (GRAPH_CERT_PEM / GRAPH_KEY_PEM).
+  // Read errors are kept, not thrown, so the app still starts and can say what is wrong.
+  let certificate = null;
+  let certificateError = null;
+  const readPem = (file) => fs.readFileSync(file, "utf8");
+  try {
+    const cert = env.GRAPH_CERT_FILE ? readPem(env.GRAPH_CERT_FILE) : env.GRAPH_CERT_PEM || "";
+    const key = env.GRAPH_KEY_FILE ? readPem(env.GRAPH_KEY_FILE) : env.GRAPH_KEY_PEM || "";
+    if (cert) {
+      certificate = { cert, key, passphrase: env.GRAPH_KEY_PASSPHRASE || "" };
+    }
+  } catch (error) {
+    certificateError = `Could not read the certificate files: ${error.message}`;
+  }
   return {
     tenantId: env.GRAPH_TENANT_ID || "",
     clientId: env.GRAPH_CLIENT_ID || "",
     clientSecret: env.GRAPH_CLIENT_SECRET || "",
+    certificate,
+    certificateError,
     mailbox: env.DMARC_MAILBOX || "",
     folder: env.DMARC_FOLDER || "Inbox",
     loginBase: env.GRAPH_LOGIN_BASE || DEFAULT_LOGIN_BASE,
@@ -52,27 +162,36 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
   let token = null; // { value, expiresAt (ms) }
 
   function isConfigured() {
-    return Boolean(cfg.tenantId && cfg.clientId && cfg.clientSecret && cfg.mailbox);
+    return Boolean(cfg.tenantId && cfg.clientId && hasCredential(cfg) && cfg.mailbox);
+  }
+
+  /** "certificate" when one is configured, else "secret". A certificate wins if both are set. */
+  function authMethod() {
+    return cfg.certificate && cfg.certificate.cert ? "certificate" : "secret";
   }
 
   function missingSettings() {
     const missing = [];
     if (!cfg.tenantId) missing.push("GRAPH_TENANT_ID");
     if (!cfg.clientId) missing.push("GRAPH_CLIENT_ID");
-    if (!cfg.clientSecret) missing.push("GRAPH_CLIENT_SECRET");
+    if (!hasCredential(cfg)) missing.push("GRAPH_CLIENT_SECRET or GRAPH_CERT_FILE");
     if (!cfg.mailbox) missing.push("DMARC_MAILBOX");
     return missing;
   }
 
   /** Public, secret-free view of the configuration for the status endpoint. */
   function describe() {
+    const method = authMethod();
     return {
       configured: isConfigured(),
       missing: missingSettings(),
       tenantId: cfg.tenantId || null,
       clientId: cfg.clientId || null,
       mailbox: cfg.mailbox || null,
-      folder: cfg.folder || "Inbox"
+      folder: cfg.folder || "Inbox",
+      authMethod: method,
+      certificate: method === "certificate" ? certificateInfo(cfg.certificate) : null,
+      certificateError: cfg.certificateError || null
     };
   }
 
@@ -84,12 +203,26 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
       throw new GraphError(`Microsoft Graph is not configured. Set ${missingSettings().join(", ")}.`, { code: "not_configured" });
     }
 
+    if (cfg.certificateError) {
+      throw new GraphError(cfg.certificateError, { code: "certificate" });
+    }
     const body = new URLSearchParams({
       client_id: cfg.clientId,
-      client_secret: cfg.clientSecret,
       scope: "https://graph.microsoft.com/.default",
       grant_type: "client_credentials"
     });
+    if (authMethod() === "certificate") {
+      // Throws a GraphError with code "certificate" when the PEM is unusable.
+      body.set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+      body.set("client_assertion", buildClientAssertion({
+        clientId: cfg.clientId,
+        tenantId: cfg.tenantId,
+        loginBase: cfg.loginBase,
+        certificate: cfg.certificate
+      }));
+    } else {
+      body.set("client_secret", cfg.clientSecret);
+    }
 
     let res;
     try {
@@ -293,6 +426,7 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
     isConfigured,
     describe,
     getToken,
+    authMethod,
     graphFetch,
     resolveFolderId,
     listMessages,
@@ -302,4 +436,4 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
   };
 }
 
-module.exports = { createGraphClient, configFromEnv, GraphError };
+module.exports = { createGraphClient, configFromEnv, loadCertificate, certificateInfo, buildClientAssertion, GraphError };

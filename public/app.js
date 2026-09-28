@@ -2234,11 +2234,26 @@ function populateMailboxSelect(list, counts) {
   mailboxLabel.hidden = mailboxNames.size < 2;
 }
 
+/** "secret" or the certificate's thumbprint and expiry, flagged when it is expired or broken. */
+function describeMailboxAuth(m) {
+  if (m.authMethod !== "certificate") return textCell("secret", "muted");
+  const c = m.certificate;
+  if (!c || c.error) {
+    const td = textCell(`certificate: ${c && c.error ? c.error : "unreadable"}`, "trunc-wide is-fail");
+    td.title = c && c.error ? c.error : "";
+    return td;
+  }
+  const soon = c.notAfter && c.notAfter - Date.now() / 1000 < 30 * DAY;
+  const td = textCell(`certificate ${c.thumbprint.slice(0, 8)}… ${c.expired ? "expired" : "expires"} ${formatUtcDate(c.notAfter)}`, c.expired ? "trunc-wide is-fail" : soon ? "trunc-wide is-warn" : "trunc-wide muted");
+  td.title = `${c.subject || ""}\nThumbprint ${c.thumbprint}`;
+  return td;
+}
+
 function renderMailboxes(list) {
   mailboxList = list;
   const admin = isAdmin();
   mailboxesResults.replaceChildren(buildTable(
-    ["Name", "Mailbox", "Folder", "Tenant", "Last sync", { label: "Reports", className: "num" }, "State", ""],
+    ["Name", "Mailbox", "Folder", "Tenant", "Auth", "Last sync", { label: "Reports", className: "num" }, "State", ""],
     list.map((m) => {
       const actions = document.createElement("td");
       const wrap = document.createElement("div");
@@ -2297,6 +2312,7 @@ function renderMailboxes(list) {
           textCell(m.mailbox, "mono"),
           textCell(m.folder || "Inbox"),
           textCell(m.tenantId, "mono muted trunc"),
+          describeMailboxAuth(m),
           textCell(describeRun(m.lastRun), m.lastRun?.error_text ? "muted trunc-wide is-fail" : "muted trunc-wide"),
           textCell(m.counts ? formatNumber(m.counts.reports) : "0", "num"),
           textCell(m.enabled ? "enabled" : "disabled", m.enabled ? "" : "muted"),
@@ -2392,7 +2408,15 @@ function openMailboxForm(m) {
   document.getElementById("mb-tenant").value = m ? m.tenantId : "";
   document.getElementById("mb-client").value = m ? m.clientId : "";
   document.getElementById("mb-secret").value = "";
-  document.getElementById("mb-secret").placeholder = m ? "leave blank to keep the current secret" : "";
+  document.getElementById("mb-secret").placeholder = m && m.hasSecret ? "leave blank to keep the current secret" : "";
+  document.getElementById("mb-cert").value = "";
+  document.getElementById("mb-cert").placeholder = m && m.hasCertificate
+    ? `leave blank to keep the current certificate (${m.certificate && m.certificate.thumbprint ? `thumbprint ${m.certificate.thumbprint}` : "stored"})`
+    : "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----";
+  document.getElementById("mb-key").value = "";
+  document.getElementById("mb-key").placeholder = m && m.hasCertificate ? "leave blank to keep the current key" : "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----";
+  document.getElementById("mb-key-pass").value = "";
+  setMailboxAuth(m ? m.authMethod || "secret" : "secret");
   document.getElementById("mb-mailbox").value = m ? m.mailbox : "";
   document.getElementById("mb-folder").value = m ? m.folder || "Inbox" : "Inbox";
   document.getElementById("mb-enabled").checked = m ? Boolean(m.enabled) : true;
@@ -2406,6 +2430,21 @@ function closeMailboxForm() {
   editingMailboxId = null;
 }
 
+/** Shows the fields for the chosen credential kind and ticks its radio. */
+function setMailboxAuth(method) {
+  const cert = method === "certificate";
+  document.querySelectorAll('input[name="mb-auth"]').forEach((r) => { r.checked = r.value === (cert ? "certificate" : "secret"); });
+  document.getElementById("mb-auth-secret").hidden = cert;
+  document.getElementById("mb-auth-certificate").hidden = !cert;
+}
+
+function mailboxAuthMethod() {
+  const picked = document.querySelector('input[name="mb-auth"]:checked');
+  return picked ? picked.value : "secret";
+}
+
+document.querySelectorAll('input[name="mb-auth"]').forEach((r) => r.addEventListener("change", () => setMailboxAuth(mailboxAuthMethod())));
+
 addMailboxBtn.addEventListener("click", () => openMailboxForm(null));
 document.getElementById("mb-cancel").addEventListener("click", closeMailboxForm);
 
@@ -2414,7 +2453,11 @@ document.getElementById("mb-save").addEventListener("click", async () => {
     name: document.getElementById("mb-name").value,
     tenantId: document.getElementById("mb-tenant").value,
     clientId: document.getElementById("mb-client").value,
+    authMethod: mailboxAuthMethod(),
     clientSecret: document.getElementById("mb-secret").value,
+    certPem: document.getElementById("mb-cert").value,
+    keyPem: document.getElementById("mb-key").value,
+    keyPassphrase: document.getElementById("mb-key-pass").value,
     mailbox: document.getElementById("mb-mailbox").value,
     folder: document.getElementById("mb-folder").value,
     enabled: document.getElementById("mb-enabled").checked

@@ -6,7 +6,33 @@
  */
 const http = require("http");
 
-function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", messages = [], mailboxes = {} } = {}) {
+const crypto = require("crypto");
+
+/** Checks a client assertion the way Entra would: signature, thumbprint, audience, expiry. */
+function verifyAssertion(jwt, certificatePem) {
+  const parts = String(jwt || "").split(".");
+  if (parts.length !== 3) return "malformed assertion";
+  const decode = (s) => JSON.parse(Buffer.from(s.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+  let header;
+  let claims;
+  try {
+    header = decode(parts[0]);
+    claims = decode(parts[1]);
+  } catch {
+    return "assertion is not JSON";
+  }
+  const x509 = new crypto.X509Certificate(certificatePem);
+  const thumb = Buffer.from(x509.fingerprint.replace(/:/g, ""), "hex").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  if (header.alg !== "RS256" || header.x5t !== thumb) return "AADSTS700027: unknown certificate thumbprint";
+  const ok = crypto.verify("sha256", Buffer.from(`${parts[0]}.${parts[1]}`), x509.publicKey, Buffer.from(parts[2].replace(/-/g, "+").replace(/_/g, "/"), "base64"));
+  if (!ok) return "AADSTS700027: invalid signature";
+  if (!/\/oauth2\/v2\.0\/token$/.test(claims.aud || "")) return "AADSTS50013: wrong audience";
+  const now = Math.floor(Date.now() / 1000);
+  if (claims.exp < now || claims.nbf > now + 300) return "AADSTS700024: assertion expired";
+  return null;
+}
+
+function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", certificate = null, messages = [], mailboxes = {} } = {}) {
   const state = {
     messages,            // [{ id, subject, receivedDateTime, from, attachments: [{ name, contentType, bytes }] }]
     mailboxes: { [mailbox]: messages, ...mailboxes }, // extra UPNs -> their own message lists
@@ -32,7 +58,19 @@ function createMockGraph({ mailbox = "dmarc@example.com", secret = "s3cret", mes
       req.on("data", (c) => { body += c; });
       req.on("end", () => {
         const form = new URLSearchParams(body);
-        if (form.get("client_secret") !== secret) {
+        state.lastTokenRequest = Object.fromEntries(form.entries());
+        if (form.get("client_assertion")) {
+          if (!certificate) {
+            return json(res, 401, { error: "invalid_client", error_description: "AADSTS700027: no certificate registered for this client." });
+          }
+          if (form.get("client_assertion_type") !== "urn:ietf:params:oauth:client-assertion-type:jwt-bearer") {
+            return json(res, 400, { error: "invalid_request", error_description: "AADSTS50027: unsupported client_assertion_type." });
+          }
+          const problem = verifyAssertion(form.get("client_assertion"), certificate);
+          if (problem) {
+            return json(res, 401, { error: "invalid_client", error_description: problem });
+          }
+        } else if (form.get("client_secret") !== secret) {
           return json(res, 401, { error: "invalid_client", error_description: "AADSTS7000215: Invalid client secret provided." });
         }
         json(res, 200, { token_type: "Bearer", expires_in: 3599, access_token: "mock-token" });

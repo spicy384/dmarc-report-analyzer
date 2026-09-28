@@ -252,6 +252,13 @@ async function waitForServer(tries = 60) {
     const mbUpd = await req(`/api/mailboxes/${mbId}`, { method: "PUT", body: { name: "Contoso Ltd", folder: "DMARC" } });
     check("mailboxes: update", mbUpd.status === 200 && mbUpd.body.mailbox.name === "Contoso Ltd" && mbUpd.body.mailbox.folder === "DMARC" && mbUpd.body.mailbox.hasSecret);
     check("mailboxes: unknown id is 404", (await req("/api/mailboxes/nope", { method: "PUT", body: { name: "x" } })).status === 404);
+    const certPem = fs.readFileSync(path.join(__dirname, "helpers", "test-cert.pem"), "utf8");
+    const keyPem = fs.readFileSync(path.join(__dirname, "helpers", "test-key.pem"), "utf8");
+    const mbCert = await req("/api/mailboxes", { method: "POST", body: { name: "Cert", tenantId: "t-9", clientId: "c-9", authMethod: "certificate", certPem, keyPem, mailbox: "cert@contoso.test" } });
+    check("mailboxes: add with a certificate", mbCert.status === 200 && mbCert.body.mailbox.authMethod === "certificate" && mbCert.body.mailbox.hasCertificate && mbCert.body.mailbox.certificate.thumbprint && !JSON.stringify(mbCert.body).includes("PRIVATE KEY"));
+    check("mailboxes: bad certificate is 400", (await req("/api/mailboxes", { method: "POST", body: { tenantId: "t-9", clientId: "c-9", authMethod: "certificate", certPem: "nope", mailbox: "cert2@contoso.test" } })).status === 400);
+    check("mailboxes: list never carries key material", !JSON.stringify((await req("/api/mailboxes")).body).includes("PRIVATE KEY"));
+    await req(`/api/mailboxes/${mbCert.body.mailbox.id}`, { method: "DELETE" });
     const mbTest = await req(`/api/mailboxes/${mbId}/test`, { method: "POST", body: {} });
     check("mailboxes: connection test reports the failure", mbTest.status === 200 && mbTest.body.ok === false && mbTest.body.stage === "token");
     const stNow = await req("/api/status");

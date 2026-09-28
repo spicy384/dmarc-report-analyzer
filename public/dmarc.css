@@ -931,3 +931,44 @@ dl.kv dd {
 body.role-viewer .writer-only {
   display: none;
 }
+
+/* --- mailbox form: credential choice ------------------------------------- */
+
+.mb-auth {
+  margin: 12px 0;
+  padding: 10px 14px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.mb-auth legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.mb-auth-choice {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 10px;
+}
+
+.mb-auth textarea {
+  width: 100%;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.mb-auth-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+td.is-warn {
+  color: var(--warning-fg);
+}
+
+body.theme-dark td.is-warn {
+  color: var(--chart-fail-none);
+}
