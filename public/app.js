@@ -2620,6 +2620,8 @@ function readHash() {
   hideForwards.checked = p.get("hide") === "1";
   if (p.has("failing")) failingOnly.checked = p.get("failing") !== "0";
   pendingOpen = p.has("ip") ? { ip: p.get("ip") } : p.has("report") ? { report: p.get("report") } : null;
+  if (p.get("view") === "settings" && currentView !== "settings") setView("settings");
+  else if (p.get("view") !== "settings" && currentView === "settings") setView("dashboard");
   const wanted = p.get("lookup") || "";
   if (wanted && wanted !== lookupQuery) {
     lookupInput.value = wanted;
@@ -2644,6 +2646,7 @@ function writeHash(extra = {}) {
   if (hideForwards.checked) p.set("hide", "1");
   if (!failingOnly.checked) p.set("failing", "0");
   if (lookupQuery) p.set("lookup", lookupQuery);
+  if (currentView === "settings") p.set("view", "settings");
   for (const [k, v] of Object.entries(extra)) {
     if (v !== null && v !== undefined && v !== "") p.set(k, String(v));
   }
@@ -2665,6 +2668,7 @@ async function loadAll() {
   rangeLabel.textContent = range.label + (domainSelect.value ? ` - ${domainSelect.value}` : "");
   if (domainSelect.value && policyDomain.value !== domainSelect.value) policyDomain.value = domainSelect.value;
   setStatus("Loading...");
+  renderFilterChips();
   const tasks = [
     ["summary", loadSummary],
     ["sources", loadIps],
@@ -2794,6 +2798,7 @@ function applyIdentity(user, token) {
   accountBtn.hidden = !signedIn;
   logoutBtn.hidden = !signedIn;
   usersBtn.hidden = !signedIn || user.role !== "admin";
+  viewNav.hidden = !signedIn;
   addMailboxBtn.hidden = !signedIn || user.role !== "admin";
   geoipRefreshBtn.hidden = !signedIn || user.role !== "admin";
   if (!signedIn) mailboxForm.hidden = true;
@@ -2979,22 +2984,69 @@ logoutBtn.addEventListener("click", async () => {
   showAuthOverlay("login");
 });
 
-accountBtn.addEventListener("click", () => {
-  accountPanel.hidden = !accountPanel.hidden;
-  usersPanel.hidden = true;
-  if (!accountPanel.hidden) {
-    renderAccountPanel();
-    accountPanel.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-});
+// --- dashboard / settings views ----------------------------------------------------
+//
+// One HTML page, two views: the dashboard (analysis panels) and Settings (mailboxes,
+// known senders live on the dashboard since they annotate it; users, account). The
+// view is part of the page link so a reload or a shared link lands on the same one.
 
-usersBtn.addEventListener("click", async () => {
-  usersPanel.hidden = !usersPanel.hidden;
-  accountPanel.hidden = true;
-  if (!usersPanel.hidden) {
-    await refreshUsers();
-    usersPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+const viewNav = document.getElementById("view-nav");
+const VIEWS = { dashboard: document.getElementById("view-dashboard"), settings: document.getElementById("view-settings") };
+let currentView = "dashboard";
+
+async function setView(name, { scrollTo = null } = {}) {
+  currentView = VIEWS[name] ? name : "dashboard";
+  for (const [key, el] of Object.entries(VIEWS)) el.hidden = key !== currentView;
+  document.getElementById("nav-dashboard").classList.toggle("is-active", currentView === "dashboard");
+  document.getElementById("nav-settings").classList.toggle("is-active", currentView === "settings");
+  if (currentView === "settings" && currentUser) {
+    accountPanel.hidden = false;
+    renderAccountPanel();
+    usersPanel.hidden = !isAdmin();
+    if (isAdmin()) {
+      try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
+    }
   }
+  writeHash();
+  const target = scrollTo ? document.getElementById(scrollTo) : null;
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  else window.scrollTo({ top: 0 });
+}
+
+document.getElementById("nav-dashboard").addEventListener("click", () => setView("dashboard"));
+document.getElementById("nav-settings").addEventListener("click", () => setView("settings"));
+accountBtn.addEventListener("click", () => setView("settings", { scrollTo: "account-panel" }));
+usersBtn.addEventListener("click", () => setView("settings", { scrollTo: "users-panel" }));
+
+// --- active filters ---------------------------------------------------------------
+
+/** Says which non-default filters shape the dashboard, so a stale search cannot mislead. */
+function renderFilterChips() {
+  const chips = [];
+  if (domainSelect.value) chips.push(`domain ${domainSelect.value}`);
+  if (mailboxSelect.value) chips.push(`mailbox ${mailboxNames.get(mailboxSelect.value) || mailboxSelect.value}`);
+  if (searchInput.value.trim()) chips.push(`search "${searchInput.value.trim()}"`);
+  if (hideForwards.checked) chips.push("likely forwards hidden");
+  const box = document.getElementById("filter-chips");
+  const list = document.getElementById("filter-chips-list");
+  list.replaceChildren();
+  for (const text of chips) {
+    const chip = document.createElement("span");
+    chip.className = "filter-chip";
+    chip.textContent = text;
+    list.appendChild(chip);
+  }
+  box.hidden = chips.length === 0;
+}
+
+document.getElementById("clear-filters-btn").addEventListener("click", () => {
+  domainSelect.value = "";
+  mailboxSelect.value = "";
+  searchInput.value = "";
+  hideForwards.checked = false;
+  localStorage.setItem("dmarc-hide-forwards", "0");
+  reportsPage = 1;
+  loadAll();
 });
 
 // --- passkeys (WebAuthn) ---------------------------------------------------------
@@ -3461,13 +3513,13 @@ swSkip.addEventListener("click", async () => {
 swFinish.addEventListener("click", async () => {
   closeSetupWizard();
   await loadSyncStatus();
-  document.getElementById("sync-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  setView("settings", { scrollTo: "sync-panel" });
 });
 
 swSync.addEventListener("click", async () => {
   closeSetupWizard();
   await startSync({ mailboxId: swState.mailboxId });
-  document.getElementById("sync-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  setView("settings", { scrollTo: "sync-panel" });
 });
 
 setupGuideBtn.addEventListener("click", () => openSetupWizard());

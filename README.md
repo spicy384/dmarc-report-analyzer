@@ -34,6 +34,12 @@ that would have been rejected (from sources labelled yours or vendor), spoofing 
 have been blocked, and forwards that would have been lost. A domain is called ready when
 nothing legitimate would be rejected and every failing source has a label.
 
+**Two pages**: the dashboard holds the analysis panels; **Settings** in the header holds
+Mailbox sync, Users and Account, so the dashboard stays short. Every non-default filter
+(domain, mailbox, search, hidden forwards) is listed in a "Showing only" strip under the
+filter bar with a **Clear filters** button, because a search left over from an alert's
+**Show** button or the lookup panel's **Open in sources** otherwise looked like missing data.
+
 **DNS lookup**: check any domain or IP address, whether or not it appears in your reports.
 A domain gets its DMARC record (with the same warnings as the policy panel), its SPF record
 expanded into the networks it authorises, its MX hosts with their addresses (null MX and

@@ -24,6 +24,10 @@
       </div>
 
       <div class="header-actions">
+        <nav id="view-nav" class="view-nav" aria-label="Pages" hidden>
+          <button id="nav-dashboard" type="button" class="tab is-active">Dashboard</button>
+          <button id="nav-settings" type="button" class="tab">Settings</button>
+        </nav>
         <span id="current-user" class="badge" hidden></span>
         <button id="account-btn" type="button" class="secondary small" hidden>Account</button>
         <button id="users-btn" type="button" class="secondary small" hidden>Users</button>
@@ -216,6 +220,7 @@
   </div>
 
   <main>
+  <div id="view-dashboard">
     <div id="alerts-banner" class="alerts-banner" hidden>
       <div class="alerts-head">
         <strong id="alerts-title"></strong>
@@ -268,6 +273,11 @@
 
       <p id="status" role="status">Loading...</p>
       <p id="retention-note" class="bulk-hint" hidden></p>
+      <div id="filter-chips" class="filter-chips" hidden>
+        <span class="filter-chips-label">Showing only</span>
+        <span id="filter-chips-list"></span>
+        <button id="clear-filters-btn" type="button" class="secondary small">Clear filters</button>
+      </div>
 
       <div id="stat-grid" class="stat-grid"></div>
 
@@ -489,6 +499,9 @@
       </div>
     </section>
 
+  </div>
+
+  <div id="view-settings" hidden>
     <section class="panel" id="sync-panel">
       <div class="panel-head">
         <h2>Mailbox sync</h2>
@@ -652,6 +665,7 @@
         </div>
       </div>
     </section>
+  </div>
   </main>
 
   <script src="/app.js"></script>
