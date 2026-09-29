@@ -6,6 +6,7 @@ const SUITES = [
   "parser.test.js",
   "arf.test.js",
   "ipmatch.test.js",
+  "verdict.test.js",
   "dns-records.test.js",
   "db.test.js",
   "graph.test.js",

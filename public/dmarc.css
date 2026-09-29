@@ -1175,3 +1175,57 @@ body.theme-dark td.is-warn {
 .filter-chips .secondary {
   margin-left: auto;
 }
+
+/* --- source verdicts ----------------------------------------------------- */
+
+td.verdict {
+  max-width: 220px;
+  white-space: normal;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.verdict-pass, .verdict-none { color: var(--text-subtle); font-weight: 500; }
+.verdict-forward { color: var(--chart-forward); }
+.verdict-unaligned, .verdict-partial { color: var(--warning-fg); }
+.verdict-unauthorised, .verdict-spoof, .verdict-mixed { color: var(--danger); }
+
+body.theme-dark .verdict-unaligned,
+body.theme-dark .verdict-partial { color: var(--chart-fail-none); }
+
+.sender-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.verdict-box {
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.verdict-box.verdict-pass { border-left-color: var(--success); }
+.verdict-box.verdict-forward { border-left-color: var(--chart-forward); }
+.verdict-box.verdict-unaligned, .verdict-box.verdict-partial { border-left-color: var(--chart-fail-none); }
+.verdict-box.verdict-unauthorised, .verdict-box.verdict-spoof, .verdict-box.verdict-mixed { border-left-color: var(--danger); }
+
+.verdict-head {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.verdict-detail {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.verdict-action {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}

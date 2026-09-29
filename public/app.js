@@ -723,18 +723,32 @@ function ipRow(r) {
   const senderCell = document.createElement("td");
   senderCell.className = "nowrap";
   senderCell.appendChild(senderPill(r.sender));
+  // Unlabelled but recognisable: say who it looks like, and make labelling one click.
+  if (!r.sender && r.catalogue) {
+    const hint = document.createElement("span");
+    hint.className = "sender-hint";
+    hint.textContent = `looks like ${r.catalogue.name}`;
+    hint.title = `Reverse DNS or address matches ${r.catalogue.pattern}`;
+    senderCell.append(" ", hint);
+  }
   if (canWrite()) {
     const labelBtn = document.createElement("button");
     labelBtn.type = "button";
     labelBtn.className = "link-btn small-link";
     labelBtn.textContent = r.sender ? "edit" : "label";
-    labelBtn.title = r.sender ? "Edit this known sender" : "Mark this source as yours, a vendor, or other";
+    labelBtn.title = r.sender ? "Edit this known sender" : r.catalogue ? `Label every ${r.catalogue.name} source (${r.catalogue.pattern}) as a vendor` : "Mark this source as yours, a vendor, or other";
     labelBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      openSenderForm(r.sender ? { id: r.sender.id, pattern: r.sender.pattern, kind: r.sender.kind, label: r.sender.label } : { pattern: r.ip, kind: "ours", label: r.ptr ? r.ptr.split(".").slice(-3).join(".") : "" });
+      if (r.sender) return openSenderForm({ id: r.sender.id, pattern: r.sender.pattern, kind: r.sender.kind, label: r.sender.label });
+      if (r.catalogue) return openSenderForm({ pattern: r.catalogue.pattern, kind: "vendor", label: r.catalogue.name });
+      openSenderForm({ pattern: r.ip, kind: "ours", label: r.ptr ? r.ptr.split(".").slice(-3).join(".") : "" });
     });
     senderCell.append(" ", labelBtn);
   }
+  const verdictCell = document.createElement("td");
+  verdictCell.className = `verdict verdict-${r.verdict ? r.verdict.code : "none"}`;
+  verdictCell.textContent = r.verdict ? r.verdict.headline : "";
+  verdictCell.title = r.verdict ? `${r.verdict.detail}${r.verdict.action ? `\n\n${r.verdict.action}` : ""}` : "";
   return {
     data: r,
     cells: [
@@ -745,6 +759,7 @@ function ipRow(r) {
       textCell(formatNumber(r.total), "num"),
       failCell,
       textCell(formatPct(r.failPct), "num"),
+      verdictCell,
       textCell(dispositions.join(", ") || (r.failed ? "" : "all passed"), "muted"),
       textCell(`${r.total ? Math.round((r.spfPassed / r.total) * 100) : 0}% / ${r.total ? Math.round((r.dkimPassed / r.total) * 100) : 0}%`, "num"),
       listCell(r.spfDomains.length ? r.spfDomains : r.envelopeFroms),
@@ -764,6 +779,7 @@ const IPS_COLUMNS = [
   { label: "Messages", className: "num", key: "total" },
   { label: "Failed", className: "num", key: "failed" },
   { label: "Fail %", className: "num", key: "failPct" },
+  { label: "Why it fails", key: "verdict" },
   { label: "Failures by action", key: null },
   { label: "SPF / DKIM pass", className: "num", key: "spfPassed" },
   { label: "SPF domain", key: null },
@@ -780,7 +796,7 @@ let ipsSort = (() => {
 function sortIpRows(rows) {
   const { key, dir } = ipsSort;
   const sign = dir === "asc" ? 1 : -1;
-  const value = (r) => (key === "senderLabel" ? (r.sender ? r.sender.label : "") : r[key]);
+  const value = (r) => (key === "senderLabel" ? (r.sender ? r.sender.label : "") : key === "verdict" ? (r.verdict ? r.verdict.headline : "") : r[key]);
   return [...rows].sort((a, b) => {
     const va = value(a);
     const vb = value(b);
@@ -880,7 +896,32 @@ async function openIpDetail(ip) {
     const hint = document.createElement("p");
     hint.className = "bulk-hint";
     hint.textContent = "Click a report below for Exchange Online queries scoped to that report's window and this IP.";
-    ipDetailExo.replaceChildren(hint);
+    ipDetailExo.replaceChildren();
+    if (d.verdict) {
+      const box = document.createElement("div");
+      box.className = `verdict-box verdict-${d.verdict.code}`;
+      const head = document.createElement("div");
+      head.className = "verdict-head";
+      head.textContent = d.verdict.headline;
+      const detail = document.createElement("p");
+      detail.className = "verdict-detail";
+      detail.textContent = d.verdict.detail;
+      box.append(head, detail);
+      if (d.verdict.action) {
+        const action = document.createElement("p");
+        action.className = "verdict-action";
+        action.textContent = d.verdict.action;
+        box.appendChild(action);
+      }
+      if (!d.sender && d.catalogue) {
+        const who = document.createElement("p");
+        who.className = "verdict-detail";
+        who.textContent = `This address looks like ${d.catalogue.name} (${d.catalogue.pattern}). Label it from the sources table if it is a service you use.`;
+        box.appendChild(who);
+      }
+      ipDetailExo.appendChild(box);
+    }
+    ipDetailExo.appendChild(hint);
     ipDetailBody.replaceChildren(buildTable(
       ["Window", "Reporter", { label: "Count", className: "num" }, "Result", "SPF / DKIM", "Header From", "Envelope From", "Auth results", "Reasons"],
       recordRows(d.records || []),

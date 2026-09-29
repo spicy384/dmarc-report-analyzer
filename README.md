@@ -34,6 +34,16 @@ that would have been rejected (from sources labelled yours or vendor), spoofing 
 have been blocked, and forwards that would have been lost. A domain is called ready when
 nothing legitimate would be rejected and every failing source has a label.
 
+**Why it fails**: every source in the Sending sources table gets a one-line verdict, with
+the full reasoning and the fix in its drawer: SPF passes only for the sending service's own
+domain (the classic mailing-platform case), DKIM signed by another domain, no signature at
+all, a labelled sender that nothing vouches for, forwards only, partly failing streams, or
+nothing vouching for an unknown source, which is what reject is for. Sources at
+well-known services (Microsoft 365, Google Workspace, SendGrid, Mailchimp, Amazon SES,
+Postmark, Mailgun and others) are recognised by reverse DNS or network and shown as
+"looks like SendGrid" until you label them, which is then one click, and the verdict's
+fix names that service's SPF include and where to turn on custom DKIM.
+
 **Two pages**: the dashboard holds the analysis panels; **Settings** in the header holds
 Mailbox sync, Users and Account, so the dashboard stays short. Every non-default filter
 (domain, mailbox, search, hidden forwards) is listed in a "Showing only" strip under the

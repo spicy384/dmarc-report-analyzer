@@ -12,6 +12,8 @@ const zlib = require("zlib");
 const Database = require("better-sqlite3");
 const { isLikelyForward } = require("./dmarc-parser");
 const { parsePattern, compileSenders, findSender } = require("./ipmatch");
+const { matchCatalogue } = require("./sender-catalogue");
+const { sourceVerdict } = require("./verdict");
 
 // 2: records.forwarded (likely forward / mailing list, derived from reasons and DKIM results)
 // 3: mailbox_id on messages, reports and sync_runs (multi-mailbox / multi-tenant)
@@ -650,6 +652,11 @@ function openDatabase({ dataDir, file } = {}) {
              SUM(CASE WHEN x.disposition = 'reject' THEN x.count ELSE 0 END) AS rejected,
              SUM(CASE WHEN x.dkim_eval = 'pass' THEN x.count ELSE 0 END) AS dkimPassed,
              SUM(CASE WHEN x.spf_eval = 'pass' THEN x.count ELSE 0 END) AS spfPassed,
+             -- Raw authentication results, alignment aside: an SPF pass for the sending
+             -- service's own domain, a DKIM signature by another domain, or no signature.
+             SUM(CASE WHEN EXISTS (SELECT 1 FROM json_each(COALESCE(x.spf_results, '[]')) j WHERE json_extract(j.value, '$.result') = 'pass') THEN x.count ELSE 0 END) AS spfRawPass,
+             SUM(CASE WHEN EXISTS (SELECT 1 FROM json_each(COALESCE(x.dkim_results, '[]')) j WHERE json_extract(j.value, '$.result') = 'pass') THEN x.count ELSE 0 END) AS dkimRawPass,
+             SUM(CASE WHEN json_array_length(COALESCE(x.dkim_results, '[]')) > 0 THEN x.count ELSE 0 END) AS dkimSigned,
              MIN(r.range_begin) AS firstSeen,
              MAX(r.range_end) AS lastSeen,
              COUNT(DISTINCT r.id) AS reports,
@@ -675,19 +682,25 @@ function openDatabase({ dataDir, file } = {}) {
       ORDER BY (total - passedTotal) DESC, total DESC
       LIMIT ?`).all(...params, limit);
 
-    return rows.map(({ passedTotal, ...row }) => ({
-      ...row,
-      sender: senderFor(row.ip, row.ptr),
-      passed: passedTotal,
-      failed: row.total - passedTotal,
-      failPct: row.total ? Math.round(((row.total - passedTotal) / row.total) * 1000) / 10 : 0,
-      reporterNames: splitList(row.reporterNames),
-      domains: splitList(row.domains),
-      headerFroms: splitList(row.headerFroms),
-      envelopeFroms: splitList(row.envelopeFroms),
-      spfDomains: splitList(row.spfDomains),
-      dkimDomains: splitList(row.dkimDomains)
-    }));
+    return rows.map(({ passedTotal, ...row }) => {
+      const shaped = {
+        ...row,
+        sender: senderFor(row.ip, row.ptr),
+        // A hint about who operates the address, for unlabelled sources and the verdict.
+        catalogue: matchCatalogue(row.ip, row.ptr),
+        passed: passedTotal,
+        failed: row.total - passedTotal,
+        failPct: row.total ? Math.round(((row.total - passedTotal) / row.total) * 1000) / 10 : 0,
+        reporterNames: splitList(row.reporterNames),
+        domains: splitList(row.domains),
+        headerFroms: splitList(row.headerFroms),
+        envelopeFroms: splitList(row.envelopeFroms),
+        spfDomains: splitList(row.spfDomains),
+        dkimDomains: splitList(row.dkimDomains)
+      };
+      shaped.verdict = sourceVerdict(shaped);
+      return shaped;
+    });
   }
 
   function ipDetail(ip, filter = {}) {
