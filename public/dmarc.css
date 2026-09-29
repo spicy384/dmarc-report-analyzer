@@ -1229,3 +1229,23 @@ body.theme-dark .verdict-partial { color: var(--chart-fail-none); }
   font-size: 13px;
   font-weight: 600;
 }
+
+/* --- sparklines and chart click ------------------------------------------ */
+
+td.spark {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.sparkline {
+  display: block;
+}
+
+.spark-pass { fill: var(--chart-pass); opacity: 0.55; }
+.spark-fail { fill: var(--chart-reject); }
+
+.chart-tip-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-subtle);
+}

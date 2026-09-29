@@ -525,7 +525,13 @@ app.get("/api/summary", route(async (req, res) => {
 app.get("/api/ips", route(async (req, res) => {
   const filter = filterFrom(req);
   const failingOnly = String(req.query.failing || "") === "1";
-  res.json({ ips: db.ips(filter, { failingOnly, limit: positiveInt(req.query.limit, 500) }) });
+  const ips = db.ips(filter, { failingOnly, limit: positiveInt(req.query.limit, 500) });
+  // Per-day series for sparklines, fetched in one query for every row returned.
+  if (String(req.query.days || "") === "1") {
+    const byIp = db.ipDays(filter, ips.map((r) => r.ip));
+    for (const row of ips) row.days = byIp.get(row.ip) || [];
+  }
+  res.json({ ips });
 }));
 
 app.get("/api/ips/:ip", route(async (req, res) => {

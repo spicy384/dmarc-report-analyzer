@@ -44,6 +44,10 @@ Postmark, Mailgun and others) are recognised by reverse DNS or network and shown
 "looks like SendGrid" until you label them, which is then one click, and the verdict's
 fix names that service's SPF include and where to turn on custom DKIM.
 
+**Trend at a glance**: each source has a sparkline of its daily volume over the period
+(failures in red, bucketed so long periods still fit), and clicking a day in the main
+chart narrows the whole dashboard to that day.
+
 **Two pages**: the dashboard holds the analysis panels; **Settings** in the header holds
 Mailbox sync, Users and Account, so the dashboard stays short. Every non-default filter
 (domain, mailbox, search, hidden forwards) is listed in a "Showing only" strip under the

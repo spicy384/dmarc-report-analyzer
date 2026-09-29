@@ -131,8 +131,14 @@ async function waitForServer(tries = 60) {
     check("ips: all sources", ips.body.ips.length === 4);
     const failing = await req("/api/ips?failing=1");
     check("ips: failing only, worst first with ptr", failing.body.ips.length === 2 && failing.body.ips[0].ip === "192.0.2.99" && failing.body.ips[0].ptr === "mail.badhost.test");
+    check("ips: every source carries a verdict", ips.body.ips.every((r) => r.verdict && r.verdict.code && r.verdict.headline));
+    check("ips: the failing spoofer gets the spoof verdict", failing.body.ips[0].verdict.code === "spoof" || failing.body.ips[0].verdict.code === "unaligned", failing.body.ips[0].verdict.code);
+    const withDays = await req("/api/ips?days=1");
+    check("ips: days=1 attaches a per-day series", withDays.body.ips.every((r) => Array.isArray(r.days)) && withDays.body.ips.some((r) => r.days.length > 0 && r.days[0].day && r.days[0].total > 0));
+    check("ips: no series without the flag", !("days" in ips.body.ips[0]));
     const ipDetail = await req("/api/ips/192.0.2.99");
     check("ips: detail", ipDetail.status === 200 && ipDetail.body.records.length === 1 && ipDetail.body.records[0].reasons.length === 2);
+    check("ips: detail carries the verdict", ipDetail.body.verdict && typeof ipDetail.body.verdict.detail === "string");
     check("ips: unknown ip is 404", (await req("/api/ips/10.0.0.1")).status === 404);
     const v6 = await req(`/api/ips/${encodeURIComponent("2001:db8::25")}`);
     check("ips: ipv6 path", v6.status === 200 && v6.body.passed === 1);

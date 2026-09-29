@@ -611,8 +611,18 @@ function renderChart(days) {
 
     // An invisible full-height hit area per day makes hovering easy even for tiny bars.
     const hit = make("rect", { x: margin.left + i * slot, y: margin.top, width: slot, height: innerH, fill: "transparent" });
+    hit.style.cursor = d.total > 0 ? "pointer" : "default";
     hit.addEventListener("mouseenter", () => showTip(d, margin.left + i * slot + slot / 2));
     hit.addEventListener("mouseleave", () => { chartTip.hidden = true; });
+    // Clicking a day narrows the whole dashboard to it.
+    hit.addEventListener("click", () => {
+      if (d.total <= 0) return;
+      rangeSelect.value = "custom";
+      fromDate.value = d.day;
+      toDate.value = d.day;
+      chartTip.hidden = true;
+      onRangeChanged();
+    });
     chartSvg.appendChild(hit);
 
     if (i % labelEvery === 0 || i === n - 1) {
@@ -643,6 +653,12 @@ function renderChart(days) {
       const line = document.createElement("div");
       line.textContent = `${label}: ${v}`;
       chartTip.appendChild(line);
+    }
+    if (d.total > 0) {
+      const click = document.createElement("div");
+      click.className = "chart-tip-hint";
+      click.textContent = "Click to show only this day";
+      chartTip.appendChild(click);
     }
     chartTip.hidden = false;
     const wrapW = chartWrap.clientWidth;
@@ -712,6 +728,63 @@ function networkCell(r) {
   return td;
 }
 
+/**
+ * A tiny bar-per-day chart of a source's volume over the period, failures in red.
+ * Days are bucketed to at most 30 bars so a 90-day period still fits in a cell.
+ */
+function sparklineCell(r) {
+  const td = document.createElement("td");
+  td.className = "spark";
+  const days = r.days || [];
+  if (!days.length) return td;
+  const range = currentRange();
+  const first = range.from !== null ? formatUtcDate(range.from) : days[0].day;
+  const last = range.to !== null ? formatUtcDate(range.to - 1) : days[days.length - 1].day;
+  const start = Date.parse(`${first}T00:00:00Z`) / 1000;
+  const end = Date.parse(`${last}T00:00:00Z`) / 1000 + DAY;
+  const spanDays = Math.max(1, Math.round((end - start) / DAY));
+  const bucketDays = Math.max(1, Math.ceil(spanDays / 30));
+  const buckets = Array.from({ length: Math.ceil(spanDays / bucketDays) }, () => ({ total: 0, failed: 0 }));
+  for (const d of days) {
+    const t = Date.parse(`${d.day}T00:00:00Z`) / 1000;
+    const idx = Math.floor((t - start) / DAY / bucketDays);
+    if (idx >= 0 && idx < buckets.length) {
+      buckets[idx].total += d.total;
+      buckets[idx].failed += d.failed;
+    }
+  }
+  const max = Math.max(1, ...buckets.map((b) => b.total));
+  const w = 4;
+  const gap = 1;
+  const h = 22;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${buckets.length * (w + gap)} ${h}`);
+  svg.setAttribute("width", String(buckets.length * (w + gap)));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("class", "sparkline");
+  buckets.forEach((b, i) => {
+    if (!b.total) return;
+    const total = Math.max(1, Math.round((b.total / max) * h));
+    const failed = Math.round((b.failed / max) * h);
+    const x = i * (w + gap);
+    const pass = document.createElementNS(ns, "rect");
+    pass.setAttribute("x", String(x)); pass.setAttribute("y", String(h - total)); pass.setAttribute("width", String(w)); pass.setAttribute("height", String(total));
+    pass.setAttribute("class", "spark-pass");
+    svg.appendChild(pass);
+    if (failed > 0) {
+      const fail = document.createElementNS(ns, "rect");
+      fail.setAttribute("x", String(x)); fail.setAttribute("y", String(h - failed)); fail.setAttribute("width", String(w)); fail.setAttribute("height", String(failed));
+      fail.setAttribute("class", "spark-fail");
+      svg.appendChild(fail);
+    }
+  });
+  const peak = Math.max(...buckets.map((b) => b.total));
+  td.title = `${buckets.length} ${bucketDays === 1 ? "days" : `buckets of ${bucketDays} days`}, peak ${formatNumber(peak)} messages; red is failures`;
+  td.appendChild(svg);
+  return td;
+}
+
 function ipRow(r) {
   const dispositions = [];
   if (r.failNone) dispositions.push(`${formatNumber(r.failNone)} delivered`);
@@ -760,6 +833,7 @@ function ipRow(r) {
       failCell,
       textCell(formatPct(r.failPct), "num"),
       verdictCell,
+      sparklineCell(r),
       textCell(dispositions.join(", ") || (r.failed ? "" : "all passed"), "muted"),
       textCell(`${r.total ? Math.round((r.spfPassed / r.total) * 100) : 0}% / ${r.total ? Math.round((r.dkimPassed / r.total) * 100) : 0}%`, "num"),
       listCell(r.spfDomains.length ? r.spfDomains : r.envelopeFroms),
@@ -780,6 +854,7 @@ const IPS_COLUMNS = [
   { label: "Failed", className: "num", key: "failed" },
   { label: "Fail %", className: "num", key: "failPct" },
   { label: "Why it fails", key: "verdict" },
+  { label: "Trend", key: null },
   { label: "Failures by action", key: null },
   { label: "SPF / DKIM pass", className: "num", key: "spfPassed" },
   { label: "SPF domain", key: null },
@@ -834,7 +909,7 @@ function renderIps() {
 }
 
 async function loadIps() {
-  const data = await api(`/api/ips${filterQuery({ failing: failingOnly.checked ? 1 : 0, limit: 500 })}`);
+  const data = await api(`/api/ips${filterQuery({ failing: failingOnly.checked ? 1 : 0, limit: 500, days: 1 })}`);
   lastIpRows = data.ips || [];
   renderIps();
 }

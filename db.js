@@ -703,6 +703,29 @@ function openDatabase({ dataDir, file } = {}) {
     });
   }
 
+  /**
+   * Per-day totals for a set of sources inside the filter, for sparklines:
+   * Map(ip -> [{ day, total, failed }]). One query for all of them.
+   */
+  function ipDays(filter = {}, ipList = []) {
+    const out = new Map();
+    if (!ipList.length) return out;
+    const f = buildFilter(filter, { x: "x" });
+    const marks = ipList.map(() => "?").join(", ");
+    const rows = db.prepare(`
+      SELECT x.source_ip AS ip, date(r.range_begin, 'unixepoch') AS day,
+             SUM(x.count) AS total,
+             SUM(CASE WHEN x.passed THEN 0 ELSE x.count END) AS failed
+      FROM records x JOIN reports r ON r.id = x.report_id
+      WHERE ${f.sql} AND x.source_ip IN (${marks})
+      GROUP BY ip, day ORDER BY ip, day`).all(...f.params, ...ipList);
+    for (const row of rows) {
+      if (!out.has(row.ip)) out.set(row.ip, []);
+      out.get(row.ip).push({ day: row.day, total: row.total, failed: row.failed });
+    }
+    return out;
+  }
+
   function ipDetail(ip, filter = {}) {
     const [aggregate] = ips(filter, { ip, limit: 1 });
     if (!aggregate) {
@@ -1370,6 +1393,7 @@ function openDatabase({ dataDir, file } = {}) {
     summary,
     ips,
     ipDetail,
+    ipDays,
     records,
     reports,
     reportById,
