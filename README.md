@@ -44,6 +44,14 @@ Postmark, Mailgun and others) are recognised by reverse DNS or network and shown
 "looks like SendGrid" until you label them, which is then one click, and the verdict's
 fix names that service's SPF include and where to turn on custom DKIM.
 
+**Domains and subdomains**: mail grouped by the domain actually in the From header
+against the domain the report was for, so subdomains stop blending into the parent. Each
+row says whether it is the parent, an in-use subdomain (with its pass rate), or a subdomain
+that only ever fails, which is one nobody legitimately sends from and therefore spoofing;
+it names the policy a receiver applies there (`sp=` when published, otherwise the inherited
+`p=`) and, for a spoofed subdomain not yet at reject, says to set `sp=reject`. Clicking a
+row narrows the dashboard to that domain.
+
 **Trend at a glance**: each source has a sparkline of its daily volume over the period
 (failures in red, bucketed so long periods still fit), and clicking a day in the main
 chart narrows the whole dashboard to that day.

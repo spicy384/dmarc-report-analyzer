@@ -828,6 +828,54 @@ function openDatabase({ dataDir, file } = {}) {
     };
   }
 
+  /**
+   * Mail grouped by the domain actually in the From header, against the domain
+   * the report was for. Subdomains that only ever fail are the ones nobody
+   * legitimately sends from: exactly what sp=reject exists to shut.
+   */
+  function subdomains(filter = {}) {
+    const f = buildFilter(filter, { x: "x" });
+    const rows = db.prepare(`
+      SELECT COALESCE(x.header_from, '') AS domain, r.domain AS policyDomain,
+             SUM(x.count) AS total,
+             SUM(CASE WHEN x.passed THEN x.count ELSE 0 END) AS passedTotal,
+             SUM(CASE WHEN x.passed = 0 AND x.forwarded THEN x.count ELSE 0 END) AS likelyForwards,
+             SUM(CASE WHEN x.disposition = 'quarantine' THEN x.count ELSE 0 END) AS quarantined,
+             SUM(CASE WHEN x.disposition = 'reject' THEN x.count ELSE 0 END) AS rejected,
+             COUNT(DISTINCT x.source_ip) AS sources,
+             COUNT(DISTINCT CASE WHEN x.passed = 0 THEN x.source_ip END) AS failingSources,
+             COUNT(DISTINCT r.org_name) AS reporters,
+             MIN(r.range_begin) AS firstSeen,
+             MAX(r.range_end) AS lastSeen
+      FROM records x JOIN reports r ON r.id = x.report_id
+      WHERE ${f.sql}
+      GROUP BY COALESCE(x.header_from, ''), r.domain
+      ORDER BY total DESC`).all(...f.params);
+
+    // The policy each report domain published most recently, for the "covered by" note.
+    const policies = new Map(db.prepare(`
+      SELECT domain, p, sp FROM reports WHERE id IN (SELECT MAX(id) FROM reports GROUP BY domain)`).all().map((r) => [r.domain, r]));
+
+    return rows.map(({ passedTotal, ...row }) => {
+      const domain = row.domain.toLowerCase();
+      const parent = row.policyDomain.toLowerCase();
+      const relation = domain === parent ? "parent" : domain.endsWith(`.${parent}`) ? "subdomain" : "other";
+      const policy = policies.get(row.policyDomain) || {};
+      const failed = row.total - passedTotal;
+      return {
+        ...row,
+        relation,
+        passed: passedTotal,
+        failed,
+        failPct: row.total ? Math.round((failed / row.total) * 1000) / 10 : 0,
+        // What a receiver applies to this From domain: sp= for subdomains when set, else p=.
+        appliedPolicy: relation === "subdomain" ? (policy.sp || policy.p || null) : (policy.p || null),
+        inheritsPolicy: relation === "subdomain" && !policy.sp,
+        unused: relation === "subdomain" && passedTotal === 0
+      };
+    });
+  }
+
   function reporters(filter = {}) {
     const f = buildFilter(filter, { x: "x" });
     return db.prepare(`
@@ -1534,6 +1582,7 @@ function openDatabase({ dataDir, file } = {}) {
     reportById,
     reportXml,
     reporters,
+    subdomains,
     domains,
     stats,
     messagesWithErrors,

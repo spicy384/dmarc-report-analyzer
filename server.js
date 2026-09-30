@@ -700,6 +700,10 @@ app.get("/api/reporters", route(async (req, res) => {
   res.json({ reporters: db.reporters(filterFrom(req)) });
 }));
 
+app.get("/api/subdomains", route(async (req, res) => {
+  res.json({ subdomains: db.subdomains(filterFrom(req)) });
+}));
+
 app.get("/api/domains", route(async (req, res) => {
   res.json({ domains: db.domains() });
 }));

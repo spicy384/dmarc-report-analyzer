@@ -364,6 +364,20 @@
       </div>
     </section>
 
+    <section class="panel" id="subdomains-panel">
+      <div class="panel-head">
+        <h2>Domains and subdomains</h2>
+        <span id="subdomains-count" class="badge">0 domains</span>
+      </div>
+      <p class="bulk-hint">
+        Mail grouped by the domain actually in the From header, not just the domain the report was
+        for. A subdomain that only ever fails is one nobody legitimately sends from: spoofers pick
+        those because they are rarely watched, and <span class="mono">sp=reject</span> exists to shut
+        them. Click a row to narrow the dashboard to that domain.
+      </p>
+      <div id="subdomains-results" class="table-scroll"></div>
+    </section>
+
     <section class="panel" id="sources-panel">
       <div class="panel-head">
         <h2>Sending sources</h2>

@@ -243,4 +243,38 @@ check("migration: queries work on migrated db", migrated.summary().totals.likely
 migrated.close();
 fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
+// --- subdomains -------------------------------------------------------------------
+{
+  const sub = openDatabase({ file: ":memory:" });
+  const parsed = parseAggregateReport(googleXml);
+  parsed.metadata.reportId = "sub-1";
+  parsed.policy.sp = null;
+  parsed.policy.p = "quarantine";
+  // A passing parent, an in-use subdomain, and a subdomain that only ever fails.
+  parsed.records = [
+    { ...parsed.records[0], headerFrom: "example.com", count: 100, passed: true, sourceIp: "198.51.100.1" },
+    { ...parsed.records[0], headerFrom: "news.example.com", count: 40, passed: true, sourceIp: "198.51.100.2" },
+    { ...parsed.records[0], headerFrom: "news.example.com", count: 10, passed: false, disposition: "none", sourceIp: "203.0.113.5" },
+    { ...parsed.records[0], headerFrom: "hr.example.com", count: 25, passed: false, disposition: "none", sourceIp: "203.0.113.9" },
+    { ...parsed.records[0], headerFrom: "other.test", count: 3, passed: false, disposition: "none", sourceIp: "203.0.113.10" }
+  ];
+  sub.insertReport({ messageId: "s1", attachmentName: "s.xml", parsed, xml: googleXml });
+  const rows = sub.subdomains({});
+  const byDomain = Object.fromEntries(rows.map((r) => [r.domain, r]));
+  check("subdomains: one row per From domain, biggest first", rows.length === 4 && rows[0].domain === "example.com");
+  check("subdomains: parent recognised with p=", byDomain["example.com"].relation === "parent" && byDomain["example.com"].appliedPolicy === "quarantine" && byDomain["example.com"].unused === false);
+  check("subdomains: in-use subdomain inherits p= when sp= is absent", byDomain["news.example.com"].relation === "subdomain" && byDomain["news.example.com"].passed === 40 && byDomain["news.example.com"].failed === 10 && byDomain["news.example.com"].inheritsPolicy === true && byDomain["news.example.com"].appliedPolicy === "quarantine" && byDomain["news.example.com"].unused === false);
+  check("subdomains: failure-only subdomain flagged as unused", byDomain["hr.example.com"].unused === true && byDomain["hr.example.com"].failPct === 100 && byDomain["hr.example.com"].failingSources === 1);
+  check("subdomains: a From domain outside the report domain is 'other'", byDomain["other.test"].relation === "other");
+  const parsed2 = parseAggregateReport(googleXml);
+  parsed2.metadata.reportId = "sub-2";
+  parsed2.policy.sp = "reject";
+  parsed2.records = [{ ...parsed2.records[0], headerFrom: "hr.example.com", count: 5, passed: false, disposition: "reject", sourceIp: "203.0.113.9" }];
+  sub.insertReport({ messageId: "s2", attachmentName: "s2.xml", parsed: parsed2, xml: googleXml });
+  const later = Object.fromEntries(sub.subdomains({}).map((r) => [r.domain, r]));
+  check("subdomains: the newest report's sp= applies to subdomains", later["hr.example.com"].appliedPolicy === "reject" && later["hr.example.com"].inheritsPolicy === false && later["hr.example.com"].total === 30);
+  check("subdomains: search filter narrows to a From domain", sub.subdomains({ q: "hr.example.com" }).every((r) => r.domain === "hr.example.com"));
+  sub.close();
+}
+
 process.exit(report() ? 0 : 1);
