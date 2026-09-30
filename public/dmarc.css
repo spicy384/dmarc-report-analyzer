@@ -1249,3 +1249,7 @@ td.spark {
   font-size: 11px;
   color: var(--text-subtle);
 }
+
+.account-wide {
+  grid-column: 1 / -1;
+}

@@ -40,7 +40,26 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // admin: everything. user: edits phones. viewer: read-only.
 const ROLES = new Set(["admin", "user", "viewer"]);
 
-function createAuth({ dataDir }) {
+function createAuth({ dataDir, audit = () => {} } = {}) {
+  /** Records who did what; never throws, so an audit problem cannot block sign-in. */
+  function log(req, action, target, detail, username) {
+    try {
+      audit({ username: username !== undefined ? username : (req.user ? req.user.username : null), ip: req.ip || null, action, target: target === undefined ? null : target, detail: detail === undefined ? null : detail });
+    } catch (error) {
+      console.error(`audit: could not record ${action}: ${error.message}`);
+    }
+  }
+
+  /** Where a session was opened from, kept on the session for the Sessions list. */
+  function clientInfo(req) {
+    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+    return { ip: forwarded || req.ip || null, userAgent: String(req.headers["user-agent"] || "").slice(0, 200) };
+  }
+
+  /** A stable, non-secret handle for a session id. */
+  function sessionKey(id) {
+    return require("crypto").createHash("sha256").update(String(id)).digest("hex").slice(0, 16);
+  }
   const USERS_FILE = path.join(dataDir, "users.json");
   const SESSIONS_FILE = path.join(dataDir, "sessions.json");
 
@@ -126,17 +145,20 @@ function createAuth({ dataDir }) {
     return changed;
   }
 
-  function createSession(userId) {
+  function createSession(userId, req = null) {
     const sessions = loadSessions();
     pruneSessions(sessions);
 
     const id = auth.randomToken(32);
+    const client = req ? clientInfo(req) : { ip: null, userAgent: "" };
     sessions[id] = {
       userId,
       csrfToken: auth.randomToken(24),
       createdAt: Date.now(),
       lastSeenAt: Date.now(),
-      expiresAt: Date.now() + ABSOLUTE_TIMEOUT_MS
+      expiresAt: Date.now() + ABSOLUTE_TIMEOUT_MS,
+      ip: client.ip,
+      userAgent: client.userAgent
     };
 
     saveSessions(sessions);
@@ -426,8 +448,9 @@ function createAuth({ dataDir }) {
     };
 
     saveUsers([user]);
+    log(req, "auth.setup", username, "first administrator created", username);
 
-    const session = createSession(user.id);
+    const session = createSession(user.id, req);
     setSessionCookie(res, session.id);
     return res.json({ ok: true, user: publicUser(user), csrfToken: session.csrfToken });
   });
@@ -468,8 +491,9 @@ function createAuth({ dataDir }) {
       return res.json({ ok: true, mfaRequired: true, pendingToken });
     }
 
-    const session = createSession(user.id);
+    const session = createSession(user.id, req);
     updateUser(user.id, { lastLoginAt: Date.now() });
+    log(req, "auth.login", user.username, "password", user.username);
     setSessionCookie(res, session.id);
     return res.json({
       ok: true,
@@ -520,8 +544,9 @@ function createAuth({ dataDir }) {
 
     pendingLogins.delete(String(req.body.pendingToken));
     updateUser(user.id, { lastTotpCounter: counter, lastLoginAt: Date.now(), failedAttempts: 0, lockedUntil: null });
+    log(req, "auth.login", user.username, "password and authenticator code", user.username);
 
-    const session = createSession(user.id);
+    const session = createSession(user.id, req);
     setSessionCookie(res, session.id);
     return res.json({ ok: true, user: publicUser(user), csrfToken: session.csrfToken });
   });
@@ -548,8 +573,9 @@ function createAuth({ dataDir }) {
     // Single use.
     pendingLogins.delete(String(req.body.pendingToken));
     updateUser(user.id, { recoveryCodes: remaining, lastLoginAt: Date.now(), failedAttempts: 0, lockedUntil: null });
+    log(req, "auth.login", user.username, `password and recovery code (${remaining.length} left)`, user.username);
 
-    const session = createSession(user.id);
+    const session = createSession(user.id, req);
     setSessionCookie(res, session.id);
     return res.json({ ok: true, user: publicUser(user), csrfToken: session.csrfToken, recoveryCodesRemaining: remaining.length });
   });
@@ -627,6 +653,7 @@ function createAuth({ dataDir }) {
     };
     const passkeys = [...(user.passkeys || []), stored];
     updateUser(user.id, { passkeys });
+    log(req, "passkey.add", req.user.username, `"${name}" (${credentialDeviceType || "unknown device type"})`);
     res.json({ ok: true, passkey: publicPasskey(stored), passkeys: passkeys.map(publicPasskey) });
   });
 
@@ -636,7 +663,9 @@ function createAuth({ dataDir }) {
     if (passkeys.length === (user?.passkeys || []).length) {
       return res.status(404).json({ error: "No such passkey." });
     }
+    const removed = (user.passkeys || []).find((p) => p.id === req.params.id);
     updateUser(user.id, { passkeys });
+    log(req, "passkey.remove", req.user.username, removed ? `"${removed.name}"` : null);
     res.json({ ok: true, passkeys: passkeys.map(publicPasskey) });
   });
 
@@ -702,14 +731,69 @@ function createAuth({ dataDir }) {
       ? { ...p, counter: verification.authenticationInfo.newCounter, lastUsedAt: Date.now() }
       : p));
     updateUser(user.id, { passkeys, lastLoginAt: Date.now(), failedAttempts: 0, lockedUntil: null });
-    const session = createSession(user.id);
+    log(req, "auth.login", user.username, `passkey "${passkey.name}"`, user.username);
+    const session = createSession(user.id, req);
     setSessionCookie(res, session.id);
     return res.json({ ok: true, user: publicUser(findUserById(user.id)), csrfToken: session.csrfToken });
+  });
+
+  // --- sessions -------------------------------------------------------------
+
+  function publicSession(id, s, currentId) {
+    return { key: sessionKey(id), current: id === currentId, createdAt: s.createdAt, lastSeenAt: s.lastSeenAt, expiresAt: s.expiresAt, ip: s.ip || null, userAgent: s.userAgent || "" };
+  }
+
+  /** The caller's own open sessions, newest activity first. */
+  router.get("/api/auth/sessions", requireAuth, (req, res) => {
+    const sessions = loadSessions();
+    if (pruneSessions(sessions)) saveSessions(sessions);
+    const currentId = req.session ? req.session.id : null;
+    const mine = Object.entries(sessions)
+      .filter(([, s]) => s.userId === req.user.id)
+      .map(([id, s]) => publicSession(id, s, currentId))
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+    res.json({ sessions: mine, viaProxy: !req.session });
+  });
+
+  /** Ends one of the caller's other sessions, by its key. */
+  router.delete("/api/auth/sessions/:key", requireAuth, (req, res) => {
+    const sessions = loadSessions();
+    const hit = Object.entries(sessions).find(([id, s]) => s.userId === req.user.id && sessionKey(id) === req.params.key);
+    if (!hit) return res.status(404).json({ error: "No such session." });
+    if (req.session && hit[0] === req.session.id) return res.status(400).json({ error: "That is this session; use Sign out for it." });
+    delete sessions[hit[0]];
+    saveSessions(sessions);
+    log(req, "session.revoke", req.user.username, `from ${hit[1].ip || "unknown address"}`);
+    res.json({ ok: true });
+  });
+
+  /** Signs the caller out everywhere except here. */
+  router.post("/api/auth/sessions/sign-out-others", requireAuth, (req, res) => {
+    const sessions = loadSessions();
+    let ended = 0;
+    for (const [id, s] of Object.entries(sessions)) {
+      if (s.userId === req.user.id && (!req.session || id !== req.session.id)) {
+        delete sessions[id];
+        ended += 1;
+      }
+    }
+    saveSessions(sessions);
+    log(req, "session.sign_out_others", req.user.username, `${ended} session(s) ended`);
+    res.json({ ok: true, ended });
+  });
+
+  /** Signs the caller out everywhere, this session included. */
+  router.post("/api/auth/sessions/sign-out-all", requireAuth, (req, res) => {
+    const ended = destroySessionsForUser(req.user.id);
+    log(req, "session.sign_out_all", req.user.username, `${typeof ended === "number" ? ended : "all"} session(s) ended`);
+    clearSessionCookie(res);
+    res.json({ ok: true });
   });
 
   router.post("/api/auth/logout", requireAuth, (req, res) => {
     if (req.session) {
       destroySession(req.session.id);
+      log(req, "auth.logout", req.user.username, null);
     }
     clearSessionCookie(res);
     return res.json({ ok: true });
@@ -751,6 +835,7 @@ function createAuth({ dataDir }) {
       recoveryCodes: recoveryCodes.map(auth.hashRecoveryCode)
     });
 
+    log(req, "mfa.enable", req.user.username, "authenticator enrolled, recovery codes issued");
     // The only time the plaintext codes are ever returned.
     return res.json({ ok: true, recoveryCodes });
   });
@@ -762,6 +847,7 @@ function createAuth({ dataDir }) {
     }
 
     updateUser(user.id, { totpSecret: null, pendingTotpSecret: null, mfaEnrolled: false, recoveryCodes: [], lastTotpCounter: 0 });
+    log(req, "mfa.disable", req.user.username, "by the account holder");
     return res.json({ ok: true });
   });
 
@@ -777,6 +863,7 @@ function createAuth({ dataDir }) {
     }
 
     updateUser(user.id, { passwordHash: auth.hashPassword(next) });
+    log(req, "password.change", req.user.username, null);
     return res.json({ ok: true });
   });
 
@@ -819,6 +906,7 @@ function createAuth({ dataDir }) {
 
     users.push(user);
     saveUsers(users);
+    log(req, "user.add", username, `role ${role}`);
     return res.json({ ok: true, user: publicUser(user) });
   });
 
@@ -839,6 +927,7 @@ function createAuth({ dataDir }) {
 
     saveUsers(users.filter((u) => u.id !== id));
     destroySessionsForUser(id);
+    log(req, "user.remove", target.username, `was ${target.role}`);
     return res.json({ ok: true });
   });
 
@@ -861,6 +950,7 @@ function createAuth({ dataDir }) {
     }
 
     updateUser(target.id, { role });
+    log(req, "user.role", target.username, `${target.role} to ${role}`);
     return res.json({ ok: true, user: publicUser({ ...target, role }) });
   });
 
@@ -876,6 +966,7 @@ function createAuth({ dataDir }) {
       recoveryCodes: [], lastTotpCounter: 0, failedAttempts: 0, lockedUntil: null
     });
     destroySessionsForUser(target.id);
+    log(req, "user.reset_mfa", target.username, "two-factor cleared and sessions ended by an administrator");
     return res.json({ ok: true });
   });
 

@@ -290,6 +290,11 @@ async function waitForServer(tries = 60) {
     check("mailboxes: bad certificate is 400", (await req("/api/mailboxes", { method: "POST", body: { tenantId: "t-9", clientId: "c-9", authMethod: "certificate", certPem: "nope", mailbox: "cert2@contoso.test" } })).status === 400);
     check("mailboxes: list never carries key material", !JSON.stringify((await req("/api/mailboxes")).body).includes("PRIVATE KEY"));
     await req(`/api/mailboxes/${mbCert.body.mailbox.id}`, { method: "DELETE" });
+    const auditAll = (await req("/api/audit?limit=200")).body.entries;
+    check("audit: mailbox changes are logged with target and detail", ["mailbox.add", "mailbox.update", "mailbox.remove"].every((a) => auditAll.some((e) => e.action === a && e.target && e.username === "admin")), JSON.stringify(auditAll.map((e) => e.action)));
+    check("audit: mailbox.update names the fields that changed", auditAll.some((e) => e.action === "mailbox.update" && /changed .*name/.test(e.detail || "")));
+    check("audit: known-sender changes are logged", auditAll.some((e) => e.action === "sender.add") && auditAll.some((e) => e.action === "sender.update" || e.action === "sender.remove"), JSON.stringify(auditAll.filter((e) => e.action.startsWith("sender.")).map((e) => e.action)));
+    check("audit: filter by prefix", (await req("/api/audit?action=mailbox.")).body.entries.every((e) => e.action.startsWith("mailbox.")));
     const mbTest = await req(`/api/mailboxes/${mbId}/test`, { method: "POST", body: {} });
     check("mailboxes: connection test reports the failure", mbTest.status === 200 && mbTest.body.ok === false && mbTest.body.stage === "token");
     const stNow = await req("/api/status");

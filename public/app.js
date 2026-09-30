@@ -2927,6 +2927,7 @@ function applyIdentity(user, token) {
     usersPanel.hidden = true;
     accountPanel.hidden = true;
     document.getElementById("maintenance-panel").hidden = true;
+    document.getElementById("audit-panel").hidden = true;
   }
 }
 
@@ -3121,9 +3122,11 @@ async function setView(name, { scrollTo = null } = {}) {
     renderAccountPanel();
     usersPanel.hidden = !isAdmin();
     maintenancePanel.hidden = !isAdmin();
+    document.getElementById("audit-panel").hidden = !isAdmin();
     if (isAdmin()) {
       try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
       loadMaintenance();
+      loadAudit();
     }
   }
   writeHash();
@@ -3417,7 +3420,138 @@ async function loadPasskeys() {
   }
 }
 
+// --- sessions ------------------------------------------------------------------
+
+/** "Chrome on Windows" from a user-agent string; falls back to the raw start of it. */
+function describeAgent(ua) {
+  const s = String(ua || "");
+  if (!s) return "unknown browser";
+  const browser = /Edg\//.test(s) ? "Edge" : /OPR\//.test(s) ? "Opera" : /Firefox\//.test(s) ? "Firefox" : /Chrome\//.test(s) ? "Chrome" : /Safari\//.test(s) ? "Safari" : s.slice(0, 30);
+  const os = /Windows/.test(s) ? "Windows" : /Android/.test(s) ? "Android" : /iPhone|iPad/.test(s) ? "iOS" : /Mac OS X/.test(s) ? "macOS" : /Linux/.test(s) ? "Linux" : "";
+  return os ? `${browser} on ${os}` : browser;
+}
+
+async function loadSessions() {
+  const box = document.getElementById("acct-sessions");
+  try {
+    const data = await api("/api/auth/sessions");
+    const rows = data.sessions || [];
+    box.replaceChildren(buildTable(
+      ["Where", "Address", "Signed in", "Last active", ""],
+      rows.map((s) => {
+        const actions = document.createElement("td");
+        if (!s.current) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "ghost-danger small";
+          btn.textContent = "End session";
+          btn.addEventListener("click", async () => {
+            try {
+              await api(`/api/auth/sessions/${encodeURIComponent(s.key)}`, { method: "DELETE" });
+              await loadSessions();
+            } catch (error) {
+              setStatus(error.message, true);
+            }
+          });
+          actions.appendChild(btn);
+        }
+        return {
+          data: s,
+          cells: [
+            textCell(`${describeAgent(s.userAgent)}${s.current ? " (this one)" : ""}`, s.current ? "" : "muted"),
+            textCell(s.ip || "", "mono muted"),
+            textCell(formatTimestamp(Math.floor(s.createdAt / 1000)), "nowrap muted"),
+            textCell(formatTimestamp(Math.floor(s.lastSeenAt / 1000)), "nowrap"),
+            actions
+          ]
+        };
+      }),
+      { emptyText: data.viaProxy ? "Signed in through the reverse proxy; there are no app sessions to list." : "No sessions." }
+    ));
+    document.getElementById("acct-signout-others").hidden = rows.filter((s) => !s.current).length === 0;
+  } catch (error) {
+    box.replaceChildren();
+    setStatus(error.message, true);
+  }
+}
+
+document.getElementById("acct-signout-others").addEventListener("click", async () => {
+  try {
+    const data = await api("/api/auth/sessions/sign-out-others", { method: "POST", body: "{}" });
+    setStatus(`Signed out ${data.ended} other session${data.ended === 1 ? "" : "s"}.`);
+    await loadSessions();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("acct-signout-all").addEventListener("click", async () => {
+  if (!confirm("Sign out of every device, including this one?")) return;
+  try {
+    await api("/api/auth/sessions/sign-out-all", { method: "POST", body: "{}" });
+  } catch {
+    // The session is gone either way.
+  }
+  applyIdentity(null, null);
+  document.title = BASE_TITLE;
+  showAuthOverlay("login");
+});
+
+// --- audit log -------------------------------------------------------------------
+
+const auditState = { before: null, rows: [] };
+
+const ACTION_LABELS = {
+  "auth.setup": "created the first administrator", "auth.login": "signed in", "auth.logout": "signed out",
+  "session.revoke": "ended a session", "session.sign_out_others": "signed out other devices", "session.sign_out_all": "signed out everywhere",
+  "mfa.enable": "turned on two-factor", "mfa.disable": "turned off two-factor", "password.change": "changed password",
+  "passkey.add": "added a passkey", "passkey.remove": "removed a passkey",
+  "user.add": "added user", "user.remove": "removed user", "user.role": "changed role of", "user.reset_mfa": "reset two-factor for",
+  "mailbox.add": "added mailbox", "mailbox.update": "changed mailbox", "mailbox.remove": "removed mailbox",
+  "sender.add": "labelled sender", "sender.update": "changed label", "sender.remove": "removed label",
+  "backup.download": "downloaded a backup", "backup.restore": "restored a backup", "reports.reprocess": "re-processed stored reports"
+};
+
+function renderAudit() {
+  const rows = auditState.rows;
+  document.getElementById("audit-count").textContent = `${rows.length} entr${rows.length === 1 ? "y" : "ies"}`;
+  document.getElementById("audit-results").replaceChildren(buildTable(
+    ["When", "Who", "What", "Target", "Detail", "From"],
+    rows.map((e) => ({
+      data: e,
+      cells: [
+        textCell(formatTimestamp(e.at), "nowrap muted"),
+        textCell(e.username || "", "nowrap"),
+        textCell(ACTION_LABELS[e.action] || e.action, "nowrap"),
+        textCell(e.target || "", "mono trunc"),
+        textCell(e.detail || "", "muted trunc-wide"),
+        textCell(e.ip || "", "mono muted")
+      ]
+    })),
+    { emptyText: "Nothing recorded yet." }
+  ));
+}
+
+async function loadAudit({ more = false } = {}) {
+  if (!isAdmin()) return;
+  if (!more) { auditState.before = null; auditState.rows = []; }
+  const filter = document.getElementById("audit-filter").value;
+  try {
+    const data = await api(`/api/audit?limit=100${auditState.before ? `&before=${auditState.before}` : ""}${filter ? `&action=${encodeURIComponent(filter)}` : ""}`);
+    auditState.rows = auditState.rows.concat(data.entries || []);
+    auditState.before = auditState.rows.length ? auditState.rows[auditState.rows.length - 1].id : null;
+    document.getElementById("audit-more").hidden = !data.more;
+    renderAudit();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+document.getElementById("audit-filter").addEventListener("change", () => loadAudit());
+document.getElementById("audit-more").addEventListener("click", () => loadAudit({ more: true }));
+
 function renderAccountPanel() {
+  loadSessions();
   const enrolled = Boolean(currentUser?.mfaEnrolled);
   document.getElementById("account-mfa-state").textContent = `Two-factor: ${enrolled ? "on" : "off"}`;
   document.getElementById("acct-enable-mfa").hidden = enrolled;
@@ -3479,7 +3613,7 @@ async function refreshUsers() {
       user.username,
       ROLE_LABEL[user.role] || user.role,
       user.mfaEnrolled ? "Enabled" : "Not set up",
-      user.lastLoginAt ? formatTimestamp(user.lastLoginAt) : "Never"
+      user.lastLoginAt ? formatTimestamp(Math.floor(user.lastLoginAt / 1000)) : "Never"
     ]) {
       tr.appendChild(textCell(text));
     }

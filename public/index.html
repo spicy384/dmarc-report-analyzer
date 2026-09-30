@@ -708,6 +708,50 @@
             <button id="acct-add-passkey" type="button">Add a passkey</button>
           </div>
         </div>
+
+        <div class="account-wide">
+          <h3 class="account-heading">Sessions</h3>
+          <p class="bulk-hint">
+            Everywhere your account is signed in right now. Sessions end after 8 hours idle or 7 days
+            regardless. If a device is lost or a browser you do not recognise appears, end it here.
+          </p>
+          <div id="acct-sessions" class="table-scroll"></div>
+          <div class="actions">
+            <button id="acct-signout-others" type="button" class="secondary">Sign out other devices</button>
+            <button id="acct-signout-all" type="button" class="ghost-danger">Sign out everywhere</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="audit-panel" hidden>
+      <div class="panel-head">
+        <h2>Audit log</h2>
+        <span id="audit-count" class="badge"></span>
+        <div class="head-toggle">
+          <label class="inline-label">Show
+            <select id="audit-filter" class="small">
+              <option value="">everything</option>
+              <option value="auth.">sign-ins and sign-outs</option>
+              <option value="session.">session changes</option>
+              <option value="user.">user management</option>
+              <option value="mailbox.">mailboxes</option>
+              <option value="sender.">known senders</option>
+              <option value="passkey.">passkeys</option>
+              <option value="mfa.">two-factor</option>
+              <option value="backup.">backup and restore</option>
+              <option value="reports.">re-processing</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <p class="bulk-hint">
+        Who changed what: sign-ins, sessions ended, accounts and roles, mailboxes, known-sender labels,
+        passkeys and two-factor, backups. Kept in the database and left in place by a restore.
+      </p>
+      <div id="audit-results" class="table-scroll"></div>
+      <div class="actions">
+        <button id="audit-more" type="button" class="secondary small" hidden>Load older entries</button>
       </div>
     </section>
   </div>

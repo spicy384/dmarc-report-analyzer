@@ -35,7 +35,8 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const authGuard = createAuth({ dataDir: DATA_DIR });
+// The audit callback runs per request, by which time the database below exists.
+const authGuard = createAuth({ dataDir: DATA_DIR, audit: (entry) => db.audit(entry) });
 const db = openDatabase({ dataDir: DATA_DIR });
 const envGraph = configFromEnv();
 const mailboxes = createMailboxStore({ dataDir: DATA_DIR, env: envGraph, loginBase: envGraph.loginBase, graphBase: envGraph.graphBase });
@@ -452,15 +453,20 @@ app.post("/api/known-senders", authGuard.requireWriter, route(async (req, res) =
       skipped.push({ pattern: item.pattern, error: error.message });
     }
   }
+  for (const a of added) auditFrom(req, "sender.add", a.pattern, `${a.kind}: ${a.label}${a.source === "spf" ? " (from SPF)" : ""}`);
   res.json({ ok: true, added, skipped, sender: added[0] || null });
 }));
 
 app.put("/api/known-senders/:id", authGuard.requireWriter, route(async (req, res) => {
-  res.json({ ok: true, sender: db.updateKnownSender(positiveInt(req.params.id, 0), req.body || {}) });
+  const sender = db.updateKnownSender(positiveInt(req.params.id, 0), req.body || {});
+  auditFrom(req, "sender.update", sender.pattern, `${sender.kind}: ${sender.label}`);
+  res.json({ ok: true, sender });
 }));
 
 app.delete("/api/known-senders/:id", authGuard.requireAdmin, route(async (req, res) => {
+  const gone = db.knownSenders().find((k) => k.id === positiveInt(req.params.id, 0));
   db.removeKnownSender(positiveInt(req.params.id, 0));
+  auditFrom(req, "sender.remove", gone ? gone.pattern : req.params.id, gone ? `${gone.kind}: ${gone.label}` : null);
   res.json({ ok: true });
 }));
 
@@ -498,16 +504,22 @@ app.get("/api/mailboxes", authGuard.requireAdmin, route(async (req, res) => {
 app.post("/api/mailboxes", authGuard.requireAdmin, route(async (req, res) => {
   const mailbox = mailboxes.add(req.body || {});
   console.log(`mailboxes: ${req.user?.username || "admin"} added ${mailbox.mailbox} (${mailbox.id})`);
+  auditFrom(req, "mailbox.add", mailbox.mailbox, `${mailbox.name}; tenant ${mailbox.tenantId}; ${mailbox.authMethod}`);
   res.json({ ok: true, mailbox });
 }));
 
 app.put("/api/mailboxes/:id", authGuard.requireAdmin, route(async (req, res) => {
   const mailbox = mailboxes.update(req.params.id, req.body || {});
+  const body = req.body || {};
+  const touched = ["name", "tenantId", "clientId", "authMethod", "mailbox", "folder", "enabled"].filter((k) => body[k] !== undefined).concat(body.clientSecret ? ["clientSecret"] : [], body.certPem ? ["certificate"] : []);
+  auditFrom(req, "mailbox.update", mailbox.mailbox, `${mailbox.name}; changed ${touched.join(", ") || "nothing"}`);
   res.json({ ok: true, mailbox });
 }));
 
 app.delete("/api/mailboxes/:id", authGuard.requireAdmin, route(async (req, res) => {
+  const gone = mailboxes.get(req.params.id);
   mailboxes.remove(req.params.id);
+  auditFrom(req, "mailbox.remove", gone ? gone.mailbox : req.params.id, gone ? gone.name : null);
   res.json({ ok: true });
 }));
 

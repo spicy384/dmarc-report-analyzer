@@ -320,6 +320,22 @@ const PROTECTED = [
     check("passkeys: removed credential no longer signs in", (await req("/api/auth/passkeys/login/verify", { method: "POST", body: { token: opts7.body.token, response: authenticator.assert(opts7.body.options) } })).status === 401);
     check("passkeys: options require CSRF-free public access but not before setup", (await req("/api/auth/passkeys/register/options", { method: "POST", body: {}, cookieOverride: null })).status === 401);
 
+    // === sessions ===
+    cookie = adminCookie; csrf = adminCsrf;
+    const sess = await req("/api/auth/sessions");
+    check("sessions: lists the caller's sessions with one marked current", sess.status === 200 && sess.body.sessions.length >= 2 && sess.body.sessions.filter((s) => s.current).length === 1 && sess.body.sessions.every((s) => s.key && s.createdAt && s.lastSeenAt), JSON.stringify(sess.body).slice(0, 200));
+    check("sessions: no raw session id is exposed", !JSON.stringify(sess.body).includes(adminCookie.split("=")[1]));
+    const other = sess.body.sessions.find((s) => !s.current);
+    const current = sess.body.sessions.find((s) => s.current);
+    check("sessions: ending the current one is refused", (await req(`/api/auth/sessions/${current.key}`, { method: "DELETE" })).status === 400);
+    check("sessions: unknown key is 404", (await req("/api/auth/sessions/0123456789abcdef", { method: "DELETE" })).status === 404);
+    check("sessions: end another session", (await req(`/api/auth/sessions/${other.key}`, { method: "DELETE" })).status === 200);
+    check("sessions: the ended session no longer works", (await req("/api/auth/me", { cookieOverride: passkeyCookie })).body.authenticated === false);
+    const others = await req("/api/auth/sessions/sign-out-others", { method: "POST", body: {} });
+    check("sessions: sign out other devices keeps this one", others.status === 200 && (await req("/api/auth/me")).body.authenticated === true && (await req("/api/auth/sessions")).body.sessions.length === 1);
+    check("sessions: sign out everywhere ends this one too", (await req("/api/auth/sessions/sign-out-all", { method: "POST", body: {} })).status === 200 && (await req("/api/auth/me", { cookieOverride: adminCookie })).body.authenticated === false);
+    cookie = null; csrf = null;
+
     // === secrets on disk ===
     const usersRaw = fs.readFileSync(path.join(DATA_DIR, "users.json"), "utf8");
     check("passwords are not stored in plaintext", !usersRaw.includes("correct-horse-battery") && !usersRaw.includes("another-long-password"));

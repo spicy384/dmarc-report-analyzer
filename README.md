@@ -384,6 +384,23 @@ Everything is under `DATA_DIR` (`/data` in the container):
 
 Back up the directory; treat it as sensitive.
 
+## Sessions and the audit log
+
+**Account → Sessions** lists everywhere your account is signed in (browser, address, when
+signed in, last active), lets you end any other session, **Sign out other devices**, or
+**Sign out everywhere** including this one. Sessions still expire after 8 hours idle or 7
+days regardless.
+
+**Settings → Audit log** (administrators) records who did what: sign-ins with the method
+used (password, authenticator code, recovery code, passkey), sign-outs and sessions ended,
+users added, removed or given another role, two-factor enrolled, disabled or reset,
+passwords changed, passkeys added or removed, mailboxes added, changed (naming the fields)
+or removed, known-sender labels added, changed or removed, backups downloaded and restored,
+and re-processing runs. Each entry carries the username, the target, a detail line with no
+secrets, and the client address. It is kept in the database and a restore leaves it in
+place. Filter by category, and load older entries page by page. `GET /api/audit` returns
+the same data.
+
 ## Backup, restore and re-processing
 
 **Settings → Backup and maintenance** (administrators). **Download backup** produces a
