@@ -19,7 +19,7 @@
         </span>
         <div class="brand-text">
           <h1>DMARC Report Analyzer</h1>
-          <p class="brand-sub">Aggregate reports from a Microsoft 365 mailbox</p>
+          <p class="brand-sub">DMARC reports from your mailboxes, explained</p>
         </div>
       </div>
 
@@ -66,28 +66,41 @@
 
       <div id="sw-step-1" class="auth-form wizard-step">
         <p class="auth-hint">
-          Nothing is reading reports yet. This walkthrough connects the Microsoft 365 mailbox that
-          receives your DMARC reports (the <span class="mono">rua=</span> address). It takes a few minutes.
+          Nothing is reading reports yet. This walkthrough connects the mailbox that receives your
+          DMARC reports (the <span class="mono">rua=</span> address). It takes a few minutes.
         </p>
-        <p class="wizard-lead">You will need, from the Entra admin center:</p>
+        <p class="wizard-lead">What you need depends on where the mailbox lives:</p>
         <ol class="wizard-list">
-          <li>An <strong>app registration</strong> with the Microsoft Graph <strong>application</strong> permission
-            <span class="mono">Mail.Read</span>, with admin consent granted.</li>
-          <li>Its <strong>Directory (tenant) ID</strong> and <strong>Application (client) ID</strong> from the Overview page.</li>
-          <li>A credential: a <strong>client secret</strong>, or a <strong>certificate</strong> whose public part is uploaded
-            to the registration and whose private key you have as PEM.</li>
-          <li>The <strong>mailbox address</strong> the reports land in.</li>
+          <li><strong>Microsoft 365</strong>: an Entra app registration with the Graph application permission
+            <span class="mono">Mail.Read</span> and admin consent, its tenant and client IDs, and a client secret or certificate.</li>
+          <li><strong>Google Workspace</strong>: a service account key (JSON) with domain-wide delegation for the
+            read-only Gmail scope, and the mailbox address.</li>
+          <li><strong>Amazon SES</strong>: the S3 bucket your receipt rule delivers to, its region, and an access key
+            allowed to list and read it.</li>
+          <li><strong>IMAP or POP3</strong>: the server name, a username and a password (an app password if
+            two-factor is on).</li>
         </ol>
         <p class="auth-hint">
-          The README's <em>Entra app registration</em> section walks through creating these, and how to
-          restrict the app to this one mailbox. Everything you enter here can be changed later under Mailbox sync.
+          The README has the setup steps for each. The mailbox is only ever read: nothing is deleted, moved
+          or marked. Everything you enter here can be changed later under Mailbox sync.
         </p>
       </div>
 
       <div id="sw-step-2" class="auth-form wizard-step" hidden>
-        <label>Directory (tenant) ID <input id="sw-tenant" class="mono" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off" /></label>
-        <label>Application (client) ID <input id="sw-client" class="mono" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off" /></label>
-        <fieldset class="mb-auth">
+        <label>Where the reports arrive
+          <select id="sw-type">
+            <option value="graph">Microsoft 365 (Graph API)</option>
+            <option value="gws">Google Workspace (Gmail API)</option>
+            <option value="ses">Amazon SES (S3 bucket)</option>
+            <option value="imap">IMAP</option>
+            <option value="pop3">POP3</option>
+          </select>
+        </label>
+        <p id="sw-type-intro" class="auth-hint" hidden></p>
+        <div id="sw-other" class="auth-form" hidden></div>
+        <label class="sw-graph-only">Directory (tenant) ID <input id="sw-tenant" class="mono" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off" /></label>
+        <label class="sw-graph-only">Application (client) ID <input id="sw-client" class="mono" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off" /></label>
+        <fieldset class="mb-auth sw-graph-only">
           <legend>Credential</legend>
           <div class="mb-auth-choice">
             <label class="check-inline"><input type="radio" name="sw-auth" value="secret" checked /> Client secret</label>
@@ -110,9 +123,9 @@
       </div>
 
       <div id="sw-step-3" class="auth-form wizard-step" hidden>
-        <label>Mailbox address (UPN) <input id="sw-mailbox" class="mono" placeholder="dmarc-reports@contoso.com" autocomplete="off" /></label>
-        <label>Folder <input id="sw-folder" value="Inbox" /></label>
-        <p class="auth-hint">Inbox needs no lookup. A folder name or a <span class="mono">Parent/Child</span> path is resolved at sync time.</p>
+        <label class="sw-graph-only">Mailbox address (UPN) <input id="sw-mailbox" class="mono" placeholder="dmarc-reports@contoso.com" autocomplete="off" /></label>
+        <label class="sw-graph-only">Folder <input id="sw-folder" value="Inbox" /></label>
+        <p class="auth-hint sw-graph-only">Inbox needs no lookup. A folder name or a <span class="mono">Parent/Child</span> path is resolved at sync time.</p>
         <label>Name <input id="sw-name" placeholder="Contoso" /></label>
         <p class="auth-hint">How this mailbox is labelled in the app. Defaults to the address.</p>
       </div>
@@ -523,7 +536,7 @@
       </div>
 
       <p class="bulk-hint">
-        Each mailbox is an Entra app registration (tenant, client ID, and a client secret or a certificate) plus the
+        Each mailbox is a place reports arrive: Microsoft 365, Google Workspace, an Amazon SES bucket, or any IMAP or POP3 server. For Microsoft 365 that is an Entra app registration plus the
         address that receives the reports. Mailboxes can live in different tenants. The one set
         through environment variables appears as <strong>(env)</strong> and is managed there.
       </p>
@@ -539,13 +552,24 @@
       <div id="mailbox-form" class="mailbox-form" hidden>
         <h3 id="mailbox-form-title" class="account-heading">Add a mailbox</h3>
         <div class="mailbox-form-grid">
+          <label>Where the reports arrive
+            <select id="mb-type">
+              <option value="graph">Microsoft 365 (Graph API)</option>
+              <option value="gws">Google Workspace (Gmail API)</option>
+              <option value="ses">Amazon SES (S3 bucket)</option>
+              <option value="imap">IMAP</option>
+              <option value="pop3">POP3</option>
+            </select>
+          </label>
           <label>Name <input id="mb-name" placeholder="Contoso" /></label>
-          <label>Mailbox address (UPN) <input id="mb-mailbox" class="mono" placeholder="dmarc-reports@contoso.com" /></label>
-          <label>Directory (tenant) ID <input id="mb-tenant" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
-          <label>Application (client) ID <input id="mb-client" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
-          <label>Folder <input id="mb-folder" placeholder="Inbox" /></label>
+          <label class="mb-graph-only">Mailbox address (UPN) <input id="mb-mailbox" class="mono" placeholder="dmarc-reports@contoso.com" /></label>
+          <label class="mb-graph-only">Directory (tenant) ID <input id="mb-tenant" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+          <label class="mb-graph-only">Application (client) ID <input id="mb-client" class="mono" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+          <label class="mb-graph-only">Folder <input id="mb-folder" placeholder="Inbox" /></label>
         </div>
-        <fieldset class="mb-auth">
+        <p id="mb-type-intro" class="bulk-hint" hidden></p>
+        <div id="mb-other" class="mailbox-form-grid" hidden></div>
+        <fieldset class="mb-auth mb-graph-only">
           <legend>Authentication</legend>
           <div class="mb-auth-choice">
             <label class="check-inline"><input type="radio" name="mb-auth" value="secret" checked /> Client secret</label>
@@ -573,7 +597,7 @@
           </div>
         </fieldset>
         <label class="check-inline"><input type="checkbox" id="mb-enabled" checked /> Enabled (included in scheduled and Sync all runs)</label>
-        <p class="bulk-hint">
+        <p class="bulk-hint mb-graph-only">
           The app registration needs the Microsoft Graph application permission <strong>Mail.Read</strong>
           with admin consent. Restricting it to this mailbox with an application access policy is
           recommended; the README has the steps.

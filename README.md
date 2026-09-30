@@ -1,7 +1,8 @@
 # DMARC Report Analyzer
 
-Small web app that reads DMARC aggregate reports out of a Microsoft 365 mailbox, stores
-them in SQLite, and shows what they say: how much mail failed DMARC, which IP addresses
+Small web app that reads DMARC aggregate and forensic reports out of the mailbox they are
+sent to (Microsoft 365, Google Workspace, an Amazon SES bucket, or any IMAP or POP3
+server), stores them in SQLite, and shows what they say: how much mail failed DMARC, which IP addresses
 sent it, when, who reported it, and which domains were involved. Runs as a container on a
 management server.
 
@@ -167,9 +168,11 @@ override them for a proxy that rewrites hosts.
 
 ## Requirements
 
-- A Microsoft 365 mailbox that receives the reports: the address in your domain's DMARC
-  record (`v=DMARC1; p=...; rua=mailto:dmarc-reports@example.com`).
-- Permission to register an application in Microsoft Entra ID and grant it admin consent.
+- A mailbox that receives the reports: the address in your domain's DMARC record
+  (`v=DMARC1; p=...; rua=mailto:dmarc-reports@example.com`). It can live in Microsoft 365,
+  Google Workspace, an S3 bucket fed by Amazon SES, or any IMAP or POP3 server.
+- For Microsoft 365: permission to register an application in Microsoft Entra ID and grant
+  it admin consent. The other sources are covered under [Other mail sources](#other-mail-sources).
 - Docker, or Node 22+.
 
 ## Entra app registration
@@ -232,6 +235,62 @@ date; a certificate within 30 days of expiry is highlighted.
 The mailbox given through `GRAPH_*` and `DMARC_MAILBOX` still works and shows up as the
 read-only **(env)** entry. Mailboxes added in the app are stored in `mailboxes.json` in
 the data directory with their secrets or private keys, so keep that directory private.
+
+## Other mail sources
+
+A mailbox does not have to be in Microsoft 365. **Add mailbox** (and the first-run
+walkthrough) start with **Where the reports arrive**, and each mailbox can be a different
+type. All of them are read-only: nothing is deleted, moved or marked as read. These types
+are configured in the app only; the `GRAPH_*` variables remain the one environment-based
+option.
+
+### Google Workspace (Gmail API)
+
+Unattended access uses a service account with domain-wide delegation.
+
+1. In the [Google Cloud console](https://console.cloud.google.com), pick or create a
+   project, enable the **Gmail API**, and create a **service account**. Under its **Keys**
+   tab add a key of type **JSON** and download it.
+2. Note the service account's **Unique ID** (its OAuth client ID).
+3. In the [Google Admin console](https://admin.google.com): **Security → Access and data
+   control → API controls → Manage domain-wide delegation → Add new**. Enter that client ID
+   and the scope `https://www.googleapis.com/auth/gmail.readonly`.
+4. In the app choose **Google Workspace**, enter the mailbox address to read, and paste the
+   whole JSON key. Optionally give a **label** so only the messages a Gmail filter files
+   there are read.
+
+The key is stored with the other mailbox credentials and never shown again; the table shows
+the service account's address. A refused token names the delegation setting to check.
+
+### Amazon SES (S3 bucket)
+
+SES does not hold mail. Its inbound receiving delivers each message to an S3 bucket, and
+the analyzer reads the bucket.
+
+1. In SES, verify the domain for **email receiving** and point its MX record at the
+   region's inbound endpoint. Create a **receipt rule** for the address in your `rua=`
+   with the action **Deliver to S3 bucket**, optionally with an object key prefix.
+2. Create an IAM user (or role credentials) allowed `s3:ListBucket` on the bucket and
+   `s3:GetObject` on its objects, and make an access key.
+3. In the app choose **Amazon SES**, and enter the region, bucket, prefix, access key ID and
+   secret access key.
+
+Requests are signed with Signature Version 4; no AWS SDK is involved. Objects are never
+deleted, so add an S3 lifecycle rule if you want old ones to expire. An **Endpoint** can be
+given for S3-compatible storage.
+
+### IMAP
+
+Any server with IMAP: the server name, security (TLS on 993 by default, STARTTLS or none on
+143), a username and a password, and the folder to read (`INBOX` by default). Providers
+with two-factor need an **app password**. The folder is opened read-only. Certificate
+checking can be turned off for a server with a private certificate.
+
+### POP3
+
+The same fields without a folder (TLS on 995 by default, STARTTLS or none on 110). POP3
+lists no dates, so every message not seen before is downloaded once, whatever its age, and
+recognised afterwards by its unique ID. Messages are never deleted from the server.
 
 ## Run it
 

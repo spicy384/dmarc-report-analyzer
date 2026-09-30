@@ -12,8 +12,27 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { createGraphClient, loadCertificate, certificateInfo } = require("./graph");
+const { createImapSource } = require("./source-imap");
+const { createPop3Source } = require("./source-pop3");
+const { createGmailSource, parseServiceAccount } = require("./source-gmail");
+const { createS3Source } = require("./source-s3");
 
 const AUTH_METHODS = ["secret", "certificate"];
+
+// Where a mailbox's mail comes from. Entries written before types existed are Microsoft 365.
+const TYPES = {
+  graph: { label: "Microsoft 365", auth: null, secrets: ["clientSecret", "certPem", "keyPem", "keyPassphrase"] },
+  gws: { label: "Google Workspace", auth: "service account", secrets: ["serviceAccountKey"] },
+  ses: { label: "Amazon SES (S3)", auth: "access key", secrets: ["secretAccessKey"] },
+  imap: { label: "IMAP", auth: "password", secrets: ["password"] },
+  pop3: { label: "POP3", auth: "password", secrets: ["password"] }
+};
+const ALL_SECRETS = [...new Set(Object.values(TYPES).flatMap((t) => t.secrets))];
+const SECURITY = ["tls", "starttls", "none"];
+
+function typeOf(entry) {
+  return TYPES[entry.type] ? entry.type : "graph";
+}
 
 const ENV_ID = "env";
 
@@ -53,18 +72,47 @@ function certificateOf(entry) {
 
 /** Strips every credential; this is what the API and UI see. */
 function publicView(entry) {
-  const { clientSecret, certPem, keyPem, keyPassphrase, ...rest } = entry;
-  const method = entry.authMethod || (certPem ? "certificate" : "secret");
-  return {
-    ...rest,
-    authMethod: method,
-    hasSecret: Boolean(clientSecret),
-    hasCertificate: Boolean(certPem),
-    certificate: method === "certificate" ? certificateInfo(certificateOf(entry)) : null
-  };
+  const type = typeOf(entry);
+  const rest = Object.fromEntries(Object.entries(entry).filter(([k]) => !ALL_SECRETS.includes(k)));
+  const base = { ...rest, type, typeLabel: TYPES[type].label };
+  if (type === "graph") {
+    const method = entry.authMethod || (entry.certPem ? "certificate" : "secret");
+    return {
+      ...base,
+      authMethod: method,
+      hasSecret: Boolean(entry.clientSecret),
+      hasCertificate: Boolean(entry.certPem),
+      certificate: method === "certificate" ? certificateInfo(certificateOf(entry)) : null
+    };
+  }
+  const view = { ...base, authMethod: TYPES[type].auth, hasSecret: TYPES[type].secrets.every((k) => Boolean(entry[k])), hasCertificate: false, certificate: null };
+  if (type === "gws") {
+    // The service account's address is not a secret and says which key is in use.
+    try {
+      view.serviceAccount = parseServiceAccount(entry.serviceAccountKey).client_email;
+    } catch (error) {
+      view.serviceAccount = null;
+      view.credentialError = error.message;
+    }
+  }
+  return view;
 }
 
-function createMailboxStore({ dataDir, env = {}, loginBase, graphBase } = {}) {
+/** What makes two entries "the same mailbox", per type. */
+function identity(entry) {
+  const type = typeOf(entry);
+  if (type === "graph") return `graph|${entry.tenantId}|${entry.mailbox}`;
+  if (type === "gws") return `gws|${entry.mailbox}|${entry.folder || ""}`;
+  if (type === "ses") return `ses|${entry.bucket}|${entry.prefix || ""}`;
+  if (type === "imap") return `imap|${entry.host}|${entry.username}|${entry.folder || "INBOX"}`;
+  return `pop3|${entry.host}|${entry.username}`;
+}
+
+/**
+ * @param sourceOptions per-type options passed to the source factories (tests inject fakes here),
+ *   e.g. { imap: { ImapClient }, gws: { fetchImpl }, ses: { fetchImpl } }
+ */
+function createMailboxStore({ dataDir, env = {}, loginBase, graphBase, sourceOptions = {} } = {}) {
   const FILE = path.join(dataDir, "mailboxes.json");
 
   const envCert = env.certificate && env.certificate.cert ? env.certificate : null;
@@ -117,6 +165,67 @@ function createMailboxStore({ dataDir, env = {}, loginBase, graphBase } = {}) {
    * left it blank, so "keep what is there" works for both kinds.
    */
   function validate(fields) {
+    const type = clean(fields.type) || "graph";
+    if (!TYPES[type]) throw fail(400, `Type must be one of: ${Object.keys(TYPES).join(", ")}.`);
+    const enabled = fields.enabled === undefined ? true : Boolean(fields.enabled);
+    const checkName = (name) => {
+      if (name.length > 80) throw fail(400, "Name is too long (80 characters maximum).");
+      return name;
+    };
+
+    if (type === "imap" || type === "pop3") {
+      const host = clean(fields.host).toLowerCase();
+      const security = clean(fields.security) || "tls";
+      const username = clean(fields.username);
+      const password = fields.password === undefined || fields.password === null ? "" : String(fields.password);
+      const portText = clean(fields.port);
+      const port = portText ? Number(portText) : (type === "imap" ? (security === "tls" ? 993 : 143) : (security === "tls" ? 995 : 110));
+      if (!host || /\s/.test(host)) throw fail(400, "Server host name is required.");
+      if (!SECURITY.includes(security)) throw fail(400, "Security must be tls, starttls or none.");
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw fail(400, "Port must be a number between 1 and 65535.");
+      if (!username) throw fail(400, "Username is required.");
+      if (!password) throw fail(400, "Password is required.");
+      const mailbox = (clean(fields.mailbox) || username).toLowerCase();
+      const entry = { type, name: checkName(clean(fields.name) || mailbox), host, port, security, username, password, tlsVerify: fields.tlsVerify === undefined ? true : Boolean(fields.tlsVerify), mailbox, enabled };
+      // POP3 has no folders.
+      entry.folder = type === "imap" ? (clean(fields.folder) || "INBOX") : "";
+      return entry;
+    }
+
+    if (type === "gws") {
+      const mailbox = clean(fields.mailbox).toLowerCase();
+      const serviceAccountKey = typeof fields.serviceAccountKey === "object" && fields.serviceAccountKey ? JSON.stringify(fields.serviceAccountKey) : clean(fields.serviceAccountKey);
+      if (!mailbox || !/^[^\s@]+@[^\s@]+$/.test(mailbox)) throw fail(400, "Mailbox must be the email address of the Google Workspace user to read.");
+      if (!serviceAccountKey) throw fail(400, "Service account key (JSON) is required.");
+      try {
+        parseServiceAccount(serviceAccountKey);
+      } catch (error) {
+        throw fail(400, error.message);
+      }
+      // "folder" is a Gmail label here; empty means the whole mailbox.
+      return { type, name: checkName(clean(fields.name) || mailbox), mailbox, serviceAccountKey, folder: clean(fields.folder), enabled };
+    }
+
+    if (type === "ses") {
+      const region = clean(fields.region).toLowerCase();
+      const bucket = clean(fields.bucket);
+      const prefix = clean(fields.prefix).replace(/^\/+/, "");
+      const accessKeyId = clean(fields.accessKeyId);
+      const secretAccessKey = clean(fields.secretAccessKey);
+      const endpoint = clean(fields.endpoint);
+      if (!/^[a-z0-9-]+$/.test(region)) throw fail(400, "Region is required, for example us-east-1.");
+      if (!bucket || /\s|\//.test(bucket)) throw fail(400, "Bucket name is required (just the name, no s3:// or slashes).");
+      if (!accessKeyId) throw fail(400, "Access key ID is required.");
+      if (!secretAccessKey) throw fail(400, "Secret access key is required.");
+      if (endpoint && !/^https?:\/\//.test(endpoint)) throw fail(400, "Endpoint must be a URL starting with http:// or https://.");
+      const mailbox = (clean(fields.mailbox) || `s3://${bucket}/${prefix}`).toLowerCase();
+      return { type, name: checkName(clean(fields.name) || mailbox), mailbox, region, bucket, prefix, accessKeyId, secretAccessKey, endpoint, folder: "", enabled };
+    }
+
+    return { type: "graph", ...validateGraph(fields) };
+  }
+
+  function validateGraph(fields) {
     const tenantId = clean(fields.tenantId);
     const clientId = clean(fields.clientId);
     const clientSecret = clean(fields.clientSecret);
@@ -163,7 +272,7 @@ function createMailboxStore({ dataDir, env = {}, loginBase, graphBase } = {}) {
   function add(fields) {
     const entry = validate(fields);
     const list2 = load();
-    if (all().some((m) => m.mailbox === entry.mailbox && m.tenantId === entry.tenantId)) {
+    if (all().some((m) => identity(m) === identity(entry))) {
       throw fail(409, `${entry.mailbox} is already configured.`);
     }
     let id;
@@ -185,16 +294,21 @@ function createMailboxStore({ dataDir, env = {}, loginBase, graphBase } = {}) {
     if (index < 0) throw fail(404, "No such mailbox.");
 
     const current = list2[index];
+    const type = typeOf(current);
+    if (fields.type !== undefined && clean(fields.type) && clean(fields.type) !== type) {
+      throw fail(400, "A mailbox's type cannot be changed; add a new mailbox of the other type instead.");
+    }
     // Blank credential fields mean "keep the stored one" (the UI never sends them back).
-    const merged = validate({
-      ...current,
-      ...fields,
-      clientSecret: clean(fields.clientSecret) || current.clientSecret || "",
-      certPem: clean(fields.certPem) || current.certPem || "",
-      keyPem: clean(fields.certPem) ? clean(fields.keyPem) : clean(fields.keyPem) || current.keyPem || "",
-      keyPassphrase: fields.keyPassphrase === undefined || fields.keyPassphrase === "" ? current.keyPassphrase || "" : fields.keyPassphrase
-    });
-    if (all().some((m) => m.id !== id && m.mailbox === merged.mailbox && m.tenantId === merged.tenantId)) {
+    const kept = type === "graph"
+      ? {
+        clientSecret: clean(fields.clientSecret) || current.clientSecret || "",
+        certPem: clean(fields.certPem) || current.certPem || "",
+        keyPem: clean(fields.certPem) ? clean(fields.keyPem) : clean(fields.keyPem) || current.keyPem || "",
+        keyPassphrase: fields.keyPassphrase === undefined || fields.keyPassphrase === "" ? current.keyPassphrase || "" : fields.keyPassphrase
+      }
+      : Object.fromEntries(TYPES[type].secrets.map((k) => [k, (typeof fields[k] === "object" && fields[k] ? fields[k] : clean(fields[k])) || current[k] || ""]));
+    const merged = validate({ ...current, ...fields, type, ...kept });
+    if (all().some((m) => m.id !== id && identity(m) === identity(merged))) {
       throw fail(409, `${merged.mailbox} is already configured.`);
     }
     const stored = { ...current, ...merged, updatedAt: Math.floor(Date.now() / 1000) };
@@ -215,6 +329,21 @@ function createMailboxStore({ dataDir, env = {}, loginBase, graphBase } = {}) {
   function clientFor(id) {
     const entry = get(id);
     if (!entry) throw fail(404, "No such mailbox.");
+    const type = typeOf(entry);
+    // Message ids carry the mailbox id so the same UID in two mailboxes never collides.
+    const idPrefix = `${type}:${entry.id}:`;
+    if (type === "imap") {
+      return createImapSource({ host: entry.host, port: entry.port, security: entry.security, username: entry.username, password: entry.password, folder: entry.folder, tlsVerify: entry.tlsVerify }, { idPrefix, ...(sourceOptions.imap || {}) });
+    }
+    if (type === "pop3") {
+      return createPop3Source({ host: entry.host, port: entry.port, security: entry.security, username: entry.username, password: entry.password, tlsVerify: entry.tlsVerify }, { idPrefix, ...(sourceOptions.pop3 || {}) });
+    }
+    if (type === "gws") {
+      return createGmailSource({ serviceAccountKey: entry.serviceAccountKey, mailbox: entry.mailbox, folder: entry.folder, ...(sourceOptions.gwsConfig || {}) }, { idPrefix, ...(sourceOptions.gws || {}) });
+    }
+    if (type === "ses") {
+      return createS3Source({ region: entry.region, bucket: entry.bucket, prefix: entry.prefix, accessKeyId: entry.accessKeyId, secretAccessKey: entry.secretAccessKey, endpoint: entry.endpoint || undefined }, { idPrefix, ...(sourceOptions.ses || {}) });
+    }
     const method = entry.authMethod || (entry.certPem ? "certificate" : "secret");
     return createGraphClient({
       tenantId: entry.tenantId,
@@ -229,7 +358,7 @@ function createMailboxStore({ dataDir, env = {}, loginBase, graphBase } = {}) {
     });
   }
 
-  /** Enabled mailboxes with a Graph client each, in configuration order. */
+  /** Enabled mailboxes with a client each (Graph or another source), in configuration order. */
   function enabledWithClients() {
     return all().filter((m) => m.enabled).map((m) => ({ id: m.id, name: m.name, mailbox: m.mailbox, client: clientFor(m.id) }));
   }
@@ -241,4 +370,4 @@ function createMailboxStore({ dataDir, env = {}, loginBase, graphBase } = {}) {
   return { ENV_ID, list, get, add, update, remove, clientFor, enabledWithClients, testConnection, file: FILE };
 }
 
-module.exports = { createMailboxStore, ENV_ID };
+module.exports = { createMailboxStore, ENV_ID, TYPES };

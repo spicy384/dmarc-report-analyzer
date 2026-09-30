@@ -26,6 +26,10 @@ function isoToSeconds(iso) {
 
 /** Errors that mean "nothing else in this mailbox will work either": stop it instead of ploughing on. */
 function isFatal(error) {
+  // Non-Graph sources mark errors that should stop the mailbox (bad sign-in, host unreachable).
+  if (error && error.fatal === true) {
+    return true;
+  }
   if (!(error instanceof GraphError)) {
     return false;
   }

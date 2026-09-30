@@ -11,6 +11,7 @@ const SUITES = [
   "db.test.js",
   "graph.test.js",
   "mailboxes.test.js",
+  "sources.test.js",
   "alerts.test.js",
   "geoip.test.js",
   "retention.test.js",

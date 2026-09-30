@@ -1267,3 +1267,35 @@ td.subdomain-note.tone-good { color: var(--success); }
 td.subdomain-note.tone-warn { color: var(--warning-fg); }
 td.subdomain-note.tone-muted { color: var(--text-muted); }
 body.theme-dark td.subdomain-note.tone-warn { color: var(--chart-fail-none); }
+
+/* --- mailbox source types ------------------------------------------------ */
+
+.mailbox-form-grid .source-wide,
+.mailbox-form-grid .source-hint {
+  grid-column: 1 / -1;
+}
+
+.source-hint {
+  margin: -6px 0 0;
+}
+
+#mb-other textarea,
+#sw-other textarea {
+  width: 100%;
+  font-size: 12px;
+  resize: vertical;
+}
+
+#sw-other .source-hint {
+  margin-top: -8px;
+}
+
+#mb-other .check-inline,
+#sw-other .check-inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+  padding-bottom: 8px;
+}

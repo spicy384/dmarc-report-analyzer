@@ -2398,8 +2398,155 @@ function populateMailboxSelect(list, counts) {
   mailboxLabel.hidden = mailboxNames.size < 2;
 }
 
+// --- mailbox source types ------------------------------------------------------
+//
+// Microsoft 365 keeps its own fields in the markup (it has the secret / certificate
+// choice). The other types are plain lists of fields, rendered from these definitions
+// into both the mailbox form and the setup walkthrough so the two cannot drift apart.
+
+const SECURITY_OPTIONS = [["tls", "TLS (implicit)"], ["starttls", "STARTTLS"], ["none", "None (unencrypted)"]];
+
+const SOURCE_TYPES = {
+  graph: { label: "Microsoft 365" },
+  gws: {
+    label: "Google Workspace",
+    intro: "Uses a Google Cloud service account with domain-wide delegation for the read-only Gmail scope, so it keeps working unattended. The service account reads the mailbox as the user below.",
+    fields: [
+      { key: "mailbox", label: "Mailbox address (the user to read)", placeholder: "dmarc-reports@example.com", required: true, mono: true },
+      { key: "folder", label: "Label (optional)", placeholder: "DMARC", hint: "Only messages with this Gmail label. Leave empty to read the whole mailbox." },
+      { key: "serviceAccountKey", label: "Service account key (JSON)", kind: "textarea", secret: true, required: true, placeholder: "{ \"type\": \"service_account\", \"client_email\": \"...\", \"private_key\": \"...\" }" }
+    ]
+  },
+  ses: {
+    label: "Amazon SES",
+    intro: "SES delivers inbound mail to an S3 bucket through a receipt rule; this reads those objects. The access key needs s3:ListBucket on the bucket and s3:GetObject on its objects.",
+    fields: [
+      { key: "region", label: "Region", placeholder: "us-east-1", required: true, mono: true },
+      { key: "bucket", label: "Bucket", placeholder: "my-ses-inbound", required: true, mono: true },
+      { key: "prefix", label: "Key prefix (optional)", placeholder: "dmarc/", mono: true, hint: "The object key prefix set on the receipt rule's S3 action, if any." },
+      { key: "accessKeyId", label: "Access key ID", placeholder: "AKIA...", required: true, mono: true },
+      { key: "secretAccessKey", label: "Secret access key", kind: "password", secret: true, required: true },
+      { key: "endpoint", label: "Endpoint (optional)", placeholder: "https://s3.example.internal", mono: true, hint: "Only for S3-compatible storage; leave empty for AWS." }
+    ]
+  },
+  imap: {
+    label: "IMAP",
+    intro: "Any mail server with IMAP. The folder is opened read-only, so nothing is marked as read or moved. Use an app password if the account has two-factor turned on.",
+    fields: [
+      { key: "host", label: "Server", placeholder: "imap.example.com", required: true, mono: true },
+      { key: "security", label: "Security", kind: "select", options: SECURITY_OPTIONS, default: "tls" },
+      { key: "port", label: "Port (optional)", placeholder: "993 for TLS, 143 otherwise", mono: true },
+      { key: "username", label: "Username", placeholder: "dmarc-reports@example.com", required: true, mono: true },
+      { key: "password", label: "Password", kind: "password", secret: true, required: true },
+      { key: "folder", label: "Folder", placeholder: "INBOX", default: "INBOX" },
+      { key: "tlsVerify", label: "Check the server's TLS certificate", kind: "checkbox", default: true }
+    ]
+  },
+  pop3: {
+    label: "POP3",
+    intro: "Any mail server with POP3. Messages are downloaded, never deleted. POP3 has no folders or dates in its listing, so every message not seen before is fetched once whatever its age.",
+    fields: [
+      { key: "host", label: "Server", placeholder: "pop.example.com", required: true, mono: true },
+      { key: "security", label: "Security", kind: "select", options: SECURITY_OPTIONS, default: "tls" },
+      { key: "port", label: "Port (optional)", placeholder: "995 for TLS, 110 otherwise", mono: true },
+      { key: "username", label: "Username", placeholder: "dmarc-reports@example.com", required: true, mono: true },
+      { key: "password", label: "Password", kind: "password", secret: true, required: true },
+      { key: "tlsVerify", label: "Check the server's TLS certificate", kind: "checkbox", default: true }
+    ]
+  }
+};
+
+/** Builds the inputs for a non-Graph type inside `container`; ids are `${prefix}-${key}`. */
+function renderSourceFields(container, type, prefix, existing = null) {
+  container.replaceChildren();
+  const def = SOURCE_TYPES[type];
+  if (!def || !def.fields) return;
+  for (const f of def.fields) {
+    const id = `${prefix}-${f.key}`;
+    const label = document.createElement("label");
+    let input;
+    if (f.kind === "checkbox") {
+      label.className = "check-inline";
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = existing && existing[f.key] !== undefined ? Boolean(existing[f.key]) : f.default !== false;
+      label.append(input, ` ${f.label}`);
+    } else {
+      label.append(`${f.label} `);
+      if (f.kind === "select") {
+        input = document.createElement("select");
+        for (const [value, text] of f.options) {
+          const opt = document.createElement("option");
+          opt.value = value;
+          opt.textContent = text;
+          input.appendChild(opt);
+        }
+        input.value = (existing && existing[f.key]) || f.default || f.options[0][0];
+      } else if (f.kind === "textarea") {
+        input = document.createElement("textarea");
+        input.rows = 5;
+        input.spellcheck = false;
+      } else {
+        input = document.createElement("input");
+        if (f.kind === "password") {
+          input.type = "password";
+          input.autocomplete = "new-password";
+        } else {
+          input.autocomplete = "off";
+        }
+      }
+      if (f.mono || f.kind === "textarea" || f.kind === "password") input.classList.add("mono");
+      if (f.kind !== "select") {
+        // Secrets are never sent back by the server; an empty box on an edit keeps the stored one.
+        input.placeholder = f.secret && existing ? "leave blank to keep the current one" : (f.placeholder || "");
+        input.value = f.secret ? "" : existing && existing[f.key] !== undefined && existing[f.key] !== null ? String(existing[f.key]) : (existing ? "" : (f.default && f.kind !== "checkbox" ? String(f.default) : ""));
+      }
+      label.appendChild(input);
+    }
+    input.id = id;
+    if (f.kind === "textarea") label.classList.add("source-wide");
+    container.appendChild(label);
+    if (f.hint) {
+      const hint = document.createElement("p");
+      hint.className = "bulk-hint source-hint";
+      hint.textContent = f.hint;
+      container.appendChild(hint);
+    }
+  }
+}
+
+function collectSourceFields(type, prefix) {
+  const out = {};
+  for (const f of (SOURCE_TYPES[type] && SOURCE_TYPES[type].fields) || []) {
+    const el = document.getElementById(`${prefix}-${f.key}`);
+    if (!el) continue;
+    out[f.key] = f.kind === "checkbox" ? el.checked : f.secret ? el.value : el.value.trim();
+  }
+  return out;
+}
+
+/** The first required field left empty, as a sentence; null when all are filled. Secrets may be empty on an edit. */
+function sourceFieldProblem(type, values, { editing = false } = {}) {
+  for (const f of (SOURCE_TYPES[type] && SOURCE_TYPES[type].fields) || []) {
+    if (f.required && !values[f.key] && !(editing && f.secret)) return `Enter the ${f.label.replace(/ \(.*\)$/, "").toLowerCase()}.`;
+  }
+  return null;
+}
+
+/** What identifies the account behind a mailbox, per type, for the table. */
+function describeMailboxAccount(m) {
+  if (m.type === "imap" || m.type === "pop3") return `${m.username} at ${m.host}:${m.port}`;
+  if (m.type === "gws") return m.serviceAccount || "service account";
+  if (m.type === "ses") return `${m.bucket}/${m.prefix || ""} (${m.region})`;
+  return m.tenantId || "";
+}
+
 /** "secret" or the certificate's thumbprint and expiry, flagged when it is expired or broken. */
 function describeMailboxAuth(m) {
+  if (m.type && m.type !== "graph") {
+    const td = textCell(m.credentialError ? `${m.authMethod}: ${m.credentialError}` : m.authMethod || "", m.credentialError ? "trunc-wide is-fail" : "muted");
+    return td;
+  }
   if (m.authMethod !== "certificate") return textCell("secret", "muted");
   const c = m.certificate;
   if (!c || c.error) {
@@ -2417,7 +2564,7 @@ function renderMailboxes(list) {
   mailboxList = list;
   const admin = isAdmin();
   mailboxesResults.replaceChildren(buildTable(
-    ["Name", "Mailbox", "Folder", "Tenant", "Auth", "Last sync", { label: "Reports", className: "num" }, "State", ""],
+    ["Name", "Type", "Mailbox", "Folder", "Account", "Auth", "Last sync", { label: "Reports", className: "num" }, "State", ""],
     list.map((m) => {
       const actions = document.createElement("td");
       const wrap = document.createElement("div");
@@ -2473,9 +2620,10 @@ function renderMailboxes(list) {
         data: m,
         cells: [
           textCell(m.name + (m.readOnly ? " (env)" : ""), "nowrap"),
+          textCell(m.typeLabel || "Microsoft 365", "nowrap muted"),
           textCell(m.mailbox, "mono"),
-          textCell(m.folder || "Inbox"),
-          textCell(m.tenantId, "mono muted trunc"),
+          textCell(m.type === "pop3" || m.type === "ses" ? "" : m.folder || (m.type === "gws" ? "all mail" : "Inbox")),
+          textCell(describeMailboxAccount(m), "mono muted trunc"),
           describeMailboxAuth(m),
           textCell(describeRun(m.lastRun), m.lastRun?.error_text ? "muted trunc-wide is-fail" : "muted trunc-wide"),
           textCell(m.counts ? formatNumber(m.counts.reports) : "0", "num"),
@@ -2565,9 +2713,27 @@ function renderSyncStatus(st) {
 
 let editingMailboxId = null;
 
+/** Shows the Microsoft 365 fields or the generated ones for another type. */
+function setMailboxType(type, existing = null) {
+  const graph = type === "graph";
+  document.getElementById("mb-type").value = type;
+  mailboxForm.querySelectorAll(".mb-graph-only").forEach((el) => { el.hidden = !graph; });
+  const other = document.getElementById("mb-other");
+  const intro = document.getElementById("mb-type-intro");
+  other.hidden = graph;
+  intro.hidden = graph || !SOURCE_TYPES[type].intro;
+  intro.textContent = graph ? "" : SOURCE_TYPES[type].intro || "";
+  renderSourceFields(other, type, "mbf", existing);
+}
+
+document.getElementById("mb-type").addEventListener("change", (event) => setMailboxType(event.target.value));
+
 function openMailboxForm(m) {
   editingMailboxId = m ? m.id : null;
   mailboxFormTitle.textContent = m ? `Edit ${m.name}` : "Add a mailbox";
+  // A mailbox keeps its type; to change it, add a new one.
+  document.getElementById("mb-type").disabled = Boolean(m);
+  setMailboxType(m ? m.type || "graph" : "graph", m);
   document.getElementById("mb-name").value = m ? m.name : "";
   document.getElementById("mb-tenant").value = m ? m.tenantId : "";
   document.getElementById("mb-client").value = m ? m.clientId : "";
@@ -2613,7 +2779,26 @@ addMailboxBtn.addEventListener("click", () => openMailboxForm(null));
 document.getElementById("mb-cancel").addEventListener("click", closeMailboxForm);
 
 document.getElementById("mb-save").addEventListener("click", async () => {
+  const type = document.getElementById("mb-type").value;
+  if (type !== "graph") {
+    const values = collectSourceFields(type, "mbf");
+    const problem = sourceFieldProblem(type, values, { editing: Boolean(editingMailboxId) });
+    if (problem) return showSyncMessage(problem, true);
+    const other = { type, name: document.getElementById("mb-name").value, enabled: document.getElementById("mb-enabled").checked, ...values };
+    try {
+      const data = editingMailboxId
+        ? await api(`/api/mailboxes/${encodeURIComponent(editingMailboxId)}`, { method: "PUT", body: JSON.stringify(other) })
+        : await api("/api/mailboxes", { method: "POST", body: JSON.stringify(other) });
+      closeMailboxForm();
+      showSyncMessage(`${editingMailboxId ? "Saved" : "Added"} ${data.mailbox.name}. Use Test to check the connection, then Sync.`);
+      await loadSyncStatus();
+    } catch (error) {
+      showSyncMessage(error.message, true);
+    }
+    return;
+  }
   const body = {
+    type: "graph",
     name: document.getElementById("mb-name").value,
     tenantId: document.getElementById("mb-tenant").value,
     clientId: document.getElementById("mb-client").value,
@@ -3800,14 +3985,36 @@ function swShow(step) {
   swFinish.hidden = step !== 4;
   swFinish.textContent = swState.testOk ? "Finish without syncing" : "Finish anyway";
   swSkip.hidden = step === 4;
-  const focus = { 2: "sw-tenant", 3: "sw-mailbox" }[step];
+  const graph = swType() === "graph";
+  const focus = { 2: "sw-type", 3: graph ? "sw-mailbox" : "sw-name" }[step];
   if (focus) document.getElementById(focus).focus();
 }
+
+function swType() {
+  return document.getElementById("sw-type").value || "graph";
+}
+
+/** Shows the Microsoft 365 fields or the generated ones for another type, in steps 2 and 3. */
+function setWizardType(type) {
+  const graph = type === "graph";
+  setupWizard.querySelectorAll(".sw-graph-only").forEach((el) => { el.hidden = !graph; });
+  const other = document.getElementById("sw-other");
+  const intro = document.getElementById("sw-type-intro");
+  other.hidden = graph;
+  intro.hidden = graph || !SOURCE_TYPES[type].intro;
+  intro.textContent = graph ? "" : SOURCE_TYPES[type].intro || "";
+  renderSourceFields(other, type, "swf");
+  // A saved attempt belongs to the type it was made with.
+  swState.mailboxId = null;
+}
+
+document.getElementById("sw-type").addEventListener("change", (event) => setWizardType(event.target.value));
 
 function openSetupWizard() {
   swState.mailboxId = null;
   swState.testOk = false;
   setupWizard.hidden = false;
+  setWizardType(swType());
   swShow(1);
 }
 
@@ -3817,6 +4024,9 @@ function closeSetupWizard() {
 
 /** The mailbox fields as the API wants them; throws a message for the first thing missing. */
 function swCollect() {
+  if (swType() !== "graph") {
+    return { type: swType(), name: document.getElementById("sw-name").value.trim(), enabled: true, ...collectSourceFields(swType(), "swf") };
+  }
   const tenantId = document.getElementById("sw-tenant").value.trim();
   const clientId = document.getElementById("sw-client").value.trim();
   const authMethod = swAuthMethod();
@@ -3827,10 +4037,12 @@ function swCollect() {
   const mailbox = document.getElementById("sw-mailbox").value.trim();
   const folder = document.getElementById("sw-folder").value.trim() || "Inbox";
   const name = document.getElementById("sw-name").value.trim();
-  return { tenantId, clientId, authMethod, clientSecret, certPem, keyPem, keyPassphrase, mailbox, folder, name, enabled: true };
+  return { type: "graph", tenantId, clientId, authMethod, clientSecret, certPem, keyPem, keyPassphrase, mailbox, folder, name, enabled: true };
 }
 
 function swValidateStep2(f) {
+  // After a failed test the mailbox is saved, so an empty secret means "keep it".
+  if (f.type !== "graph") return sourceFieldProblem(f.type, f, { editing: Boolean(swState.mailboxId) });
   if (!f.tenantId) return "Enter the Directory (tenant) ID.";
   if (!f.clientId) return "Enter the Application (client) ID.";
   if (f.authMethod === "secret" && !f.clientSecret) return "Enter the client secret's value.";
@@ -3840,6 +4052,7 @@ function swValidateStep2(f) {
 }
 
 function swValidateStep3(f) {
+  if (f.type !== "graph") return null;
   if (!f.mailbox || !/^[^\s@]+@[^\s@]+$/.test(f.mailbox)) return "Enter the mailbox address, for example dmarc-reports@contoso.com.";
   return null;
 }
@@ -3866,11 +4079,20 @@ async function swSaveAndTest() {
   document.getElementById("sw-result-hint").textContent = result.ok
     ? `The mailbox is saved and enabled. The first sync looks back ${syncStatusBackfillDays || 90} days; later runs continue from the newest email seen.`
     : "The mailbox is saved, so nothing is lost: go back to correct the details and test again, or finish now and fix it later under Mailbox sync. "
-      + (result.stage === "token"
-        ? "A token failure usually means a wrong tenant ID, client ID or credential."
-        : result.stage === "folder" || result.stage === "mailbox"
-          ? "Reaching the token stage means the credential works; check the mailbox address, the Mail.Read permission and its admin consent, and any application access policy."
-          : "");
+      + (f.type !== "graph"
+        // The other sources explain themselves in the detail line; this says what kind of thing to fix.
+        ? ({
+          connection: "The server could not be reached: check the host name, port and security setting.",
+          login: "The sign-in was refused: check the credential, and for Google that domain-wide delegation is granted.",
+          folder: "The sign-in worked; check the folder name.",
+          list: "The sign-in worked, but listing the mailbox failed; the detail above says why.",
+          config: "A required setting is missing."
+        })[result.stage] || ""
+        : result.stage === "token"
+          ? "A token failure usually means a wrong tenant ID, client ID or credential."
+          : result.stage === "folder" || result.stage === "mailbox"
+            ? "Reaching the token stage means the credential works; check the mailbox address, the Mail.Read permission and its admin consent, and any application access policy."
+            : "");
   swShow(4);
 }
 

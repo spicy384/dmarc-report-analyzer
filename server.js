@@ -504,14 +504,16 @@ app.get("/api/mailboxes", authGuard.requireAdmin, route(async (req, res) => {
 app.post("/api/mailboxes", authGuard.requireAdmin, route(async (req, res) => {
   const mailbox = mailboxes.add(req.body || {});
   console.log(`mailboxes: ${req.user?.username || "admin"} added ${mailbox.mailbox} (${mailbox.id})`);
-  auditFrom(req, "mailbox.add", mailbox.mailbox, `${mailbox.name}; tenant ${mailbox.tenantId}; ${mailbox.authMethod}`);
+  auditFrom(req, "mailbox.add", mailbox.mailbox, `${mailbox.name}; ${mailbox.typeLabel}; ${mailbox.authMethod}`);
   res.json({ ok: true, mailbox });
 }));
 
 app.put("/api/mailboxes/:id", authGuard.requireAdmin, route(async (req, res) => {
   const mailbox = mailboxes.update(req.params.id, req.body || {});
   const body = req.body || {};
-  const touched = ["name", "tenantId", "clientId", "authMethod", "mailbox", "folder", "enabled"].filter((k) => body[k] !== undefined).concat(body.clientSecret ? ["clientSecret"] : [], body.certPem ? ["certificate"] : []);
+  const plain = ["name", "tenantId", "clientId", "authMethod", "mailbox", "folder", "enabled", "host", "port", "security", "username", "tlsVerify", "region", "bucket", "prefix", "accessKeyId", "endpoint"];
+  const secret = { clientSecret: "client secret", certPem: "certificate", password: "password", serviceAccountKey: "service account key", secretAccessKey: "secret access key" };
+  const touched = plain.filter((k) => body[k] !== undefined).concat(Object.keys(secret).filter((k) => body[k]).map((k) => secret[k]));
   auditFrom(req, "mailbox.update", mailbox.mailbox, `${mailbox.name}; changed ${touched.join(", ") || "nothing"}`);
   res.json({ ok: true, mailbox });
 }));
