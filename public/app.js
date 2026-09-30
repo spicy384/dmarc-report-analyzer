@@ -2926,6 +2926,7 @@ function applyIdentity(user, token) {
   if (!signedIn) {
     usersPanel.hidden = true;
     accountPanel.hidden = true;
+    document.getElementById("maintenance-panel").hidden = true;
   }
 }
 
@@ -3119,8 +3120,10 @@ async function setView(name, { scrollTo = null } = {}) {
     accountPanel.hidden = false;
     renderAccountPanel();
     usersPanel.hidden = !isAdmin();
+    maintenancePanel.hidden = !isAdmin();
     if (isAdmin()) {
       try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
+      loadMaintenance();
     }
   }
   writeHash();
@@ -3133,6 +3136,108 @@ document.getElementById("nav-dashboard").addEventListener("click", () => setView
 document.getElementById("nav-settings").addEventListener("click", () => setView("settings"));
 accountBtn.addEventListener("click", () => setView("settings", { scrollTo: "account-panel" }));
 usersBtn.addEventListener("click", () => setView("settings", { scrollTo: "users-panel" }));
+
+// --- backup, restore, re-process --------------------------------------------------
+
+const maintenancePanel = document.getElementById("maintenance-panel");
+let reprocessTimer = null;
+
+function describeReprocess(r) {
+  if (!r) return "";
+  if (r.running) return `Re-processing ${formatNumber(r.done)} of ${formatNumber(r.total)} reports... ${r.changed ? `${formatNumber(r.changed)} changed so far` : ""}`;
+  if (r.finishedAt) return `Last run ${formatTimestamp(r.finishedAt)}: ${formatNumber(r.total)} reports, ${formatNumber(r.changed)} changed${r.errors ? `, ${formatNumber(r.errors)} errors (${r.lastError})` : ""}.`;
+  return "";
+}
+
+async function loadMaintenance() {
+  if (!isAdmin()) return;
+  try {
+    const st = await api("/api/maintenance/status");
+    const status = document.getElementById("reprocess-status");
+    status.textContent = describeReprocess(st.reprocess) || `${formatNumber(st.reprocessable)} reports have their XML stored.`;
+    status.hidden = false;
+    document.getElementById("reprocess-run").disabled = st.reprocess.running || st.syncRunning;
+    document.getElementById("maintenance-badge").textContent = st.reprocess.running ? "Re-processing" : "";
+    clearTimeout(reprocessTimer);
+    if (st.reprocess.running) reprocessTimer = setTimeout(loadMaintenance, 1500);
+    else if (reprocessTimer !== null) { reprocessTimer = null; loadAll(); }
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+document.getElementById("backup-download").addEventListener("click", async () => {
+  const btn = document.getElementById("backup-download");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/maintenance/backup", { headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Backup failed (${res.status})`);
+    }
+    const name = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || "dmarc-backup.tar.gz";
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setStatus(`Backup downloaded (${formatNumber(Math.round(blob.size / 1024))} KB).`);
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("restore-run").addEventListener("click", async () => {
+  const input = document.getElementById("restore-file");
+  const file = input.files && input.files[0];
+  const status = document.getElementById("restore-status");
+  if (!file) {
+    status.textContent = "Choose a backup file first.";
+    status.hidden = false;
+    return;
+  }
+  if (!confirm(`Restore from "${file.name}"?\n\nEverything currently in the database and the accounts and mailboxes will be replaced. This cannot be undone unless you have a backup of the current state.`)) return;
+  const btn = document.getElementById("restore-run");
+  btn.disabled = true;
+  status.textContent = "Restoring...";
+  status.hidden = false;
+  try {
+    const res = await fetch("/api/maintenance/restore", { method: "POST", headers: { "Content-Type": "application/gzip", ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}) }, body: file });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Restore failed (${res.status})`);
+    status.textContent = `Restored the backup from ${data.manifest.createdAt}: ${formatNumber(data.database.reports)} reports, ${formatNumber(data.database.messages)} emails${data.settings.length ? `, ${data.settings.join(" and ")}` : ""}.`;
+    input.value = "";
+    if (data.signInAgain) {
+      setStatus("Restored. Your account is not in the backup, so sign in again.", true);
+      await refreshIdentity();
+      return;
+    }
+    await loadDomains();
+    await loadAll();
+    setStatus("Restore complete.");
+  } catch (error) {
+    status.textContent = error.message;
+    setStatus(error.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("reprocess-run").addEventListener("click", async () => {
+  if (!confirm("Re-parse every stored report with the current parser? This rewrites their records; totals only change if the parser now reads something differently.")) return;
+  try {
+    await api("/api/maintenance/reprocess", { method: "POST", body: "{}" });
+    reprocessTimer = setTimeout(loadMaintenance, 500);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
 
 // --- active filters ---------------------------------------------------------------
 

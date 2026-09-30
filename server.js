@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const express = require("express");
 
@@ -12,6 +13,7 @@ const { evaluateAfterSync } = require("./alerts");
 const { compileSenders, findSender } = require("./ipmatch");
 const { createGeoIp } = require("./geoip");
 const { createRetention } = require("./retention");
+const { createBackup, restoreBackup } = require("./backup");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -514,6 +516,108 @@ app.post("/api/mailboxes/:id/test", authGuard.requireAdmin, route(async (req, re
     return res.status(404).json({ error: "No such mailbox." });
   }
   res.json(await mailboxes.testConnection(req.params.id));
+}));
+
+// --- maintenance: backup, restore, re-process --------------------------------
+
+const APP_VERSION = require("./package.json").version;
+
+/** Writes an audit entry attributed to the signed-in user. */
+function auditFrom(req, action, target, detail) {
+  try {
+    db.audit({ username: req.user?.username || null, ip: req.ip || null, action, target, detail });
+  } catch (error) {
+    console.error(`audit: could not record ${action}: ${error.message}`);
+  }
+}
+
+function syncRunning() {
+  const job = sync.currentJob();
+  return Boolean(job && job.status === "running");
+}
+
+// Re-processing runs in the background in small batches; one at a time.
+const reprocess = { running: false, total: 0, done: 0, changed: 0, errors: 0, startedAt: null, finishedAt: null, lastError: null };
+
+async function runReprocess() {
+  const ids = db.reprocessableIds();
+  Object.assign(reprocess, { running: true, total: ids.length, done: 0, changed: 0, errors: 0, startedAt: Math.floor(Date.now() / 1000), finishedAt: null, lastError: null });
+  const BATCH = 25;
+  for (let i = 0; i < ids.length; i += BATCH) {
+    for (const id of ids.slice(i, i + BATCH)) {
+      try {
+        const before = db.reportById(id);
+        const result = db.reprocessReport(id);
+        if (result && before && (result.messages !== before.messages || result.passed !== before.passed || result.records !== (before.records || []).length)) {
+          reprocess.changed += 1;
+        }
+      } catch (error) {
+        reprocess.errors += 1;
+        reprocess.lastError = `report ${id}: ${error.message}`;
+      }
+      reprocess.done += 1;
+    }
+    // Let requests through between batches.
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  reprocess.running = false;
+  reprocess.finishedAt = Math.floor(Date.now() / 1000);
+}
+
+app.get("/api/maintenance/status", authGuard.requireAdmin, route(async (req, res) => {
+  res.json({ reprocess: { ...reprocess }, syncRunning: syncRunning(), reprocessable: db.reprocessableIds().length });
+}));
+
+app.get("/api/maintenance/backup", authGuard.requireAdmin, route(async (req, res) => {
+  if (syncRunning()) {
+    return res.status(409).json({ error: "A sync is running; wait for it to finish before taking a backup." });
+  }
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15).replace("T", "-");
+  const tmp = path.join(os.tmpdir(), `dmarc-backup-${process.pid}-${Date.now()}.tar.gz`);
+  const manifest = await createBackup({ db, dataDir: DATA_DIR, dest: tmp, version: APP_VERSION });
+  auditFrom(req, "backup.download", null, `${manifest.files.join(", ")}; ${manifest.bytes} bytes`);
+  res.setHeader("Content-Type", "application/gzip");
+  res.setHeader("Content-Disposition", `attachment; filename="dmarc-backup-${stamp}.tar.gz"`);
+  res.setHeader("Content-Length", String(manifest.bytes));
+  const stream = fs.createReadStream(tmp);
+  stream.on("close", () => fs.rm(tmp, { force: true }, () => {}));
+  stream.pipe(res);
+}));
+
+// The archive arrives as the raw request body; it is small compared to the 1 GB cap.
+app.post("/api/maintenance/restore", authGuard.requireAdmin, express.raw({ type: () => true, limit: "1gb" }), route(async (req, res) => {
+  if (syncRunning() || reprocess.running) {
+    return res.status(409).json({ error: "A sync or re-process is running; wait for it to finish before restoring." });
+  }
+  if (!Buffer.isBuffer(req.body) || req.body.length < 64) {
+    return res.status(400).json({ error: "No backup file was uploaded." });
+  }
+  const result = restoreBackup({ db, dataDir: DATA_DIR, buffer: req.body });
+  auditFrom(req, "backup.restore", null, `from ${result.manifest.createdAt}; ${result.database.reports} reports, ${result.database.messages} messages; ${result.settings.join(", ") || "no settings files"}`);
+  // Accounts may have changed underneath the caller; the front end signs in again if so.
+  const stillExists = Boolean(authGuard.findUser && authGuard.findUser(req.user.username));
+  res.json({ ok: true, ...result, signInAgain: !stillExists });
+}));
+
+app.post("/api/maintenance/reprocess", authGuard.requireAdmin, route(async (req, res) => {
+  if (reprocess.running) {
+    return res.status(409).json({ error: "A re-process is already running." });
+  }
+  if (syncRunning()) {
+    return res.status(409).json({ error: "A sync is running; wait for it to finish first." });
+  }
+  auditFrom(req, "reports.reprocess", null, `${db.reprocessableIds().length} reports with stored XML`);
+  runReprocess().catch((error) => {
+    reprocess.running = false;
+    reprocess.lastError = error.message;
+    reprocess.finishedAt = Math.floor(Date.now() / 1000);
+  });
+  res.json({ ok: true, reprocess: { ...reprocess } });
+}));
+
+app.get("/api/audit", authGuard.requireAdmin, route(async (req, res) => {
+  const before = req.query.before ? positiveInt(req.query.before, 0) : null;
+  res.json(db.auditLog({ limit: Math.min(positiveInt(req.query.limit, 100), 500), before: before || null, action: req.query.action ? String(req.query.action) : null, username: req.query.username ? String(req.query.username) : null }));
 }));
 
 // --- analysis --------------------------------------------------------------

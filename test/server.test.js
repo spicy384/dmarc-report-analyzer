@@ -107,6 +107,29 @@ async function waitForServer(tries = 60) {
     check("status: never exposes a secret field", !JSON.stringify(status.body).includes("clientSecret"));
     check("status: walkthrough offered while no mailbox exists", status.body.setup && status.body.setup.needed === true && status.body.setup.dismissed === false);
     check("setup: dismiss sticks", (await req("/api/setup/dismiss", { method: "POST", body: {} })).status === 200 && (await req("/api/status")).body.setup.dismissed === true);
+
+    // --- backup, restore, re-process, audit ---
+    const bkRes = await fetch(`http://127.0.0.1:${APP_PORT}/api/maintenance/backup`, { headers: { Cookie: cookie, "X-CSRF-Token": csrf } });
+    const bkBytes = Buffer.from(await bkRes.arrayBuffer());
+    check("backup: downloads a gzip attachment", bkRes.status === 200 && bkRes.headers.get("content-type") === "application/gzip" && /dmarc-backup-\d{8}-\d{6}\.tar\.gz/.test(bkRes.headers.get("content-disposition") || "") && bkBytes[0] === 0x1f);
+    const reportsBefore = (await req("/api/status")).body.stats.reports.reports;
+    const badRestore = await fetch(`http://127.0.0.1:${APP_PORT}/api/maintenance/restore`, { method: "POST", headers: { Cookie: cookie, "X-CSRF-Token": csrf, "Content-Type": "application/gzip" }, body: Buffer.from("not a backup at all, just text") });
+    check("restore: junk is refused", badRestore.status === 400 && (await req("/api/status")).body.stats.reports.reports === reportsBefore);
+    const restoreRes = await fetch(`http://127.0.0.1:${APP_PORT}/api/maintenance/restore`, { method: "POST", headers: { Cookie: cookie, "X-CSRF-Token": csrf, "Content-Type": "application/gzip" }, body: bkBytes });
+    const restoreBody = await restoreRes.json();
+    check("restore: its own backup restores cleanly and keeps the session", restoreRes.status === 200 && restoreBody.ok && restoreBody.database.reports === reportsBefore && restoreBody.signInAgain === false && (await req("/api/status")).body.stats.reports.reports === reportsBefore, JSON.stringify(restoreBody).slice(0, 200));
+    const rp = await req("/api/maintenance/reprocess", { method: "POST", body: {} });
+    check("reprocess: starts", rp.status === 200 && rp.body.ok);
+    let rpStatus = null;
+    for (let i = 0; i < 40; i += 1) {
+      rpStatus = (await req("/api/maintenance/status")).body;
+      if (!rpStatus.reprocess.running) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    check("reprocess: finishes over every stored report with no errors", rpStatus && !rpStatus.reprocess.running && rpStatus.reprocess.total === reportsBefore && rpStatus.reprocess.errors === 0 && rpStatus.reprocess.done === reportsBefore, JSON.stringify(rpStatus && rpStatus.reprocess));
+    check("reprocess: data unchanged by a re-parse with the same parser", (await req("/api/summary")).body.totals.messages === 53);
+    const audit = await req("/api/audit");
+    check("audit: backup, restore and reprocess were logged with the user", audit.status === 200 && ["backup.download", "backup.restore", "reports.reprocess"].every((a) => audit.body.entries.some((e) => e.action === a && e.username === "admin")), JSON.stringify(audit.body.entries.map((e) => e.action)));
     check("status: scheduler off", status.body.scheduler.enabled === false);
     check("status: stats and errors", status.body.stats.reports.reports === 2 && status.body.errors.length === 1 && status.body.errors[0].graph_id === "m3");
 

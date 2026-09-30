@@ -384,6 +384,21 @@ Everything is under `DATA_DIR` (`/data` in the container):
 
 Back up the directory; treat it as sensitive.
 
+## Backup, restore and re-processing
+
+**Settings → Backup and maintenance** (administrators). **Download backup** produces a
+`.tar.gz` (plain tar, so `tar -xzf` opens it) holding a consistent online-backup copy of
+the SQLite database plus `users.json` and `mailboxes.json`. It contains password hashes,
+TOTP secrets and mailbox credentials, so keep it private. Sessions and GeoLite2 files are
+not included. **Restore from file** replaces every report, record, label, alert and setting
+with the backup's and overwrites the accounts and mailboxes; nothing is merged, the backup
+is upgraded to the current schema first, and a bad archive changes nothing. The audit log
+is the one table that stays, since it is this instance's history. If your own account is
+not in the backup you are signed out. **Re-process all reports** parses every stored
+report again with the current parser and rewrites its records, so a parser improvement
+applies to reports you already have; reports rolled up by retention no longer have their
+XML and are skipped. It runs in the background in small batches.
+
 ## Tests
 
 ```bash

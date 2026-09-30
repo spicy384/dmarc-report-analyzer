@@ -10,7 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 const Database = require("better-sqlite3");
-const { isLikelyForward } = require("./dmarc-parser");
+const { isLikelyForward, parseAggregateReport } = require("./dmarc-parser");
 const { parsePattern, compileSenders, findSender } = require("./ipmatch");
 const { matchCatalogue } = require("./sender-catalogue");
 const { sourceVerdict } = require("./verdict");
@@ -22,7 +22,7 @@ const { sourceVerdict } = require("./verdict");
 // 6: ip_info country/city/ASN columns
 // 7: daily_totals (retention rollups) and reports.purged_at
 // 8: forensic_reports (created by the schema; version bump only)
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -194,6 +194,18 @@ CREATE TABLE IF NOT EXISTS forensic_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_forensic_arrival ON forensic_reports(arrival_at);
 CREATE INDEX IF NOT EXISTS idx_forensic_ip      ON forensic_reports(source_ip);
+
+-- Who changed what: mailboxes, labels, users, credentials, backups.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  at       INTEGER NOT NULL,
+  username TEXT,
+  action   TEXT NOT NULL,      -- e.g. mailbox.add, sender.remove, user.role, auth.login
+  target   TEXT,               -- the thing acted on: a mailbox address, a pattern, a username
+  detail   TEXT,               -- free text, no secrets
+  ip       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 `;
 
 const DISPOSITIONS = ["none", "quarantine", "reject"];
@@ -1380,12 +1392,135 @@ function openDatabase({ dataDir, file } = {}) {
     stmts.setSetting.run(key, value === null || value === undefined ? null : String(value));
   }
 
+  // --- backup, restore, re-processing ------------------------------------------
+
+  /** A consistent copy of the database written to `dest` with SQLite's online backup. */
+  async function snapshot(dest) {
+    await db.backup(dest);
+    return dest;
+  }
+
+  /**
+   * Replaces every table's contents with those of another database file, in one
+   * transaction, without closing this connection. The file must already be at the
+   * current schema (see upgradeFile). Returns row counts per table.
+   */
+  function importFrom(file) {
+    const escaped = String(file).replace(/'/g, "''");
+    db.exec(`ATTACH DATABASE '${escaped}' AS src`);
+    try {
+      // The audit log is this instance's history and stays; everything else is replaced.
+      const tables = db.prepare("SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'audit_log'").all().map((r) => r.name);
+      const srcTables = new Set(db.prepare("SELECT name FROM src.sqlite_master WHERE type = 'table'").all().map((r) => r.name));
+      const counts = {};
+      db.exec("PRAGMA foreign_keys = OFF");
+      try {
+        db.transaction(() => {
+          for (const t of tables) {
+            db.exec(`DELETE FROM main."${t}"`);
+            if (srcTables.has(t)) {
+              const cols = db.prepare(`PRAGMA main.table_info("${t}")`).all().map((c) => c.name);
+              const srcCols = new Set(db.prepare(`PRAGMA src.table_info("${t}")`).all().map((c) => c.name));
+              const shared = cols.filter((c) => srcCols.has(c)).map((c) => `"${c}"`).join(", ");
+              if (shared) db.exec(`INSERT INTO main."${t}" (${shared}) SELECT ${shared} FROM src."${t}"`);
+            }
+            counts[t] = db.prepare(`SELECT COUNT(*) AS n FROM main."${t}"`).get().n;
+          }
+          const seq = db.prepare("SELECT name FROM src.sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get();
+          if (seq) {
+            db.exec("DELETE FROM main.sqlite_sequence");
+            db.exec("INSERT INTO main.sqlite_sequence SELECT * FROM src.sqlite_sequence");
+          }
+        })();
+      } finally {
+        db.exec("PRAGMA foreign_keys = ON");
+      }
+      compiledSenders = null;
+      return counts;
+    } finally {
+      db.exec("DETACH DATABASE src");
+    }
+  }
+
+  const reprocessTx = db.transaction((id, parsed) => {
+    const { policy, records } = parsed;
+    let messages = 0;
+    let passed = 0;
+    for (const r of records) {
+      messages += r.count;
+      if (r.passed) passed += r.count;
+    }
+    db.prepare("DELETE FROM records WHERE report_id = ?").run(id);
+    for (const r of records) {
+      stmts.insertRecord.run({
+        reportId: id,
+        sourceIp: r.sourceIp,
+        count: r.count,
+        disposition: r.disposition,
+        dkimEval: r.dkimEval,
+        spfEval: r.spfEval,
+        passed: r.passed ? 1 : 0,
+        forwarded: (r.likelyForward === undefined ? isLikelyForward(r) : r.likelyForward) ? 1 : 0,
+        reasons: JSON.stringify(r.reasons || []),
+        envelopeTo: r.envelopeTo,
+        envelopeFrom: r.envelopeFrom,
+        headerFrom: r.headerFrom,
+        dkimResults: JSON.stringify(r.dkimResults || []),
+        spfResults: JSON.stringify(r.spfResults || []),
+        dkimDomain: r.dkimDomain,
+        spfDomain: r.spfDomain
+      });
+    }
+    db.prepare(`UPDATE reports SET messages = @messages, passed = @passed, adkim = @adkim, aspf = @aspf, p = @p, sp = @sp, pct = @pct, fo = @fo
+      WHERE id = @id`).run({ id, messages, passed, adkim: policy.adkim, aspf: policy.aspf, p: policy.p, sp: policy.sp, pct: policy.pct, fo: policy.fo });
+    return { messages, passed, records: records.length };
+  });
+
+  /** Re-parses one stored report's XML with the current parser and rewrites its records. */
+  function reprocessReport(id) {
+    const row = db.prepare("SELECT id, xml_gz FROM reports WHERE id = ?").get(id);
+    if (!row || !row.xml_gz) return null;
+    const xml = zlib.gunzipSync(row.xml_gz).toString("utf8");
+    const parsed = parseAggregateReport(xml);
+    return reprocessTx(id, parsed);
+  }
+
+  /** Ids of every report that still has its XML (purged ones cannot be re-processed). */
+  function reprocessableIds() {
+    return db.prepare("SELECT id FROM reports WHERE xml_gz IS NOT NULL ORDER BY id").all().map((r) => r.id);
+  }
+
+  // --- audit log ------------------------------------------------------------------
+
+  function audit({ username, action, target, detail, ip, at } = {}) {
+    db.prepare("INSERT INTO audit_log (at, username, action, target, detail, ip) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(at || now(), username || null, String(action), target === undefined || target === null ? null : String(target), detail === undefined || detail === null ? null : String(detail), ip || null);
+  }
+
+  /** Newest first; `before` (an id) pages backwards. */
+  function auditLog({ limit = 100, before = null, action = null, username = null } = {}) {
+    const clauses = [];
+    const params = [];
+    if (before) { clauses.push("id < ?"); params.push(before); }
+    if (action) { clauses.push("action LIKE ?"); params.push(`${action}%`); }
+    if (username) { clauses.push("username = ?"); params.push(username); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = db.prepare(`SELECT * FROM audit_log ${where} ORDER BY id DESC LIMIT ?`).all(...params, limit + 1);
+    return { entries: rows.slice(0, limit), more: rows.length > limit };
+  }
+
   function close() {
     db.close();
   }
 
   return {
     db,
+    snapshot,
+    importFrom,
+    reprocessReport,
+    reprocessableIds,
+    audit,
+    auditLog,
     hasMessage,
     recordMessage,
     insertReport,
@@ -1445,4 +1580,34 @@ function openDatabase({ dataDir, file } = {}) {
   };
 }
 
-module.exports = { openDatabase, buildFilter, DISPOSITIONS };
+/**
+ * Opens a database file on its own, brings it to the current schema and checks
+ * its integrity, then closes it. Used on an uploaded backup before importing it.
+ * Returns { schemaVersion, reports, records, messages }.
+ */
+function upgradeFile(file) {
+  const other = new Database(file);
+  try {
+    const kind = other.prepare("PRAGMA integrity_check").get();
+    const verdict = kind ? Object.values(kind)[0] : "unknown";
+    if (verdict !== "ok") {
+      throw new Error(`The database in the backup fails SQLite's integrity check: ${verdict}`);
+    }
+    if (!other.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reports'").get()) {
+      throw new Error("The backup does not contain a DMARC analyzer database.");
+    }
+    other.exec(SCHEMA);
+    other.exec(ALERTS_SCHEMA);
+    migrate(other);
+    return {
+      schemaVersion: other.pragma("user_version", { simple: true }),
+      reports: other.prepare("SELECT COUNT(*) AS n FROM reports").get().n,
+      records: other.prepare("SELECT COUNT(*) AS n FROM records").get().n,
+      messages: other.prepare("SELECT COUNT(*) AS n FROM messages").get().n
+    };
+  } finally {
+    other.close();
+  }
+}
+
+module.exports = { openDatabase, buildFilter, upgradeFile, DISPOSITIONS };

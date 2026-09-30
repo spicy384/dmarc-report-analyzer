@@ -596,6 +596,51 @@
       </div>
     </section>
 
+    <section class="panel" id="maintenance-panel" hidden>
+      <div class="panel-head">
+        <h2>Backup and maintenance</h2>
+        <span id="maintenance-badge" class="badge"></span>
+      </div>
+      <div class="account-grid">
+        <div>
+          <h3 class="account-heading">Backup</h3>
+          <p class="bulk-hint">
+            Downloads a .tar.gz with a consistent copy of the database plus users.json and
+            mailboxes.json. It contains password hashes, TOTP secrets and mailbox credentials, so
+            store it somewhere private. Sessions and GeoLite2 files are not included.
+          </p>
+          <div class="actions">
+            <button id="backup-download" type="button">Download backup</button>
+          </div>
+        </div>
+        <div>
+          <h3 class="account-heading">Restore</h3>
+          <p class="bulk-hint">
+            Replaces every report, record, label, alert and setting with the backup's, and
+            overwrites the accounts and mailboxes. Nothing is merged. If your own account is not in
+            the backup you will be signed out.
+          </p>
+          <input id="restore-file" type="file" accept=".gz,.tgz,application/gzip" />
+          <div class="actions">
+            <button id="restore-run" type="button" class="ghost-danger">Restore from file</button>
+          </div>
+          <p id="restore-status" class="bulk-hint" hidden></p>
+        </div>
+        <div>
+          <h3 class="account-heading">Re-process stored XML</h3>
+          <p class="bulk-hint">
+            Parses every stored report again with the current parser and rewrites its records, so a
+            parser improvement applies to reports you already have. Reports rolled up by retention
+            no longer have their XML and are skipped.
+          </p>
+          <div class="actions">
+            <button id="reprocess-run" type="button" class="secondary">Re-process all reports</button>
+          </div>
+          <p id="reprocess-status" class="bulk-hint" hidden></p>
+        </div>
+      </div>
+    </section>
+
     <section class="panel" id="users-panel" hidden>
       <div class="panel-head">
         <h2>Users</h2>
