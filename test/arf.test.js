@@ -5,7 +5,8 @@ const { createChecker } = require("./helpers/assert");
 const arf = require("../arf-parser");
 
 const { check, report } = createChecker("ARF: MIME reader and forensic report fields");
-const eml = fs.readFileSync(path.join(__dirname, "..", "examples", "forensic-report.eml"));
+// Normalised to CRLF whatever git did to line endings on checkout: ARF is wire format.
+const eml = Buffer.from(fs.readFileSync(path.join(__dirname, "..", "examples", "forensic-report.eml"), "utf8").replace(/\r?\n/g, "\r\n"), "utf8");
 
 // --- MIME reader ---------------------------------------------------------------
 const root = arf.parseMime(eml);

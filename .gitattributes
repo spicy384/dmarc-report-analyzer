@@ -1,0 +1,2 @@
+# Mail fixtures are wire format; never convert their line endings.
+*.eml -text
