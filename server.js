@@ -280,11 +280,16 @@ app.get("/api/weekly", route(async (req, res) => {
   } catch (error) {
     return res.status(400).json({ error: error.message });
   }
+  res.json(buildWeekly({ end, domain: req.query.domain ? String(req.query.domain).toLowerCase() : null, mailbox: req.query.mailbox || null }));
+}));
+
+/** The week ending on `end` (unix seconds, default today) against the week before, plus its plain-text form. */
+function buildWeekly({ end = null, domain = null, mailbox = null } = {}) {
   const DAY = 86400;
   const today = Math.floor(Date.now() / 1000 / DAY) * DAY;
   const to = (end === null ? today : Math.floor(end / DAY) * DAY) + DAY; // week ending on this day, inclusive
   const from = to - 7 * DAY;
-  const base = { domain: req.query.domain ? String(req.query.domain).toLowerCase() : null, mailbox: req.query.mailbox || null, excludeForwards: false };
+  const base = { domain, mailbox, excludeForwards: false };
 
   const thisWeek = db.summary({ ...base, from, to });
   const lastWeek = db.summary({ ...base, from: from - 7 * DAY, to: from });
@@ -299,8 +304,8 @@ app.get("/api/weekly", route(async (req, res) => {
     openAlerts: db.openAlertCount()
   };
   w.text = weeklyText(w);
-  res.json(w);
-}));
+  return w;
+}
 
 // --- geoip ---------------------------------------------------------------------
 
@@ -704,6 +709,10 @@ app.get("/api/reporters", route(async (req, res) => {
 
 app.get("/api/subdomains", route(async (req, res) => {
   res.json({ subdomains: db.subdomains(filterFrom(req)) });
+}));
+
+app.get("/api/scorecard", route(async (req, res) => {
+  res.json({ domains: db.scorecard(filterFrom(req)) });
 }));
 
 app.get("/api/domains", route(async (req, res) => {

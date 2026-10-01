@@ -1299,3 +1299,21 @@ body.theme-dark td.subdomain-note.tone-warn { color: var(--chart-fail-none); }
   align-self: end;
   padding-bottom: 8px;
 }
+
+/* --- domain scorecard ---------------------------------------------------- */
+
+td.score {
+  font-weight: 600;
+}
+
+td.score-ok { color: var(--success); }
+td.score-warn { color: var(--warning-fg); }
+td.score-critical { color: var(--danger); }
+body.theme-dark td.score-warn { color: var(--chart-fail-none); }
+
+td.score-issues {
+  white-space: normal;
+  max-width: 320px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}

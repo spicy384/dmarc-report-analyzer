@@ -162,6 +162,10 @@ async function waitForServer(tries = 60) {
     const ipDetail = await req("/api/ips/192.0.2.99");
     check("ips: detail", ipDetail.status === 200 && ipDetail.body.records.length === 1 && ipDetail.body.records[0].reasons.length === 2);
     check("ips: detail carries the verdict", ipDetail.body.verdict && typeof ipDetail.body.verdict.detail === "string");
+    const card = await req("/api/scorecard");
+    check("scorecard: one row per domain with status and issues", card.status === 200 && card.body.domains.length >= 1 && card.body.domains.every((d) => d.domain && d.status && Array.isArray(d.issues) && d.policy));
+    const subs = await req("/api/subdomains");
+    check("subdomains: rows carry relation and policy", subs.status === 200 && subs.body.subdomains.every((s) => ["parent", "subdomain", "other"].includes(s.relation)));
     check("ips: unknown ip is 404", (await req("/api/ips/10.0.0.1")).status === 404);
     const v6 = await req(`/api/ips/${encodeURIComponent("2001:db8::25")}`);
     check("ips: ipv6 path", v6.status === 200 && v6.body.passed === 1);

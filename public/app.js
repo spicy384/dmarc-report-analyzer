@@ -2193,6 +2193,48 @@ function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = 
 
 // --- reporters -------------------------------------------------------------
 
+// --- domain scorecard -----------------------------------------------------------------
+
+const SCORE_LABEL = { ok: "Healthy", warn: "Needs attention", critical: "Not enforced" };
+
+async function loadScorecard() {
+  const data = await api(`/api/scorecard${filterQuery()}`);
+  const rows = data.domains || [];
+  document.getElementById("scorecard-count").textContent = `${rows.length} domain${rows.length === 1 ? "" : "s"}`;
+  document.getElementById("scorecard-results").replaceChildren(buildTable(
+    ["Domain", "Status", "Policy", { label: "Messages", className: "num" }, { label: "Pass", className: "num" }, { label: "SPF / DKIM", className: "num" }, { label: "Unlabelled failing", className: "num" }, { label: "Spoofed subdomains", className: "num" }, { label: "Reporters", className: "num" }, "Last report", "What to do"],
+    rows.map((d) => {
+      const policy = d.policy.p ? `p=${d.policy.p}${d.policy.sp ? ` sp=${d.policy.sp}` : ""}${d.policy.pct !== null && d.policy.pct < 100 ? ` pct=${d.policy.pct}` : ""}` : "none seen";
+      const status = textCell(SCORE_LABEL[d.status] || d.status, `score score-${d.status} nowrap`);
+      return {
+        data: d,
+        cells: [
+          textCell(d.domain, "mono"),
+          status,
+          textCell(policy, d.policy.p === "reject" ? "mono" : "mono is-warn"),
+          textCell(formatNumber(d.total), "num"),
+          textCell(formatPct(d.passPct), d.passPct < 90 ? "num is-fail" : "num"),
+          textCell(`${formatPct(d.spfPct)} / ${formatPct(d.dkimPct)}`, "num muted"),
+          textCell(formatNumber(d.unlabelledFailingSources), d.unlabelledFailingSources ? "num is-fail" : "num muted"),
+          textCell(formatNumber(d.unusedSubdomains), d.unusedSubdomains ? "num is-fail" : "num muted"),
+          textCell(formatNumber(d.reporters), "num"),
+          textCell(d.lastSeen ? `${formatUtcDate(d.lastSeen - 1)}${d.silentDays > 7 ? ` (${d.silentDays} days ago)` : ""}` : "never", d.silentDays > 7 ? "nowrap is-warn" : "nowrap"),
+          textCell(d.issues.join("; "), "score-issues")
+        ]
+      };
+    }),
+    {
+      emptyText: "No reports in this period.",
+      onRowClick: (d) => {
+        domainSelect.value = d.domain;
+        if (domainSelect.value !== d.domain) return;
+        reportsPage = 1;
+        loadAll();
+      }
+    }
+  ));
+}
+
 // --- domains and subdomains ---------------------------------------------------------
 
 function subdomainNote(d) {
@@ -3023,6 +3065,7 @@ async function loadAll() {
     ["sources", loadIps],
     ["reporters", loadReporters],
     ["subdomains", loadSubdomains],
+    ["scorecard", loadScorecard],
     ["known senders", loadKnownSenders],
     ["alerts", loadAlerts],
     ["policy", loadPolicy],

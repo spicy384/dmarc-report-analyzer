@@ -903,6 +903,80 @@ function openDatabase({ dataDir, file } = {}) {
       .map(({ messageTotal, passedTotal, ...row }) => ({ ...row, messages: messageTotal, passed: passedTotal }));
   }
 
+  /**
+   * One row per report domain for the period: policy, volumes, pass rate, failing
+   * sources without a label, failure-only subdomains, reporters, last report, and
+   * a status that says which domain needs attention first.
+   */
+  function scorecard(filter = {}, { now: at = now() } = {}) {
+    const f = buildFilter(filter, { x: "x" });
+    const fr = buildFilter(filter);
+    const rows = db.prepare(`
+      SELECT r.domain AS domain,
+             SUM(x.count) AS total,
+             SUM(CASE WHEN x.passed THEN x.count ELSE 0 END) AS passedTotal,
+             SUM(CASE WHEN x.passed = 0 AND x.forwarded THEN x.count ELSE 0 END) AS likelyForwards,
+             SUM(CASE WHEN x.dkim_eval = 'pass' THEN x.count ELSE 0 END) AS dkimPassed,
+             SUM(CASE WHEN x.spf_eval = 'pass' THEN x.count ELSE 0 END) AS spfPassed,
+             COUNT(DISTINCT x.source_ip) AS sources,
+             COUNT(DISTINCT CASE WHEN x.passed = 0 AND x.forwarded = 0 THEN x.source_ip END) AS failingSources,
+             COUNT(DISTINCT r.org_name) AS reporters,
+             COUNT(DISTINCT r.id) AS reports,
+             MIN(r.range_begin) AS firstSeen,
+             MAX(r.range_end) AS lastSeen
+      FROM records x JOIN reports r ON r.id = x.report_id
+      WHERE ${f.sql}
+      GROUP BY r.domain ORDER BY total DESC`).all(...f.params);
+    const policies = new Map(db.prepare("SELECT domain, p, sp, pct, adkim, aspf FROM reports WHERE id IN (SELECT MAX(id) FROM reports GROUP BY domain)").all().map((r) => [r.domain, r]));
+    const latestAny = new Map(db.prepare("SELECT domain, MAX(range_end) AS lastSeen FROM reports GROUP BY domain").all().map((r) => [r.domain, r.lastSeen]));
+    const unusedByDomain = new Map();
+    for (const s of subdomains(filter)) {
+      if (s.unused) unusedByDomain.set(s.policyDomain, (unusedByDomain.get(s.policyDomain) || 0) + 1);
+    }
+    const unlabelledByDomain = new Map();
+    for (const ip of ips(filter, { failingOnly: true, limit: 5000 })) {
+      if (ip.sender || ip.failed - (ip.likelyForwards || 0) <= 0) continue;
+      for (const d of ip.domains) unlabelledByDomain.set(d, (unlabelledByDomain.get(d) || 0) + 1);
+    }
+    return rows.map(({ passedTotal, ...row }) => {
+      const policy = policies.get(row.domain) || {};
+      const failed = row.total - passedTotal;
+      const realFailed = failed - row.likelyForwards;
+      const failPct = row.total ? Math.round((realFailed / row.total) * 1000) / 10 : 0;
+      const lastSeen = latestAny.get(row.domain) || row.lastSeen;
+      const silentDays = lastSeen ? Math.floor((at - lastSeen) / DAY_SECONDS) : null;
+      const unlabelled = unlabelledByDomain.get(row.domain) || 0;
+      const unusedSubdomains = unusedByDomain.get(row.domain) || 0;
+      const p = policy.p || null;
+      const issues = [];
+      let status = "ok";
+      if (!p || p === "none") { status = "critical"; issues.push(p === "none" ? "p=none: nothing is enforced" : "no policy seen in reports"); }
+      if (unlabelled > 0) { status = status === "critical" ? status : "warn"; issues.push(`${unlabelled} failing source${unlabelled === 1 ? "" : "s"} without a label`); }
+      if (unusedSubdomains > 0 && (policy.sp || p) !== "reject") { status = status === "critical" ? status : "warn"; issues.push(`${unusedSubdomains} spoofed subdomain${unusedSubdomains === 1 ? "" : "s"} not at reject`); }
+      if (p === "quarantine" && status === "ok") { status = "warn"; issues.push("at quarantine, not yet reject"); }
+      if (policy.pct !== undefined && policy.pct !== null && policy.pct < 100) { status = status === "critical" ? status : "warn"; issues.push(`pct=${policy.pct}: only part of failing mail gets the policy`); }
+      if (silentDays !== null && silentDays > 7) { status = status === "critical" ? status : "warn"; issues.push(`no report for ${silentDays} days`); }
+      if (!issues.length) issues.push(realFailed ? `${failPct}% of mail still fails` : "all mail passes");
+      return {
+        ...row,
+        passed: passedTotal,
+        failed,
+        realFailed,
+        failPct,
+        passPct: row.total ? Math.round((passedTotal / row.total) * 1000) / 10 : 0,
+        spfPct: row.total ? Math.round((row.spfPassed / row.total) * 1000) / 10 : 0,
+        dkimPct: row.total ? Math.round((row.dkimPassed / row.total) * 1000) / 10 : 0,
+        policy: { p, sp: policy.sp || null, pct: policy.pct === undefined ? null : policy.pct, adkim: policy.adkim || null, aspf: policy.aspf || null },
+        unlabelledFailingSources: unlabelled,
+        unusedSubdomains,
+        lastSeen,
+        silentDays,
+        status,
+        issues
+      };
+    });
+  }
+
   /** Counts for the status endpoint; not filtered. */
   function stats() {
     const m = db.prepare(`SELECT COUNT(*) AS total,
@@ -1583,6 +1657,7 @@ function openDatabase({ dataDir, file } = {}) {
     reportXml,
     reporters,
     subdomains,
+    scorecard,
     domains,
     stats,
     messagesWithErrors,

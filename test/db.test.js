@@ -274,6 +274,24 @@ fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200
   const later = Object.fromEntries(sub.subdomains({}).map((r) => [r.domain, r]));
   check("subdomains: the newest report's sp= applies to subdomains", later["hr.example.com"].appliedPolicy === "reject" && later["hr.example.com"].inheritsPolicy === false && later["hr.example.com"].total === 30);
   check("subdomains: search filter narrows to a From domain", sub.subdomains({ q: "hr.example.com" }).every((r) => r.domain === "hr.example.com"));
+
+  // --- scorecard on the same data: one domain, quarantine, a spoofed subdomain, unlabelled failing sources ---
+  const card = sub.scorecard({}, { now: parsed2.metadata.dateRange.end + 2 * 86400 });
+  check("scorecard: one row per report domain with volumes", card.length === 1 && card[0].domain === "example.com" && card[0].total === 183 && card[0].passed === 140 && card[0].reports === 2);
+  check("scorecard: the newest report's policy", card[0].policy.p === "quarantine" && card[0].policy.sp === "reject");
+  check("scorecard: counts unlabelled failing sources and spoofed subdomains", card[0].unlabelledFailingSources === 3 && card[0].unusedSubdomains === 1, JSON.stringify(card[0]));
+  check("scorecard: warn with the reasons spelled out", card[0].status === "warn" && card[0].issues.some((i) => /3 failing sources without a label/.test(i)) && !card[0].issues.some((i) => /spoofed subdomain/.test(i)), JSON.stringify(card[0].issues));
+  sub.addKnownSender({ pattern: "203.0.113.0/24", kind: "ours", label: "Office" }, { createdBy: "t", source: "manual" });
+  const labelled = sub.scorecard({}, { now: parsed2.metadata.dateRange.end + 2 * 86400 })[0];
+  check("scorecard: labelling the sources clears that issue", labelled.unlabelledFailingSources === 0 && !labelled.issues.some((i) => /without a label/.test(i)));
+  const silent = sub.scorecard({}, { now: parsed2.metadata.dateRange.end + 30 * 86400 })[0];
+  check("scorecard: a domain that stopped reporting is flagged", silent.silentDays >= 29 && silent.issues.some((i) => /no report for \d+ days/.test(i)));
+  const none = openDatabase({ file: ":memory:" });
+  const parsedNone = parseAggregateReport(googleXml);
+  parsedNone.policy.p = "none";
+  none.insertReport({ messageId: "n1", attachmentName: "n.xml", parsed: parsedNone, xml: googleXml });
+  check("scorecard: p=none is critical", none.scorecard({}, { now: parsedNone.metadata.dateRange.end + 86400 })[0].status === "critical");
+  none.close();
   sub.close();
 }
 
