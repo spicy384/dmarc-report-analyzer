@@ -14,6 +14,7 @@ const { compileSenders, findSender } = require("./ipmatch");
 const { createGeoIp } = require("./geoip");
 const { createRetention } = require("./retention");
 const { createBackup, restoreBackup } = require("./backup");
+const { createNotifier } = require("./notify");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -55,9 +56,12 @@ const sync = createSync({
     const { created } = evaluateAfterSync({ db, addedReportIds: job.addedReportIds });
     if (created.length) {
       console.log(`alerts: ${created.length} new (${created.map((a) => a.type).join(", ")})`);
+      notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));
     }
   }
 });
+// Webhook notifications (Teams, Slack or generic JSON) for new alerts and the weekly summary.
+const notifier = createNotifier({ db, buildWeekly: (options) => buildWeekly(options), appUrl: process.env.APP_URL || "" });
 const dnsRecords = createDnsRecords();
 const retention = createRetention({ db, months: RETENTION_MONTHS });
 
@@ -634,6 +638,35 @@ app.post("/api/maintenance/reprocess", authGuard.requireAdmin, route(async (req,
   res.json({ ok: true, reprocess: { ...reprocess } });
 }));
 
+// --- notifications --------------------------------------------------------------
+
+app.get("/api/notify", authGuard.requireAdmin, route(async (req, res) => {
+  res.json(notifier.settings());
+}));
+
+app.put("/api/notify", authGuard.requireAdmin, route(async (req, res) => {
+  const body = req.body || {};
+  // The app's own address, for the "open" link, defaults to where this request came from.
+  if (body.appUrl === undefined && !notifier.settings().appUrl) {
+    const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim();
+    body.appUrl = `${proto}://${req.headers.host || "localhost"}`;
+  }
+  const saved = notifier.save(body);
+  auditFrom(req, "notify.update", saved.host || "(none)", `${saved.kind}; alerts ${saved.alerts ? "on" : "off"}; weekly ${saved.weekly ? `${saved.weeklyDayName} ${saved.weeklyHour}:00` : "off"}`);
+  res.json(saved);
+}));
+
+app.post("/api/notify/test", authGuard.requireAdmin, route(async (req, res) => {
+  const result = await notifier.test();
+  auditFrom(req, "notify.test", notifier.settings().host || "(none)", result.detail);
+  res.json(result);
+}));
+
+app.post("/api/notify/weekly", authGuard.requireAdmin, route(async (req, res) => {
+  const result = await notifier.maybeSendWeekly({ force: true });
+  res.json(result || { ok: false, detail: "No webhook URL is configured." });
+}));
+
 app.get("/api/audit", authGuard.requireAdmin, route(async (req, res) => {
   const before = req.query.before ? positiveInt(req.query.before, 0) : null;
   res.json(db.auditLog({ limit: Math.min(positiveInt(req.query.limit, 100), 500), before: before || null, action: req.query.action ? String(req.query.action) : null, username: req.query.username ? String(req.query.username) : null }));
@@ -783,6 +816,7 @@ if (require.main === module) {
 
     if (retention.enabled) {
       retention.start();
+      notifier.start();
       console.log(`Retention: reports older than ${RETENTION_MONTHS} month(s) are rolled up into daily totals; records and XML removed. First pass in 30 seconds, then daily.`);
     } else {
       console.log("Retention: keeping everything (set RETENTION_MONTHS to roll up old reports).");

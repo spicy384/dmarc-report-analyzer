@@ -3205,6 +3205,7 @@ function applyIdentity(user, token) {
     accountPanel.hidden = true;
     document.getElementById("maintenance-panel").hidden = true;
     document.getElementById("audit-panel").hidden = true;
+    document.getElementById("notify-panel").hidden = true;
   }
 }
 
@@ -3400,10 +3401,12 @@ async function setView(name, { scrollTo = null } = {}) {
     usersPanel.hidden = !isAdmin();
     maintenancePanel.hidden = !isAdmin();
     document.getElementById("audit-panel").hidden = !isAdmin();
+    document.getElementById("notify-panel").hidden = !isAdmin();
     if (isAdmin()) {
       try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
       loadMaintenance();
       loadAudit();
+      loadNotify();
     }
   }
   writeHash();
@@ -3514,6 +3517,76 @@ document.getElementById("reprocess-run").addEventListener("click", async () => {
   try {
     await api("/api/maintenance/reprocess", { method: "POST", body: "{}" });
     reprocessTimer = setTimeout(loadMaintenance, 500);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+// --- notifications ------------------------------------------------------------------
+
+function describeNotifyResult(r) {
+  if (!r) return "";
+  return `${r.ok ? "Last delivery" : "Last attempt"} (${r.event}) ${formatTimestamp(r.at)}: ${r.detail}`;
+}
+
+async function loadNotify() {
+  if (!isAdmin()) return;
+  try {
+    const s = await api("/api/notify");
+    document.getElementById("nf-kind").value = s.kind;
+    document.getElementById("nf-url").value = "";
+    document.getElementById("nf-url").placeholder = s.configured ? `configured (${s.host}); leave blank to keep` : "https://...";
+    document.getElementById("nf-app-url").value = s.appUrl || "";
+    document.getElementById("nf-day").value = String(s.weeklyDay);
+    document.getElementById("nf-hour").value = String(s.weeklyHour);
+    document.getElementById("nf-alerts").checked = Boolean(s.alerts);
+    document.getElementById("nf-weekly").checked = Boolean(s.weekly);
+    document.getElementById("notify-badge").textContent = s.configured ? `${s.kind} via ${s.host}` : "off";
+    const status = document.getElementById("nf-status");
+    status.textContent = describeNotifyResult(s.lastResult) + (s.lastWeeklyAt ? ` Weekly summary last sent ${formatTimestamp(s.lastWeeklyAt)}.` : "");
+    status.hidden = !status.textContent;
+    document.getElementById("nf-test").disabled = !s.configured;
+    document.getElementById("nf-weekly-now").disabled = !s.configured;
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+document.getElementById("nf-save").addEventListener("click", async () => {
+  const body = {
+    kind: document.getElementById("nf-kind").value,
+    appUrl: document.getElementById("nf-app-url").value,
+    weeklyDay: Number(document.getElementById("nf-day").value),
+    weeklyHour: Number(document.getElementById("nf-hour").value),
+    alerts: document.getElementById("nf-alerts").checked,
+    weekly: document.getElementById("nf-weekly").checked
+  };
+  const url = document.getElementById("nf-url").value.trim();
+  if (url) body.url = url;
+  try {
+    await api("/api/notify", { method: "PUT", body: JSON.stringify(body) });
+    setStatus("Notification settings saved.");
+    await loadNotify();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("nf-test").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/notify/test", { method: "POST", body: "{}" });
+    setStatus(r.ok ? "Test message delivered." : r.detail, !r.ok);
+    await loadNotify();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("nf-weekly-now").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/notify/weekly", { method: "POST", body: "{}" });
+    setStatus(r.ok ? "Weekly summary sent." : r.detail, !r.ok);
+    await loadNotify();
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -3786,7 +3859,8 @@ const ACTION_LABELS = {
   "user.add": "added user", "user.remove": "removed user", "user.role": "changed role of", "user.reset_mfa": "reset two-factor for",
   "mailbox.add": "added mailbox", "mailbox.update": "changed mailbox", "mailbox.remove": "removed mailbox",
   "sender.add": "labelled sender", "sender.update": "changed label", "sender.remove": "removed label",
-  "backup.download": "downloaded a backup", "backup.restore": "restored a backup", "reports.reprocess": "re-processed stored reports"
+  "backup.download": "downloaded a backup", "backup.restore": "restored a backup", "reports.reprocess": "re-processed stored reports",
+  "notify.update": "changed notification settings", "notify.test": "sent a test notification"
 };
 
 function renderAudit() {

@@ -691,6 +691,44 @@
       </div>
     </section>
 
+    <section class="panel" id="notify-panel" hidden>
+      <div class="panel-head">
+        <h2>Notifications</h2>
+        <span id="notify-badge" class="badge"></span>
+      </div>
+      <p class="bulk-hint">
+        Post new alerts and the weekly summary to an incoming webhook: a Microsoft Teams workflow
+        ("Post to a channel when a webhook request is received"), a Slack app's incoming webhook, or
+        any endpoint that accepts JSON. The URL is a credential; it is stored but never shown again.
+      </p>
+      <div class="mailbox-form-grid">
+        <label>Send to
+          <select id="nf-kind">
+            <option value="teams">Microsoft Teams (workflow webhook)</option>
+            <option value="slack">Slack (incoming webhook)</option>
+            <option value="generic">Generic JSON webhook</option>
+          </select>
+        </label>
+        <label>Webhook URL <input id="nf-url" type="password" class="mono" autocomplete="off" placeholder="https://..." /></label>
+        <label>Link back to this app <input id="nf-app-url" class="mono" placeholder="https://dmarc.example.com" /></label>
+        <label>Weekly summary day
+          <select id="nf-day">
+            <option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option>
+            <option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option>
+          </select>
+        </label>
+        <label>Weekly summary hour (server time) <input id="nf-hour" type="number" min="0" max="23" value="8" class="mono" /></label>
+      </div>
+      <label class="check-inline"><input type="checkbox" id="nf-alerts" checked /> Post new alerts after each sync</label>
+      <label class="check-inline"><input type="checkbox" id="nf-weekly" checked /> Post the weekly summary</label>
+      <div class="actions">
+        <button id="nf-save" type="button">Save</button>
+        <button id="nf-test" type="button" class="secondary">Send a test message</button>
+        <button id="nf-weekly-now" type="button" class="secondary">Send the weekly summary now</button>
+      </div>
+      <p id="nf-status" class="bulk-hint" hidden></p>
+    </section>
+
     <section class="panel" id="users-panel" hidden>
       <div class="panel-head">
         <h2>Users</h2>

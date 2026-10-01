@@ -299,6 +299,16 @@ async function waitForServer(tries = 60) {
     check("audit: mailbox.update names the fields that changed", auditAll.some((e) => e.action === "mailbox.update" && /changed .*name/.test(e.detail || "")));
     check("audit: known-sender changes are logged", auditAll.some((e) => e.action === "sender.add") && auditAll.some((e) => e.action === "sender.update" || e.action === "sender.remove"), JSON.stringify(auditAll.filter((e) => e.action.startsWith("sender.")).map((e) => e.action)));
     check("audit: filter by prefix", (await req("/api/audit?action=mailbox.")).body.entries.every((e) => e.action.startsWith("mailbox.")));
+
+    // --- notifications ---
+    const nf0 = await req("/api/notify");
+    check("notify: off by default", nf0.status === 200 && nf0.body.configured === false && nf0.body.kind === "teams");
+    check("notify: http URL refused", (await req("/api/notify", { method: "PUT", body: { url: "http://hook.test/x" } })).status === 400);
+    const nf1 = await req("/api/notify", { method: "PUT", body: { url: "https://127.0.0.1:1/hook", kind: "slack", weeklyDay: 5, weeklyHour: 9 } });
+    check("notify: saved, host shown, URL hidden, app link defaulted from the request", nf1.status === 200 && nf1.body.configured && nf1.body.host === "127.0.0.1:1" && !JSON.stringify(nf1.body).includes("/hook") && nf1.body.weeklyDayName === "Friday" && /^http:\/\/127\.0\.0\.1:\d+$/.test(nf1.body.appUrl), JSON.stringify(nf1.body));
+    const nfTest = await req("/api/notify/test", { method: "POST", body: {} });
+    check("notify: a test against an unreachable webhook reports the failure", nfTest.status === 200 && nfTest.body.ok === false && /Could not reach/.test(nfTest.body.detail));
+    check("notify: settings changes are audited", (await req("/api/audit?action=notify.")).body.entries.some((e) => e.action === "notify.update" && /slack/.test(e.detail)));
     const mbTest = await req(`/api/mailboxes/${mbId}/test`, { method: "POST", body: {} });
     check("mailboxes: connection test reports the failure", mbTest.status === 200 && mbTest.body.ok === false && mbTest.body.stage === "token");
     const stNow = await req("/api/status");

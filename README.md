@@ -372,6 +372,7 @@ Data lives in `./data` unless `DATA_DIR` says otherwise.
 | `GEOIP_ONLINE` | `true` | Fall back to ip-api.com for IPs the files cannot answer |
 | `PORT` | `3000` | Listening port |
 | `PASSKEY_RP_ID`, `PASSKEY_ORIGIN` | from the request | Domain and origin passkeys are bound to, when a proxy hides the real ones |
+| `APP_URL` | where settings were saved from | Link back to the app in webhook notifications |
 | `DATA_DIR` | `./data` | Accounts, sessions, the SQLite database, generated TLS files |
 | `TZ` | `UTC` | Timezone for the container |
 | `COOKIE_SECURE` | `false` | Mark the session cookie Secure. Set `true` behind HTTPS |
@@ -450,6 +451,25 @@ Everything is under `DATA_DIR` (`/data` in the container):
 - `tls/` - the generated certificate when `TLS_ENABLED=true`.
 
 Back up the directory; treat it as sensitive.
+
+## Notifications
+
+**Settings → Notifications** (administrators) posts new alerts after each sync and the
+weekly summary on a chosen day and hour to an incoming webhook: a **Microsoft Teams**
+workflow ("Post to a channel when a webhook request is received", which receives an
+Adaptive Card), a **Slack** app's incoming webhook (Block Kit), or any **generic**
+endpoint that accepts JSON (`{ event, title, text, lines, link, sentAt }`). No new
+permissions are needed anywhere. The URL is a credential: it is stored, shown only as its
+host afterwards, and never logged. **Send a test message** confirms delivery and **Send
+the weekly summary now** posts the current week on demand. The last delivery result is
+shown on the panel. `APP_URL` sets the link back to the app in each message; otherwise the
+address you saved the settings from is used.
+
+**Domains**: the first panel on the dashboard gives one row per domain with its published
+policy, pass rate, SPF and DKIM pass, failing sources without a label, spoofed subdomains
+not yet at reject, reporters and last report, and a status with the reasons: healthy,
+needs attention, or not enforced (`p=none`). A domain that stopped reporting for over a
+week is flagged too.
 
 ## Sessions and the audit log
 
