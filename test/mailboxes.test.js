@@ -13,7 +13,7 @@ const env = { tenantId: "t-env", clientId: "c-env", clientSecret: "s-env", mailb
 const store = createMailboxStore({ dataDir, env, loginBase: "http://127.0.0.1:1", graphBase: "http://127.0.0.1:1/v1.0" });
 
 // --- env entry ------------------------------------------------------------------
-let list = store.list();
+const list = store.list();
 check("env mailbox is listed first and read-only", list.length === 1 && list[0].id === ENV_ID && list[0].readOnly === true);
 check("listing never carries the secret", !("clientSecret" in list[0]) && list[0].hasSecret === true);
 check("get() has the secret for internal use", store.get(ENV_ID).clientSecret === "s-env");

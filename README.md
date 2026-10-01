@@ -506,13 +506,29 @@ XML and are skipped. It runs in the background in small batches.
 ## Tests
 
 ```bash
-node test/run-all.js
+npm test
+npm run lint
 ```
 
-Parser (containers and XML shapes from the samples in `examples/`), storage and
-aggregation, the ingest job against a mock Graph server (paging, throttling, transient and
-fatal failures, deduplication, reverse DNS), the HTTP API, and the accounts/sessions/TOTP
-flow against the real server.
+Seventeen plain-Node suites, no test framework: the parser (containers and XML shapes
+from the samples in `examples/`), storage, verdicts, DNS, Graph with certificates, the
+mailbox store, the other mail sources against mock POP3, IMAP, Gmail and S3 servers, alerts,
+GeoIP, retention, backup and restore, notifications, the ingest job against a mock Graph
+server, the HTTP API, and the accounts, sessions, TOTP and passkey flow against the real
+server. ESLint checks the server, the tests and the browser scripts; warnings fail the
+run.
+
+The GitHub workflow runs lint and the suite on every push and pull request, and only
+builds and publishes the image when they pass.
+
+### Code layout
+
+Server modules sit in the repository root, one concern each (`db.js`, `sync.js`,
+`graph.js`, `source-*.js`, `verdict.js`, `backup.js`, `notify.js`, ...). The browser side
+has no build step: `public/js/` holds numbered classic scripts that `index.html` loads in
+order into one shared global scope, one file per panel or concern, so a function defined
+in an earlier file is visible to later ones. `eslint.config.js` collects their top-level
+names so cross-file references are still checked.
 
 ## Ideas not built
 

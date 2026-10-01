@@ -74,7 +74,7 @@ function extractXmlDocuments(buffer, filename = "", depth = 0) {
   }
 
   if (looksLikeXml(buf)) {
-    return [{ name: filename || "report.xml", xml: buf.toString("utf8").replace(/^﻿/, "") }];
+    return [{ name: filename || "report.xml", xml: buf.toString("utf8").replace(/^\uFEFF/, "") }];
   }
 
   return [];

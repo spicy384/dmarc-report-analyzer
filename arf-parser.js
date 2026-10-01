@@ -219,4 +219,4 @@ function looksLikeArf({ subject, from, attachments = [] } = {}) {
   return /\b(forensic|failure report|feedback report|dmarc)\b/i.test(s) && !/aggregate/i.test(s);
 }
 
-module.exports = { parseMime, parseArf, looksLikeArf, NotArfError, decodeHeaderWords, parseContentType, splitHeaders };
+module.exports = { parseMime, parseArf, looksLikeArf, NotArfError, decodeHeaderWords, parseContentType, splitHeaders, headerAll };

@@ -27,9 +27,9 @@ check("cutoffFor: calendar months at UTC midnight", cutoffFor(3, NOW) === Date.U
 const nowSec = NOW / 1000;
 const oldDay = nowSec - 200 * DAY;
 const oldA = ingest({ begin: oldDay, records: [{ ip: "203.0.113.10", count: 40, pass: true }, { ip: "198.51.100.7", count: 6 }, { ip: "192.0.2.5", count: 2, forwarded: true }] });
-const oldB = ingest({ org: "Yahoo", begin: oldDay, records: [{ ip: "203.0.113.10", count: 10, pass: true }, { ip: "198.51.100.7", count: 4, disposition: "reject" }] });
-const oldShop = ingest({ domain: "shop.example.com", mailboxId: "box2", begin: oldDay + 3600, records: [{ ip: "203.0.113.10", count: 5, pass: true }] });
-const midId = ingest({ begin: nowSec - 100 * DAY, records: [{ ip: "203.0.113.10", count: 20, pass: true }, { ip: "185.220.101.7", count: 3 }] });
+const _oldB = ingest({ org: "Yahoo", begin: oldDay, records: [{ ip: "203.0.113.10", count: 10, pass: true }, { ip: "198.51.100.7", count: 4, disposition: "reject" }] });
+const _oldShop = ingest({ domain: "shop.example.com", mailboxId: "box2", begin: oldDay + 3600, records: [{ ip: "203.0.113.10", count: 5, pass: true }] });
+const _midId = ingest({ begin: nowSec - 100 * DAY, records: [{ ip: "203.0.113.10", count: 20, pass: true }, { ip: "185.220.101.7", count: 3 }] });
 const recentId = ingest({ begin: nowSec - 5 * DAY, records: [{ ip: "203.0.113.10", count: 30, pass: true }, { ip: "185.220.101.7", count: 9 }] });
 
 const before = db.summary();

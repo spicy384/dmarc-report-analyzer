@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node test/run-all.js"
+    "test": "node test/run-all.js",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@simplewebauthn/server": "^14.0.3",
@@ -18,5 +19,9 @@
     "imapflow": "^2.1.2",
     "maxmind": "^4.3.29",
     "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0"
   }
 }

@@ -1,18 +1,20 @@
-# Builds the container image and publishes it to GitHub Container Registry, so a
+# Lints, runs the test suite, then builds the container image and publishes it to GitHub Container Registry, so a
 # management server can `docker compose pull` instead of building from source.
 #
-#   ghcr.io/spicy384/cisco-mpp-config-manager:latest   every push to main
-#   ghcr.io/spicy384/cisco-mpp-config-manager:1.2.3    a tag v1.2.3 (also :1.2)
-#   ghcr.io/spicy384/cisco-mpp-config-manager:sha-<7>  every build, by commit
+#   ghcr.io/spicy384/dmarc-report-analyzer:latest   every push to main
+#   ghcr.io/spicy384/dmarc-report-analyzer:1.2.3    a tag v1.2.3 (also :1.2)
+#   ghcr.io/spicy384/dmarc-report-analyzer:sha-<7>  every build, by commit
 #
 # The package is private until its visibility is changed once on GitHub:
 # the package page -> Package settings -> Danger Zone -> Change visibility.
-name: Publish Docker image
+name: Test and publish
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -20,7 +22,32 @@ permissions:
   packages: write
 
 jobs:
+  # Lint and the whole test suite run first; nothing is published if they fail.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint -- --max-warnings 0
+
+      - name: Test
+        run: npm test
+
   build-and-push:
+    needs: test
+    # Pull requests are checked but never published.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Check out

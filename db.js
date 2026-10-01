@@ -910,7 +910,6 @@ function openDatabase({ dataDir, file } = {}) {
    */
   function scorecard(filter = {}, { now: at = now() } = {}) {
     const f = buildFilter(filter, { x: "x" });
-    const fr = buildFilter(filter);
     const rows = db.prepare(`
       SELECT r.domain AS domain,
              SUM(x.count) AS total,
