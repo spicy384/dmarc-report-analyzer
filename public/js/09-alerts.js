@@ -25,7 +25,55 @@ function describeAlert(a) {
   if (a.type === "new_reporter") {
     return `${formatNumber(d.reports)} report${d.reports === 1 ? "" : "s"} covering ${formatNumber(d.messages)} messages`;
   }
+  if (a.type === "dns_change") {
+    if (!d.found) return `was "${d.previous || ""}", unchanged since ${formatUtcDate(d.previousSince)}; now there is no record`;
+    if (!d.previousFound) return `now "${d.current}"`;
+    return `${d.summary ? `${d.summary}; ` : ""}was "${d.previous}", now "${d.current}"`;
+  }
+  if (a.type === "reporter_silent") {
+    return `last report ${formatUtcDate(d.lastSeen)}; it had sent ${formatNumber(d.reportsBeforeLast)} reports in the 30 days before that${d.domains ? ` for ${d.domains} domain${d.domains === 1 ? "" : "s"}` : ""}. Check the rua= address and the mailbox rules`;
+  }
+  if (a.type === "ingest_stalled") {
+    const boxes = (d.mailboxes || []).map((m) => `${m.name}: ${m.error ? `last sync failed (${m.error})` : m.lastRunAt ? `last sync ${formatTimestamp(m.lastRunAt)}` : "never synced"}`);
+    return `last report stored ${formatTimestamp(d.lastIngestedAt)}${boxes.length ? `; ${boxes.join("; ")}` : ""}`;
+  }
   return "";
+}
+
+const ALERT_LABELS = { new_source: "new source", spike: "spike", new_reporter: "new reporter", dns_change: "DNS change", reporter_silent: "reporter silent", ingest_stalled: "no reports" };
+
+/** Where the Show button takes the user for each kind of alert. */
+function showAlertTarget(a) {
+  const d = a.detail || {};
+  if (a.type === "dns_change") {
+    policyDomain.value = d.domain;
+    if (policyDomain.value !== d.domain) {
+      // A DKIM key on a signing subdomain: the Policy picker only knows report domains.
+      lookupInput.value = d.domain;
+      runLookup();
+      document.getElementById("lookup-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    policyTabState.tab = d.kind === "dkim" ? "dkim" : "history";
+    loadPolicy();
+    document.getElementById("policy-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  if (a.type === "reporter_silent") {
+    searchInput.value = a.key;
+    rangeSelect.value = "90";
+    onRangeChanged();
+    document.getElementById("reporters-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  if (a.type === "ingest_stalled") {
+    setView("settings", { scrollTo: "sync-panel" });
+    return;
+  }
+  searchInput.value = a.key;
+  rangeSelect.value = "90";
+  onRangeChanged();
+  document.getElementById("sources-panel").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderAlerts(alerts) {
@@ -44,7 +92,7 @@ function renderAlerts(alerts) {
 
     const sev = document.createElement("span");
     sev.className = `pill pill-sev-${a.severity}`;
-    sev.textContent = a.type === "new_source" ? "new source" : a.type === "spike" ? "spike" : "new reporter";
+    sev.textContent = ALERT_LABELS[a.type] || a.type;
     li.appendChild(sev);
 
     const body = document.createElement("div");
@@ -65,12 +113,7 @@ function renderAlerts(alerts) {
       show.type = "button";
       show.className = "secondary small";
       show.textContent = "Show";
-      show.addEventListener("click", () => {
-        searchInput.value = a.key;
-        rangeSelect.value = "90";
-        onRangeChanged();
-        document.getElementById("sources-panel").scrollIntoView({ behavior: "smooth", block: "start" });
-      });
+      show.addEventListener("click", () => showAlertTarget(a));
       actions.appendChild(show);
     }
     if (canWrite()) {

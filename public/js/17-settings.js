@@ -24,11 +24,13 @@ async function setView(name, { scrollTo = null } = {}) {
     maintenancePanel.hidden = !isAdmin();
     document.getElementById("audit-panel").hidden = !isAdmin();
     document.getElementById("notify-panel").hidden = !isAdmin();
+    document.getElementById("monitor-panel").hidden = !isAdmin();
     if (isAdmin()) {
       try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
       loadMaintenance();
       loadAudit();
       loadNotify();
+      loadMonitor();
     }
   }
   writeHash();
@@ -173,6 +175,54 @@ async function loadNotify() {
     setStatus(error.message, true);
   }
 }
+
+// --- monitoring (DNS drift, reporter silence, stalled ingestion) -----------------
+
+async function loadMonitor() {
+  if (!isAdmin()) return;
+  try {
+    const m = await api("/api/monitor");
+    const t = m.thresholds;
+    const facts = [
+      m.lastDnsSnapshotAt
+        ? `DNS records last snapshotted ${formatTimestamp(m.lastDnsSnapshotAt)}; the next snapshot is due around ${formatTimestamp(m.nextDnsSnapshotAt)}.`
+        : "No DNS snapshot yet: the first one runs a minute after start-up and becomes the baseline.",
+      m.trackedDomains.length
+        ? `Tracking ${m.trackedDomains.length} domain${m.trackedDomains.length === 1 ? "" : "s"}: ${m.trackedDomains.join(", ")}.`
+        : "No domains to track until reports arrive.",
+      `A reporting service that sent at least ${t.reporterMinReports} reports in its last 30 days and then nothing for ${t.reporterSilentDays} days is flagged.`,
+      `Nothing ingested for ${t.ingestStallHours} hours while a mailbox is enabled is flagged too.`
+    ];
+    document.getElementById("monitor-facts").replaceChildren(...facts.map((f) => {
+      const li = document.createElement("li");
+      li.textContent = f;
+      return li;
+    }));
+    document.getElementById("monitor-badge").textContent = m.running ? "running" : m.lastDnsSnapshotAt ? "active" : "waiting for first snapshot";
+    document.getElementById("monitor-run").disabled = Boolean(m.running);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+document.getElementById("monitor-run").addEventListener("click", async () => {
+  const button = document.getElementById("monitor-run");
+  const status = document.getElementById("monitor-status");
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "Looking up records and checking reporters...";
+  try {
+    const r = await api("/api/monitor/run", { method: "POST", body: "{}" });
+    const bits = [`Checked ${r.domains} domain${r.domains === 1 ? "" : "s"}`, `${r.created.length} alert${r.created.length === 1 ? "" : "s"} created`, `${r.resolved.length} resolved`];
+    if (r.errors.length) bits.push(`${r.errors.length} lookup error${r.errors.length === 1 ? "" : "s"}: ${r.errors.slice(0, 3).join("; ")}`);
+    status.textContent = `${bits.join(", ")}.`;
+    await Promise.all([loadMonitor(), loadAlerts()]);
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 
 document.getElementById("nf-save").addEventListener("click", async () => {
   const body = {

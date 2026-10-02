@@ -75,4 +75,37 @@ function evaluateAfterSync({ db, addedReportIds, now = nowSeconds() } = {}) {
   return { created };
 }
 
-module.exports = { evaluateAfterSync, SPIKE_DAYS, SPIKE_MIN_FAILED, SPIKE_FACTOR, NEW_SOURCE_QUIET_DAYS };
+function utcDate(seconds) {
+  return Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString().slice(0, 10) : "?";
+}
+
+/** One plain sentence of context for an alert, for webhooks and logs (the UI has its own). */
+function describeAlert(a) {
+  const d = (a && a.detail && typeof a.detail === "object") ? a.detail : {};
+  switch (a && a.type) {
+    case "new_source": {
+      const bits = [`${d.failed} of ${d.total} messages failed`];
+      if (d.headerFroms && d.headerFroms.length) bits.push(`claiming ${d.headerFroms.join(", ")}`);
+      if (d.reporters && d.reporters.length) bits.push(`reported by ${d.reporters.join(", ")}`);
+      return bits.join("; ");
+    }
+    case "spike":
+      return `${d.recent} non-forward failures in the last ${d.days} days, ${d.previous} in the ${d.days} before${d.sender ? ` (known sender: ${d.sender.label})` : ""}`;
+    case "new_reporter":
+      return `${d.reports} report${d.reports === 1 ? "" : "s"} covering ${d.messages} messages`;
+    case "dns_change":
+      if (!d.found) return `Was: ${d.previous || "(empty)"}; unchanged since ${utcDate(d.previousSince)}`;
+      if (!d.previousFound) return `Now: ${d.current}`;
+      return `${d.summary ? `${d.summary}. ` : ""}Was: ${d.previous}; now: ${d.current}`;
+    case "reporter_silent":
+      return `Last report ${utcDate(d.lastSeen)}; it had sent ${d.reportsBeforeLast} reports in the 30 days before that${d.domains ? ` for ${d.domains} domain${d.domains === 1 ? "" : "s"}` : ""}`;
+    case "ingest_stalled": {
+      const boxes = (d.mailboxes || []).map((m) => `${m.name}: ${m.error ? `last sync failed (${m.error})` : m.lastRunAt ? `last sync ${utcDate(m.lastRunAt)}` : "never synced"}`);
+      return `Last report stored ${utcDate(d.lastIngestedAt)}${boxes.length ? `. ${boxes.join("; ")}` : ""}`;
+    }
+    default:
+      return typeof (a && a.detail) === "string" ? a.detail : "";
+  }
+}
+
+module.exports = { evaluateAfterSync, describeAlert, SPIKE_DAYS, SPIKE_MIN_FAILED, SPIKE_FACTOR, NEW_SOURCE_QUIET_DAYS };

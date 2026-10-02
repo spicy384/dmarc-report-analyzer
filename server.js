@@ -15,6 +15,7 @@ const { createGeoIp } = require("./geoip");
 const { createRetention } = require("./retention");
 const { createBackup, restoreBackup } = require("./backup");
 const { createNotifier } = require("./notify");
+const { createMonitor } = require("./monitor");
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -53,7 +54,13 @@ const sync = createSync({
   geoip,
   backfillDays: BACKFILL_DAYS,
   onRunFinished: (job) => {
-    const { created } = evaluateAfterSync({ db, addedReportIds: job.addedReportIds });
+    const created = [...evaluateAfterSync({ db, addedReportIds: job.addedReportIds }).created];
+    // A sync is also the moment to notice that nothing arrived (or that it did again).
+    try {
+      created.push(...monitor.checkHealth().created);
+    } catch (error) {
+      console.warn(`monitor: ${error.message}`);
+    }
     if (created.length) {
       console.log(`alerts: ${created.length} new (${created.map((a) => a.type).join(", ")})`);
       notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));
@@ -63,6 +70,8 @@ const sync = createSync({
 // Webhook notifications (Teams, Slack or generic JSON) for new alerts and the weekly summary.
 const notifier = createNotifier({ db, buildWeekly: (options) => buildWeekly(options), appUrl: process.env.APP_URL || "" });
 const dnsRecords = createDnsRecords();
+// Daily DNS snapshots (record drift) and the "nothing arrived" checks.
+const monitor = createMonitor({ db, dnsRecords, mailboxes });
 const retention = createRetention({ db, months: RETENTION_MONTHS });
 
 // The sign-in endpoints must be reachable while signed out; everything else under /api is gated.
@@ -409,15 +418,22 @@ app.get("/api/policy", route(async (req, res) => {
   const selectors = db.dkimSelectors(domain, filter).filter((s) => s.signingDomain === domain || String(s.signingDomain || "").endsWith(`.${domain}`) || domain.endsWith(`.${s.signingDomain}`));
   const dkim = await Promise.all(selectors.slice(0, 20).map(async (s) => {
     const check = await dnsRecords.checkDkim(s.signingDomain, s.selector, { refresh }).catch((error) => ({ found: false, error: error.message }));
-    return { ...s, ...check };
+    // When the daily snapshot has tracked this key, say how long the current value has stood.
+    const latest = db.dnsLatest(s.signingDomain, "dkim", s.selector);
+    return { ...s, ...check, unchangedSince: latest && Boolean(latest.found) === Boolean(check.found) && (!check.found || latest.value === check.record) ? latest.first_seen : null };
   }));
+  const sinceFor = (kind, found, value) => {
+    const latest = db.dnsLatest(domain, kind);
+    return latest && Boolean(latest.found) === Boolean(found) && (!found || latest.value === value) ? latest.first_seen : null;
+  };
 
   res.json({
     domain,
     mailboxAddresses: addresses,
-    dmarc: { ...dmarc, warnings: dmarcWarnings, ruaToUs },
-    spf: { ...spf, networks: (spf.networks || []).length },
+    dmarc: { ...dmarc, warnings: dmarcWarnings, ruaToUs, unchangedSince: sinceFor("dmarc", dmarc.found, dmarc.record) },
+    spf: { ...spf, networks: (spf.networks || []).length, unchangedSince: sinceFor("spf", spf.found, spf.record) },
     dkim,
+    history: db.dnsHistory(domain, { limit: 50 }),
     reject,
     yoursOutsideSpf: yoursOutsideSpf.map((r) => ({ ip: r.ip, ptr: r.ptr, sender: r.sender.label, total: r.total, spfPassed: r.spfPassed, failed: r.failed })),
     failingInsideSpf: failingInsideSpf.map((r) => ({ ip: r.ip, ptr: r.ptr, sender: r.sender ? r.sender.label : null, via: r.spfVia, failed: r.nonForwardFailed, dkimPassed: r.dkimPassed, total: r.total }))
@@ -440,6 +456,30 @@ app.post("/api/alerts/:id/ack", authGuard.requireWriter, route(async (req, res) 
     return res.status(404).json({ error: "No such open alert." });
   }
   res.json({ ok: true, openCount: db.openAlertCount() });
+}));
+
+// --- monitoring --------------------------------------------------------------
+
+app.get("/api/monitor", route(async (req, res) => {
+  res.json(monitor.describe());
+}));
+
+/** Runs the DNS snapshot and the health checks now, whatever the clock says. */
+app.post("/api/monitor/run", authGuard.requireAdmin, route(async (req, res) => {
+  const result = await monitor.runAll({ force: true });
+  if (result.created.length) {
+    notifier.notifyAlerts(result.created).catch((error) => console.warn(`notify: ${error.message}`));
+  }
+  auditFrom(req, "monitor.run", `${result.domains} domain(s)`, `${result.created.length} alert(s) created, ${result.resolved.length} resolved${result.errors.length ? `, ${result.errors.length} lookup error(s)` : ""}`);
+  res.json({ ...result, created: result.created.map((a) => ({ id: a.id, type: a.type, key: a.key, severity: a.severity, title: a.title })), status: monitor.describe() });
+}));
+
+app.get("/api/dns-history", route(async (req, res) => {
+  const domain = String(req.query.domain || "").trim().toLowerCase();
+  if (!/^[a-z0-9.-]+\.[a-z0-9-]{2,}$/.test(domain)) {
+    return res.status(400).json({ error: "Pick a domain first." });
+  }
+  res.json({ domain, history: db.dnsHistory(domain, { limit: positiveInt(req.query.limit, 100) }) });
 }));
 
 // --- known senders -----------------------------------------------------------
@@ -816,11 +856,16 @@ if (require.main === module) {
 
     if (retention.enabled) {
       retention.start();
-      notifier.start();
       console.log(`Retention: reports older than ${RETENTION_MONTHS} month(s) are rolled up into daily totals; records and XML removed. First pass in 30 seconds, then daily.`);
     } else {
       console.log("Retention: keeping everything (set RETENTION_MONTHS to roll up old reports).");
     }
+    notifier.start();
+    monitor.start({ onAlerts: (created) => {
+      console.log(`monitor: ${created.length} new alert(s) (${created.map((a) => a.type).join(", ")})`);
+      notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));
+    } });
+    console.log("Monitoring: DNS records snapshotted daily; reporter silence and stalled ingestion checked hourly and after each sync.");
 
     geoip.open().then((g) => {
       const parts = [];

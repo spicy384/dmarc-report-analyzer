@@ -141,6 +141,7 @@ function renderPolicy(p) {
     facts.push(`Alignment: DKIM ${tags.adkim === "s" ? "strict" : "relaxed"}, SPF ${tags.aspf === "s" ? "strict" : "relaxed"}`);
     facts.push(`Aggregate reports to ${(tags.rua || []).join(", ") || "nobody"}${p.dmarc.ruaToUs ? " (this analyzer)" : ""}`);
     if (tags.ruf && tags.ruf.length) facts.push(`Forensic reports to ${tags.ruf.join(", ")}`);
+    if (p.dmarc.unchangedSince) facts.push(`Unchanged since at least ${formatUtcDate(p.dmarc.unchangedSince)} (daily snapshots)`);
     dmarcBox.appendChild(warningList(facts, "policy-facts"));
   }
   if (p.dmarc.warnings && p.dmarc.warnings.length) dmarcBox.appendChild(warningList(p.dmarc.warnings));
@@ -153,7 +154,9 @@ function renderPolicy(p) {
   });
   if (p.spf.found) {
     spfBox.appendChild(recordLine(p.spf.record));
-    spfBox.appendChild(warningList([`${formatNumber(p.spf.networks)} network${p.spf.networks === 1 ? "" : "s"} authorised after expanding includes; ends with ${p.spf.all || "no all mechanism"}`], "policy-facts"));
+    const spfFacts = [`${formatNumber(p.spf.networks)} network${p.spf.networks === 1 ? "" : "s"} authorised after expanding includes; ends with ${p.spf.all || "no all mechanism"}`];
+    if (p.spf.unchangedSince) spfFacts.push(`Unchanged since at least ${formatUtcDate(p.spf.unchangedSince)} (daily snapshots)`);
+    spfBox.appendChild(warningList(spfFacts, "policy-facts"));
   }
   const spfIssues = [...(p.spf.warnings || []), ...(p.spf.errors || [])];
   if (spfIssues.length) spfBox.appendChild(warningList(spfIssues));
@@ -166,32 +169,88 @@ function renderPolicy(p) {
   tabs.push({ key: "spf", label: "SPF record", box: spfBox });
 
   // --- DKIM selectors ---
-  const dkimBox = policyBox("DKIM selectors seen", { badge: `${p.dkim.length} selector${p.dkim.length === 1 ? "" : "s"}` });
+  // Key hygiene: weak or unparsable keys, testing mode, selectors that sign mail but
+  // have no key in DNS, and keys that have stood for over a year.
+  const hygiene = [];
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  for (const s of p.dkim) {
+    const name = `${s.selector}._domainkey.${s.signingDomain}`;
+    if (!s.found && !s.error) hygiene.push(`${name} signed ${formatNumber(s.passed + s.failed)} messages in the period but has no key in DNS: the selector was removed, or the signer is misconfigured.`);
+    for (const w of s.warnings || []) hygiene.push(`${name}: ${w}`);
+    if (s.found && !s.revoked && s.unchangedSince && nowSeconds - s.unchangedSince > 365 * 86400) hygiene.push(`${name} has not changed since ${formatUtcDate(s.unchangedSince)}: rotate DKIM keys at least yearly.`);
+  }
+  const dkimBox = policyBox("DKIM selectors seen", {
+    badge: hygiene.length ? `${hygiene.length} warning${hygiene.length === 1 ? "" : "s"}` : `${p.dkim.length} selector${p.dkim.length === 1 ? "" : "s"}`,
+    badgeClass: hygiene.length ? "pill-quarantine" : ""
+  });
   if (!p.dkim.length) {
     const none = document.createElement("p");
     none.className = "empty-state";
     none.textContent = "No DKIM signatures for this domain appear in the period's reports. Sign outbound mail with DKIM so forwarded mail can still pass.";
     dkimBox.appendChild(none);
   } else {
+    if (hygiene.length) dkimBox.appendChild(warningList(hygiene));
     const scroll = document.createElement("div");
     scroll.className = "table-scroll";
     dkimBox.appendChild(scroll);
+    const keyText = (s) => {
+      if (!s.found) return "-";
+      if (s.revoked) return "revoked";
+      return `${s.keyType}${s.keyBits ? ` ${formatNumber(s.keyBits)}-bit` : ""}${s.testing ? ", testing" : ""}`;
+    };
     scroll.appendChild(buildTable(
-      ["Selector", "Signing domain", "In DNS", { label: "Pass", className: "num" }, { label: "Fail", className: "num" }, "Last seen"],
+      ["Selector", "Signing domain", "In DNS", "Key", { label: "Pass", className: "num" }, { label: "Fail", className: "num" }, "Last seen", "Unchanged since"],
       p.dkim.map((s) => ({
         data: s,
         cells: [
           textCell(s.selector, "mono"),
           textCell(s.signingDomain, "mono"),
-          textCell(s.found ? (s.revoked ? "revoked (empty key)" : `yes (${s.keyType})`) : s.error ? `lookup failed: ${s.error}` : "missing", s.found && !s.revoked ? "" : "is-fail"),
+          textCell(s.found ? (s.revoked ? "revoked (empty key)" : "yes") : s.error ? `lookup failed: ${s.error}` : "missing", s.found && !s.revoked ? "" : "is-fail"),
+          textCell(keyText(s), s.weak || s.testing ? "is-warn" : ""),
           textCell(formatNumber(s.passed), "num"),
           textCell(formatNumber(s.failed), s.failed ? "num is-fail" : "num"),
-          textCell(formatUtcDate(s.lastSeen), "nowrap")
+          textCell(formatUtcDate(s.lastSeen), "nowrap"),
+          textCell(s.unchangedSince ? formatUtcDate(s.unchangedSince) : "-", "nowrap muted")
         ]
       }))
     ));
   }
   tabs.push({ key: "dkim", label: "DKIM selectors", box: dkimBox });
+
+  // --- record history ---
+  // One row per distinct value the daily snapshot has seen; the first row of each
+  // record is the baseline, every further one is a change.
+  const history = p.history || [];
+  const seenRecords = new Set(history.map((h) => `${h.kind}:${h.selector}:${h.domain}`));
+  const changes = history.length - seenRecords.size;
+  const historyBox = policyBox("DNS record history", {
+    badge: history.length ? (changes ? `${changes} change${changes === 1 ? "" : "s"}` : "no changes yet") : "no snapshot yet",
+    badgeClass: changes ? "pill-quarantine" : ""
+  });
+  if (!history.length) {
+    const none = document.createElement("p");
+    none.className = "empty-state";
+    none.textContent = "The analyzer snapshots this domain's DMARC, SPF and DKIM records once a day and alerts when one changes. The first snapshot runs a minute after start-up; administrators can run it now under Settings → Monitoring.";
+    historyBox.appendChild(none);
+  } else {
+    const scroll = document.createElement("div");
+    scroll.className = "table-scroll";
+    historyBox.appendChild(scroll);
+    const label = (h) => (h.kind === "dkim" ? `DKIM ${h.selector}._domainkey.${h.domain}` : `${h.kind.toUpperCase()} ${h.domain}`);
+    scroll.appendChild(buildTable(
+      ["Record", "Value", "First seen", "Last seen"],
+      history.map((h) => ({
+        data: h,
+        cells: [
+          textCell(label(h), "nowrap"),
+          textCell(h.found ? h.value : "(no record)", h.found ? "mono dns-history-value" : "is-fail"),
+          textCell(formatUtcDate(h.first_seen), "nowrap"),
+          textCell(formatUtcDate(h.last_seen), "nowrap")
+        ]
+      }))
+    ));
+  }
+  tabs.push({ key: "history", label: "History", box: historyBox });
 
   // --- what reject would do ---
   const r = p.reject;

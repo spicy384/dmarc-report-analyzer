@@ -69,6 +69,11 @@ const { check, report } = createChecker("notify: Teams, Slack and generic webhoo
   check("weekly: sent again the next week", (await notifier.maybeSendWeekly()).ok && received.length === 4);
   check("weekly: force sends regardless of schedule", (await notifier.maybeSendWeekly({ force: true })).ok && received.length === 5);
 
+  // --- alerts with structured detail (as the server passes them) ---
+  const structured = [{ type: "dns_change", severity: "high", title: "DMARC record for x.test changed", detail: { domain: "x.test", kind: "dmarc", found: true, previousFound: true, previous: "v=DMARC1; p=reject", current: "v=DMARC1; p=none", summary: "p=reject → none" } }];
+  await notifier.notifyAlerts(structured);
+  check("alerts: structured detail is written out, not stringified", received.length === 6 && received[5].body.text.includes("p=reject → none") && !received[5].body.text.includes("[object"), received[5] && received[5].body.text);
+
   // --- failure handling ---
   db.setSetting("notify", JSON.stringify({ ...JSON.parse(db.getSetting("notify")), url: `http://127.0.0.1:${port}/bad` }));
   const bad = await notifier.test();

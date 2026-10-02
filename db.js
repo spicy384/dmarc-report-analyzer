@@ -22,7 +22,7 @@ const { sourceVerdict } = require("./verdict");
 // 6: ip_info country/city/ASN columns
 // 7: daily_totals (retention rollups) and reports.purged_at
 // 8: forensic_reports (created by the schema; version bump only)
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -139,8 +139,8 @@ const ALERTS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS alerts (
   id              INTEGER PRIMARY KEY,
   created_at      INTEGER NOT NULL,
-  type            TEXT NOT NULL,        -- new_source | spike | new_reporter
-  key             TEXT NOT NULL,        -- the IP or reporter the alert is about
+  type            TEXT NOT NULL,        -- new_source | spike | new_reporter | dns_change | reporter_silent | ingest_stalled
+  key             TEXT NOT NULL,        -- the IP, reporter or record the alert is about
   severity        TEXT NOT NULL,        -- info | medium | high
   title           TEXT NOT NULL,
   detail          TEXT,                 -- JSON
@@ -206,6 +206,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
+
+-- What each domain's DMARC, SPF and DKIM records looked like over time: one row per
+-- distinct value with the window it was observed in. Written by the daily snapshot.
+CREATE TABLE IF NOT EXISTS dns_history (
+  id         INTEGER PRIMARY KEY,
+  domain     TEXT NOT NULL,
+  kind       TEXT NOT NULL,              -- dmarc | spf | dkim
+  selector   TEXT NOT NULL DEFAULT '',   -- DKIM only
+  found      INTEGER NOT NULL,           -- 0 when the record did not resolve
+  value      TEXT,
+  first_seen INTEGER NOT NULL,
+  last_seen  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dns_history_key ON dns_history(domain, kind, selector, last_seen);
 `;
 
 const DISPOSITIONS = ["none", "quarantine", "reject"];
@@ -1390,6 +1404,90 @@ function openDatabase({ dataDir, file } = {}) {
     return db.prepare("UPDATE alerts SET acknowledged_at = ?, acknowledged_by = ? WHERE acknowledged_at IS NULL").run(now(), user).changes;
   }
 
+  /** Closes open alerts of one type and key because the condition went away; returns how many. */
+  function resolveAlerts(type, key, { note = "resolved" } = {}) {
+    return db.prepare("UPDATE alerts SET acknowledged_at = ?, acknowledged_by = ? WHERE type = ? AND key = ? AND acknowledged_at IS NULL")
+      .run(now(), `auto: ${note}`, type, String(key)).changes;
+  }
+
+  // --- monitoring: DNS history, reporter cadence, ingestion --------------------
+
+  /** Domains with reports whose window ended after `since`, busiest first. */
+  function activeDomains({ since = 0, limit = 50 } = {}) {
+    return db.prepare(`
+      SELECT domain, SUM(messages) AS messages, MAX(range_end) AS lastSeen
+      FROM reports WHERE range_end >= ? GROUP BY domain ORDER BY messages DESC LIMIT ?`).all(since, limit);
+  }
+
+  function dnsLatest(domain, kind, selector = "") {
+    return db.prepare("SELECT * FROM dns_history WHERE domain = ? AND kind = ? AND selector = ? ORDER BY last_seen DESC, id DESC LIMIT 1")
+      .get(String(domain).toLowerCase(), kind, selector || "") || null;
+  }
+
+  /**
+   * Records one observation of a record. An unchanged value extends the current
+   * row's window; a new value (or a record that appeared or vanished) starts a new
+   * row. Returns { changed, previous, row } where previous is the row superseded,
+   * null the first time the record is seen.
+   */
+  function observeDnsRecord({ domain, kind, selector = "", found, value, at = now() }) {
+    const d = String(domain).toLowerCase();
+    const s = selector || "";
+    const v = found ? String(value) : null;
+    const latest = dnsLatest(d, kind, s);
+    if (latest && Boolean(latest.found) === Boolean(found) && latest.value === v) {
+      db.prepare("UPDATE dns_history SET last_seen = ? WHERE id = ?").run(at, latest.id);
+      return { changed: false, previous: null, row: { ...latest, last_seen: at } };
+    }
+    const result = db.prepare("INSERT INTO dns_history (domain, kind, selector, found, value, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(d, kind, s, found ? 1 : 0, v, at, at);
+    return { changed: true, previous: latest, row: db.prepare("SELECT * FROM dns_history WHERE id = ?").get(Number(result.lastInsertRowid)) };
+  }
+
+  /** A domain's record history, newest first, including DKIM keys on its subdomains. */
+  function dnsHistory(domain, { limit = 100 } = {}) {
+    const d = String(domain).toLowerCase();
+    return db.prepare("SELECT * FROM dns_history WHERE domain = ? OR (kind = 'dkim' AND domain LIKE ? ESCAPE '\\') ORDER BY first_seen DESC, id DESC LIMIT ?")
+      .all(d, `%.${d.replace(/[\\%_]/g, "\\$&")}`, limit);
+  }
+
+  /**
+   * How regularly each reporting service has been sending, judged on the 30 days
+   * before its most recent report: how many reports, and the median gap in days
+   * between the days it reported on. Looks back `days` days from `now`.
+   */
+  function reporterCadence({ now: at = now(), days = 120, window = 30 } = {}) {
+    const since = at - days * DAY_SECONDS;
+    const rows = db.prepare(`
+      SELECT org_name AS orgName, CAST(range_end / ${DAY_SECONDS} AS INTEGER) AS day, COUNT(*) AS n, MAX(range_end) AS lastEnd
+      FROM reports WHERE range_end >= ? GROUP BY org_name, day ORDER BY org_name, day`).all(since);
+    const domains = new Map(db.prepare("SELECT org_name AS orgName, COUNT(DISTINCT domain) AS domains FROM reports WHERE range_end >= ? GROUP BY org_name").all(since).map((r) => [r.orgName, r.domains]));
+    const byOrg = new Map();
+    for (const row of rows) {
+      if (!byOrg.has(row.orgName)) byOrg.set(row.orgName, []);
+      byOrg.get(row.orgName).push(row);
+    }
+    const out = [];
+    for (const [orgName, list] of byOrg) {
+      const lastSeen = Math.max(...list.map((r) => r.lastEnd));
+      const lastDay = Math.floor(lastSeen / DAY_SECONDS);
+      const recent = list.filter((r) => r.day > lastDay - window);
+      const reportsBeforeLast = recent.reduce((n, r) => n + r.n, 0);
+      const gaps = [];
+      for (let i = 1; i < recent.length; i += 1) gaps.push(recent[i].day - recent[i - 1].day);
+      gaps.sort((a, b) => a - b);
+      const medianGapDays = gaps.length ? gaps[Math.floor(gaps.length / 2)] : null;
+      out.push({ orgName, lastSeen, reportsBeforeLast, reportDays: recent.length, medianGapDays, domains: domains.get(orgName) || 0 });
+    }
+    return out.sort((a, b) => b.reportsBeforeLast - a.reportsBeforeLast);
+  }
+
+  /** When the newest report was stored and how far its window reached; null with no reports. */
+  function lastIngest() {
+    const row = db.prepare("SELECT MAX(ingested_at) AS ingestedAt, MAX(range_end) AS rangeEnd, COUNT(*) AS reports FROM reports").get();
+    return row && row.reports ? row : null;
+  }
+
   /** Failing IPs whose only records are in the given (just added) reports. */
   function newFailingSources(reportIds) {
     const json = JSON.stringify(reportIds);
@@ -1694,6 +1792,13 @@ function openDatabase({ dataDir, file } = {}) {
     alertExists,
     ackAlert,
     ackAllAlerts,
+    resolveAlerts,
+    activeDomains,
+    dnsLatest,
+    observeDnsRecord,
+    dnsHistory,
+    reporterCadence,
+    lastIngest,
     newFailingSources,
     newReporters,
     spikeCandidates,

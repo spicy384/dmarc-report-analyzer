@@ -29,8 +29,9 @@ plain summary to paste into an email or a Teams post.
 tags explained and warnings (no record, `p=none`, `pct` below 100, no `rua`, reports going
 to an address the analyzer does not read), the SPF record expanded through its includes
 with the DNS-lookup count against the limit of 10, which of your labelled senders fail
-SPF and are missing from it, the DKIM selectors seen in reports and whether each still
-resolves, and **what `p=reject` would have done** in the selected period: legitimate mail
+SPF and are missing from it, the DKIM selectors seen in reports with whether each still
+resolves, its key type and size, and how long it has stood, the history of every record
+the daily snapshot has seen, and **what `p=reject` would have done** in the selected period: legitimate mail
 that would have been rejected (from sources labelled yours or vendor), spoofing that would
 have been blocked, and forwards that would have been lost. A domain is called ready when
 nothing legitimate would be rejected and every failing source has a label.
@@ -84,9 +85,14 @@ and add. Nothing is added automatically.
 failing DMARC that had never appeared before and is not a known sender), a **spike** (a
 source whose non-forward failures in the last 7 days are at least three times the previous
 7 days, with at least 20 messages) and, for information, the **first reports** from a new
-reporting service. Open alerts sit in a banner at the top of the page with a Show button
-that searches for the source, and they stay until someone acknowledges them. The count
-also appears in the browser tab title.
+reporting service. Three more come from the clock rather than from new data (see
+[Monitoring](#monitoring)): a **DNS change** when a domain's DMARC, SPF or DKIM record
+changes or disappears, a **silent reporter** when a service that used to send daily has
+gone quiet, and **no reports** when nothing has been ingested for two days. Open alerts sit
+in a banner at the top of the page with a Show button that takes you to the source, the
+domain's record history or the reporter, and they stay until someone acknowledges them
+(the last two clear themselves when data resumes). The count also appears in the browser
+tab title.
 
 **Reporting services**: which receivers (Google, Microsoft, Yahoo, ...) sent reports, how
 many, and the failure rate each of them saw.
@@ -471,6 +477,36 @@ not yet at reject, reporters and last report, and a status with the reasons: hea
 needs attention, or not enforced (`p=none`). A domain that stopped reporting for over a
 week is flagged too.
 
+## Monitoring
+
+Some problems show up as an absence: a broken `rua=` address means fewer reports, not
+more failures, and an SPF record someone edited by hand is wrong long before the failures
+climb. So, besides the checks that run on new data, the analyzer keeps a clock:
+
+- **DNS record drift.** Once a day it looks up the DMARC and SPF records of every domain
+  that reported in the last 90 days, and the DKIM key of every selector seen signing for
+  them in the last 30 days. Each distinct value is stored in a history with the window it
+  was seen in (the **History** tab of the Policy panel shows it, and the DMARC, SPF and
+  DKIM tabs say how long the current value has stood). The first snapshot is the baseline;
+  after that a changed record is an alert, a vanished one a high alert, and a DMARC change
+  that weakens the policy (`p=` loosened, `pct=` lowered) is high too. A resolver failure
+  is never read as "the record is gone".
+- **Silent reporters.** A reporting service that had sent at least 7 reports in its last
+  30 days with no more than two days between report days, and has then sent nothing for
+  4 days, is flagged. That usually means the `rua=` address, a mailbox rule or the
+  connection broke, not that mail stopped.
+- **Stalled ingestion.** No report stored for 48 hours while a mailbox is enabled (and at
+  least ten reports exist) is flagged, with each mailbox's last sync and error.
+
+The last two run after every sync and once an hour, and resolve themselves when reports
+resume. **Settings → Monitoring** (administrators) shows the last snapshot, the tracked
+domains and the thresholds, and **Run the checks now** runs everything on demand. New
+alerts go to the webhook like any other.
+
+The DKIM tab of the Policy panel also reports key hygiene: the key size parsed from `p=`
+(RSA keys under 2048 bits are flagged; Ed25519 is accepted), `t=y` testing mode, revoked
+keys, selectors that sign mail but have no key in DNS, and keys unchanged for over a year.
+
 ## Sessions and the audit log
 
 **Account → Sessions** lists everywhere your account is signed in (browser, address, when
@@ -510,9 +546,10 @@ npm test
 npm run lint
 ```
 
-Seventeen plain-Node suites, no test framework: the parser (containers and XML shapes
+Eighteen plain-Node suites, no test framework: the parser (containers and XML shapes
 from the samples in `examples/`), storage, verdicts, DNS, Graph with certificates, the
 mailbox store, the other mail sources against mock POP3, IMAP, Gmail and S3 servers, alerts,
+monitoring (record drift, silent reporters, stalled ingestion against a scripted zone),
 GeoIP, retention, backup and restore, notifications, the ingest job against a mock Graph
 server, the HTTP API, and the accounts, sessions, TOTP and passkey flow against the real
 server. ESLint checks the server, the tests and the browser scripts; warnings fail the
@@ -524,7 +561,8 @@ builds and publishes the image when they pass.
 ### Code layout
 
 Server modules sit in the repository root, one concern each (`db.js`, `sync.js`,
-`graph.js`, `source-*.js`, `verdict.js`, `backup.js`, `notify.js`, ...). The browser side
+`graph.js`, `source-*.js`, `verdict.js`, `alerts.js`, `monitor.js`, `backup.js`,
+`notify.js`, ...). The browser side
 has no build step: `public/js/` holds numbered classic scripts that `index.html` loads in
 order into one shared global scope, one file per panel or concern, so a function defined
 in an earlier file is visible to later ones. `eslint.config.js` collects their top-level
@@ -532,6 +570,6 @@ names so cross-file references are still checked.
 
 ## Ideas not built
 
-- Alerting by email or webhook (alerts are in-app only).
+- Alerting by email (alerts are in-app and over webhooks).
 - Full ASN-level roll-ups of sources (each IP is shown with its network; there is no
   per-network view).

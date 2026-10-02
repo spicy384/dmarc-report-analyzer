@@ -5,10 +5,36 @@
  * without the network.
  */
 const dns = require("dns");
+const crypto = require("crypto");
 const { parseIp } = require("./ipmatch");
 
 const SPF_LOOKUP_LIMIT = 10;
 const MAX_DEPTH = 10;
+const DKIM_MIN_BITS = 2048;
+
+/**
+ * The size of a DKIM public key: the RSA modulus length from the SPKI in p=, or 256
+ * for an Ed25519 key (a raw 32-byte point). Null when the key does not parse.
+ */
+function dkimKeyBits(p, keyType) {
+  const b64 = String(p || "").replace(/\s+/g, "");
+  if (!b64) return null;
+  let der;
+  try {
+    der = Buffer.from(b64, "base64");
+  } catch {
+    return null;
+  }
+  if (/ed25519/i.test(keyType || "")) {
+    return der.length === 32 ? 256 : null;
+  }
+  try {
+    const key = crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+    return (key.asymmetricKeyDetails && key.asymmetricKeyDetails.modulusLength) || null;
+  } catch {
+    return null;
+  }
+}
 
 function defaultResolvers({ timeoutMs }) {
   const r = new dns.promises.Resolver({ timeout: timeoutMs, tries: 2 });
@@ -240,7 +266,17 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
       }
       const p = (record.match(/(?:^|;)\s*p=([^;]*)/i) || [])[1];
       const k = (record.match(/(?:^|;)\s*k=([^;]*)/i) || [])[1];
-      return { domain: d, selector: s, name, found: true, record, keyType: (k || "rsa").trim(), revoked: p !== undefined && p.trim() === "" };
+      const t = (record.match(/(?:^|;)\s*t=([^;]*)/i) || [])[1];
+      const keyType = (k || "rsa").trim().toLowerCase();
+      const revoked = p !== undefined && p.trim() === "";
+      const keyBits = revoked ? null : dkimKeyBits(p, keyType);
+      const testing = Boolean(t && t.split(":").map((f) => f.trim().toLowerCase()).includes("y"));
+      const warnings = [];
+      if (revoked) warnings.push("The key is revoked (empty p=): mail signed with this selector fails DKIM.");
+      else if (keyType === "rsa" && keyBits !== null && keyBits < DKIM_MIN_BITS) warnings.push(`${keyBits}-bit RSA key: too weak, some receivers ignore keys under ${DKIM_MIN_BITS} bits. Publish a ${DKIM_MIN_BITS}-bit key under a new selector and switch signing to it.`);
+      else if (keyType === "rsa" && keyBits === null && p !== undefined) warnings.push("The p= value does not parse as an RSA public key; the record may be truncated or mis-quoted.");
+      if (testing) warnings.push("t=y: the selector is in testing mode, so receivers treat a failed signature as if there were none.");
+      return { domain: d, selector: s, name, found: true, record, keyType, keyBits, weak: keyType === "rsa" && keyBits !== null && keyBits < DKIM_MIN_BITS, testing, revoked, warnings };
     });
   }
 
@@ -377,4 +413,4 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
   return { getDmarc, getSpf, checkDkim, getMx, getPtr, getAddresses, lookup, clearCache, organizationalDomain, parseDmarcTags };
 }
 
-module.exports = { createDnsRecords, organizationalDomain, parseDmarcTags, SPF_LOOKUP_LIMIT };
+module.exports = { createDnsRecords, organizationalDomain, parseDmarcTags, dkimKeyBits, SPF_LOOKUP_LIMIT, DKIM_MIN_BITS };

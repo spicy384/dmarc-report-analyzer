@@ -5,6 +5,8 @@
  * Settings live in the settings table under one key; nothing is sent unless a
  * URL is configured and the event is switched on.
  */
+const { describeAlert } = require("./alerts");
+
 const KEY = "notify";
 const KINDS = ["teams", "slack", "generic"];
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -129,7 +131,10 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
     if (!s.url || !s.alerts || !alerts || !alerts.length) return null;
     const high = alerts.filter((a) => a.severity === "high").length;
     const title = `DMARC: ${alerts.length} new alert${alerts.length === 1 ? "" : "s"}${high ? ` (${high} high)` : ""}`;
-    const lines = alerts.slice(0, 10).map((a) => `${a.severity === "high" ? "⚠ " : ""}${a.title}${a.detail ? ` — ${a.detail}` : ""}`);
+    const lines = alerts.slice(0, 10).map((a) => {
+      const detail = typeof a.detail === "string" ? a.detail : describeAlert(a);
+      return `${a.severity === "high" ? "⚠ " : ""}${a.title}${detail ? ` — ${detail}` : ""}`;
+    });
     if (alerts.length > 10) lines.push(`and ${alerts.length - 10} more`);
     return send({ event: "alerts", title, lines });
   }

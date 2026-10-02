@@ -729,6 +729,25 @@
       <p id="nf-status" class="bulk-hint" hidden></p>
     </section>
 
+    <section class="panel" id="monitor-panel" hidden>
+      <div class="panel-head">
+        <h2>Monitoring</h2>
+        <span id="monitor-badge" class="badge"></span>
+      </div>
+      <p class="bulk-hint">
+        Once a day the analyzer looks up the DMARC, SPF and DKIM records of every domain that
+        reported in the last 90 days and raises an alert when one changes or disappears (the
+        first snapshot is the baseline). After each sync and every hour it also checks that
+        reporting services which used to send regularly are still sending, and that reports
+        keep arriving at all. Those two alerts clear themselves when the data resumes.
+      </p>
+      <ul id="monitor-facts" class="policy-facts"></ul>
+      <div class="actions">
+        <button id="monitor-run" type="button" class="secondary">Run the checks now</button>
+      </div>
+      <p id="monitor-status" class="bulk-hint" hidden></p>
+    </section>
+
     <section class="panel" id="users-panel" hidden>
       <div class="panel-head">
         <h2>Users</h2>

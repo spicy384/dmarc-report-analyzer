@@ -31,6 +31,14 @@ const zone = {
 };
 for (let i = 0; i < 12; i += 1) zone.txt[`inc${i}.test`] = [[`v=spf1 ip4:10.${i}.0.0/16 -all`]];
 
+// Real keys for the DKIM size checks: a weak RSA key, a sound one in testing mode, and Ed25519.
+const crypto = require("crypto");
+const spkiB64 = (type, options) => crypto.generateKeyPairSync(type, options).publicKey.export({ type: "spki", format: "der" }).toString("base64");
+zone.txt["weak._domainkey.example.com"] = [[`v=DKIM1; k=rsa; p=${spkiB64("rsa", { modulusLength: 1024 })}`]];
+zone.txt["strong._domainkey.example.com"] = [[`v=DKIM1; k=rsa; t=y; p=${spkiB64("rsa", { modulusLength: 2048 })}`]];
+// Ed25519 DKIM records carry the raw 32-byte public key, which is the tail of the SPKI.
+zone.txt["ed._domainkey.example.com"] = [[`v=DKIM1; k=ed25519; p=${Buffer.from(spkiB64("ed25519", {}), "base64").subarray(-32).toString("base64")}`]];
+
 const notFound = () => { const e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e; };
 let calls = 0;
 const resolvers = {
@@ -91,6 +99,14 @@ const dnsr = createDnsRecords({ resolvers, now: () => clock, cacheTtlMs: 1000 })
   check("dkim: revoked key", revoked.found && revoked.revoked === true);
   const nok = await dnsr.checkDkim("example.com", "nope");
   check("dkim: missing selector", nok.found === false);
+  check("dkim: truncated key has no size and says so", k.keyBits === null && k.weak === false && k.warnings.some((w) => w.includes("does not parse")), JSON.stringify(k.warnings));
+  const weak = await dnsr.checkDkim("example.com", "weak");
+  check("dkim: 1024-bit RSA key is flagged weak", weak.found && weak.keyBits === 1024 && weak.weak === true && weak.warnings.some((w) => w.includes("1024-bit")), JSON.stringify(weak));
+  const strong = await dnsr.checkDkim("example.com", "strong");
+  check("dkim: 2048-bit RSA key passes, t=y noted", strong.keyBits === 2048 && strong.weak === false && strong.testing === true && strong.warnings.length === 1 && strong.warnings[0].includes("t=y"), JSON.stringify(strong));
+  const ed = await dnsr.checkDkim("example.com", "ed");
+  check("dkim: ed25519 key is 256 bits and fine", ed.keyType === "ed25519" && ed.keyBits === 256 && ed.weak === false && ed.warnings.length === 0, JSON.stringify(ed));
+  check("dkim: revoked key warns and has no size", revoked.keyBits === null && revoked.warnings.some((w) => w.includes("revoked")));
 
   // --- mx ---
   const mx = await dnsr.getMx("multi.test");
