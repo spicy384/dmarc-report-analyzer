@@ -189,13 +189,86 @@ async function api(path, options = {}) {
 
 const pad = (n) => String(n).padStart(2, "0");
 
-/** Local date and time for mailbox and app events (unix seconds or ISO). */
+// --- printing one panel -----------------------------------------------------------
+//
+// "Print" on a panel marks it as the print target; the print stylesheet (dmarc.css)
+// then hides everything else, shows every tab of the panel, and adds a heading
+// with the app name, the filter in force and the date, so the sheet stands alone.
+
+function printPanel(panelId) {
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  const heading = document.createElement("div");
+  heading.className = "print-heading";
+  const title = document.createElement("h1");
+  title.textContent = `DMARC Report Analyzer: ${(panel.querySelector(".panel-head h2") || {}).textContent || panelId}`;
+  const meta = document.createElement("p");
+  const bits = [rangeLabel ? rangeLabel.textContent : "", domainSelect.value ? `domain ${domainSelect.value}` : "all domains", mailboxSelect.value ? `mailbox ${mailboxSelect.options[mailboxSelect.selectedIndex].textContent}` : ""];
+  meta.textContent = `${bits.filter(Boolean).join(" · ")} · printed ${formatTimestamp(Math.floor(Date.now() / 1000))}`;
+  heading.append(title, meta);
+  panel.prepend(heading);
+  document.body.classList.add("print-focus");
+  panel.classList.add("print-target");
+  const cleanup = () => {
+    document.body.classList.remove("print-focus");
+    panel.classList.remove("print-target");
+    heading.remove();
+    window.removeEventListener("afterprint", cleanup);
+  };
+  window.addEventListener("afterprint", cleanup);
+  window.print();
+  // Browsers without afterprint (or a cancelled dialog) still get cleaned up.
+  setTimeout(cleanup, 1500);
+}
+
+document.addEventListener("click", (e) => {
+  const button = e.target.closest(".print-btn");
+  if (button && button.dataset.print) printPanel(button.dataset.print);
+});
+
+// Times of events (syncs, alerts, sessions, forensic arrivals) are shown in a zone the
+// user picks under Account: the browser's own, UTC, or any IANA zone. Report windows
+// and chart days stay UTC calendar dates, because that is how receivers cut them.
+let displayTimeZone = (() => {
+  try {
+    return localStorage.getItem("dmarc-tz") || "local";
+  } catch {
+    return "local";
+  }
+})();
+const timeFormatters = new Map();
+
+function timeFormatter(zone) {
+  const key = zone || "local";
+  if (!timeFormatters.has(key)) {
+    const options = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+    if (zone && zone !== "local") options.timeZone = zone;
+    timeFormatters.set(key, new Intl.DateTimeFormat("en-CA", options));
+  }
+  return timeFormatters.get(key);
+}
+
+function setDisplayTimeZone(zone) {
+  displayTimeZone = zone || "local";
+  try {
+    localStorage.setItem("dmarc-tz", displayTimeZone);
+  } catch { /* private mode */ }
+}
+
+/** Date and time of an event (unix seconds or ISO) in the chosen display zone. */
 function formatTimestamp(ts) {
   if (!ts) {
     return "";
   }
   const d = new Date(typeof ts === "number" ? ts * 1000 : ts);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  let parts;
+  try {
+    parts = timeFormatter(displayTimeZone).formatToParts(d);
+  } catch {
+    parts = timeFormatter("local").formatToParts(d);
+  }
+  const get = (type) => (parts.find((p) => p.type === type) || {}).value || "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
 }
 
 /** UTC calendar date for report windows, which providers cut on UTC days. */

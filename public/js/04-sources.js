@@ -2,6 +2,34 @@
 // One of the classic scripts index.html loads in order; they share one global scope,
 // so a function or const defined here is visible to the files that follow.
 
+// --- labelling suggestions ---------------------------------------------------------
+
+/** The organisation part of a reverse-DNS name: the last two labels, or three under a two-letter country suffix. */
+function ptrOrganisation(ptr) {
+  const labels = String(ptr || "").toLowerCase().replace(/\.$/, "").split(".").filter(Boolean);
+  if (labels.length < 2) return labels.join(".");
+  const take = labels.length >= 3 && labels[labels.length - 1].length === 2 && labels[labels.length - 2].length <= 3 ? 3 : 2;
+  return labels.slice(-take).join(".");
+}
+
+/**
+ * What to propose when labelling a source: the catalogue entry when the address or
+ * its reverse DNS matches a known service, otherwise a wildcard on the reverse-DNS
+ * organisation so the label covers the sender's whole fleet, not one address.
+ */
+function senderSuggestion(r) {
+  if (r.catalogue) {
+    return { pattern: r.catalogue.pattern, kind: "vendor", label: r.catalogue.name, reason: `This address looks like ${r.catalogue.name} (${r.ptr ? "reverse DNS" : "address"} matches ${r.catalogue.pattern}).` };
+  }
+  if (r.ptr) {
+    const org = ptrOrganisation(r.ptr);
+    if (org && org.includes(".") && org !== r.ptr) {
+      return { pattern: `*.${org}`, kind: "ours", label: org, reason: `Reverse DNS is ${r.ptr}.` };
+    }
+  }
+  return null;
+}
+
 // --- sources ---------------------------------------------------------------
 
 function flagEmoji(cc) {
@@ -110,8 +138,8 @@ function ipRow(r) {
     labelBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (r.sender) return openSenderForm({ id: r.sender.id, pattern: r.sender.pattern, kind: r.sender.kind, label: r.sender.label });
-      if (r.catalogue) return openSenderForm({ pattern: r.catalogue.pattern, kind: "vendor", label: r.catalogue.name });
-      openSenderForm({ pattern: r.ip, kind: "ours", label: r.ptr ? r.ptr.split(".").slice(-3).join(".") : "" });
+      // The form starts with the single address; the suggestion offers the wider pattern.
+      openSenderForm({ pattern: r.ip, kind: r.catalogue ? "vendor" : "ours", label: r.catalogue ? r.catalogue.name : (r.ptr ? ptrOrganisation(r.ptr) : "") }, { suggestion: senderSuggestion(r) });
     });
     senderCell.append(" ", labelBtn);
   }

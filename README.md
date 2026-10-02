@@ -166,6 +166,16 @@ switch and any open IP or report, so a view can be bookmarked or pasted to a col
 list of emails whose attachments could not be read. Emails already ingested are skipped, so
 re-running is cheap; a backfill option re-scans from any date.
 
+**Printing**: **Domains** and **This week** have a Print button that prints (or saves as
+PDF) just that panel, every tab expanded, under a heading with the filter in force and the
+date, for handing to someone who does not use the app.
+
+**Labelling help**: when you label a source, the form suggests what to enter: the catalogue
+entry when the address or its reverse DNS matches a known service ("looks like SendGrid,
+pattern `*.sendgrid.net`"), otherwise a wildcard on the reverse-DNS organisation so the
+label covers the sender's whole fleet rather than one address. **Use this** fills the form;
+nothing is saved until you add it.
+
 ### A note on "times"
 
 Aggregate (`rua=`) reports cover a window, usually one UTC day, and give counts per source
@@ -536,6 +546,37 @@ The DKIM tab of the Policy panel also reports key hygiene: the key size parsed f
 (RSA keys under 2048 bits are flagged; Ed25519 is accepted), `t=y` testing mode, revoked
 keys, selectors that sign mail but have no key in DNS, and keys unchanged for over a year.
 
+## Versions and updates
+
+The footer shows the running version (from `package.json`) and, in the container, the
+commit and build date baked in by the workflow. Once a day the app lists the image's tags
+on GitHub Container Registry and, when a higher release than its own is published, the
+footer says so with the `docker compose pull` to run; administrators can **Check now**.
+Only the image name goes over the wire; set `UPDATE_CHECK=false` to never ask, or
+`UPDATE_IMAGE` if you publish the image under another name.
+
+Releases are git tags: `git tag v1.2.3 && git push origin v1.2.3` builds and publishes
+`ghcr.io/spicy384/dmarc-report-analyzer:1.2.3` (and `:1.2`) from that commit, next to the
+`:latest` that every push to `main` produces. Bump `version` in `package.json` in the same
+commit so the footer and the update check agree. Dependabot opens weekly pull requests for
+npm dependencies and GitHub Actions versions.
+
+## Hardening
+
+Besides the per-account lockout (five wrong passwords or codes lock the account for 15
+minutes), every endpoint that takes a credential while signed out (`/api/auth/setup`,
+`/api/auth/login`, its MFA and recovery steps, passkey sign-in) is throttled per client
+address: twenty failed attempts in 15 minutes answer `429` with `Retry-After` until the
+window passes. Successes never count, so a shared office address only pays for its own
+mistakes. Behind a reverse proxy the first `X-Forwarded-For` hop is the address.
+`LOGIN_RATE_LIMIT` changes the number; `0` switches it off.
+
+Every response carries a Content-Security-Policy (`default-src 'self'`; scripts only from
+the app itself; inline styles allowed because the chart sets them from JavaScript; `data:`
+images for the authenticator QR code; no framing), `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and a Permissions-Policy that
+switches off camera, microphone, geolocation and payment.
+
 ## Sessions and the audit log
 
 **Account → Sessions** lists everywhere your account is signed in (browser, address, when
@@ -586,8 +627,15 @@ server, the HTTP API, and the accounts, sessions, TOTP and passkey flow against 
 server. ESLint checks the server, the tests and the browser scripts; warnings fail the
 run.
 
-The GitHub workflow runs lint and the suite on every push and pull request, and only
-builds and publishes the image when they pass.
+There is also one browser test (`npm run e2e`, Playwright with Chromium, after
+`npx playwright install chromium` once): it starts the app against a seeded, throwaway
+data directory (`test/e2e/serve.js`), creates the first administrator, tours the dashboard,
+clicks through the Policy tabs, opens a report, uploads a file on the Analyze page and
+checks the Settings page, failing on any console error. It is the one place the browser
+scripts are exercised for real, so a broken panel fails CI instead of the next refresh.
+
+The GitHub workflow runs lint, the suite and the browser test on every push and pull
+request, and only builds and publishes the image when they pass.
 
 ### Code layout
 

@@ -36,7 +36,36 @@ function senderPill(sender) {
   return span;
 }
 
-function openSenderForm(prefill) {
+const ksSuggestion = document.getElementById("ks-suggestion");
+
+/**
+ * Shows what the catalogue or the reverse DNS suggests for the source being
+ * labelled, with a button that fills the form from it. `suggestion` is
+ * { pattern, kind, label, reason }.
+ */
+function showSenderSuggestion(suggestion) {
+  ksSuggestion.replaceChildren();
+  ksSuggestion.hidden = !suggestion;
+  if (!suggestion) return;
+  const text = document.createElement("span");
+  text.textContent = `${suggestion.reason} Suggested: label "${suggestion.label}" as ${KIND_LABEL[suggestion.kind] || suggestion.kind} with pattern `;
+  const code = document.createElement("code");
+  code.className = "mono";
+  code.textContent = suggestion.pattern;
+  const use = document.createElement("button");
+  use.type = "button";
+  use.className = "link-btn";
+  use.textContent = "Use this";
+  use.addEventListener("click", () => {
+    ksPattern.value = suggestion.pattern;
+    ksKind.value = suggestion.kind;
+    ksLabel.value = suggestion.label;
+    ksLabel.focus();
+  });
+  ksSuggestion.append(text, code, ". ", use);
+}
+
+function openSenderForm(prefill, { suggestion = null } = {}) {
   editingSenderId = prefill && prefill.id ? prefill.id : null;
   ksPattern.value = prefill ? prefill.pattern || "" : "";
   ksKind.value = prefill && prefill.kind ? prefill.kind : "ours";
@@ -44,6 +73,7 @@ function openSenderForm(prefill) {
   ksNote.value = prefill ? prefill.note || "" : "";
   ksSave.textContent = editingSenderId ? "Save" : "Add";
   ksCancel.hidden = !editingSenderId && !prefill;
+  showSenderSuggestion(suggestion);
   senderForm.scrollIntoView({ behavior: "smooth", block: "center" });
   (editingSenderId ? ksLabel : prefill ? ksLabel : ksPattern).focus();
 }
@@ -56,6 +86,7 @@ function resetSenderForm() {
   ksNote.value = "";
   ksSave.textContent = "Add";
   ksCancel.hidden = true;
+  showSenderSuggestion(null);
 }
 
 ksCancel.addEventListener("click", resetSenderForm);

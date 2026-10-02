@@ -182,6 +182,7 @@ function policyTabs(boxes, container = policyBody, state = policyTabState) {
     button.addEventListener("click", () => show(b.key));
     b.button = button;
     b.box.classList.add("tab-panel");
+    b.box.dataset.printTitle = b.label; // the print stylesheet shows every tab, titled
     bar.appendChild(button);
   }
   container.appendChild(bar);

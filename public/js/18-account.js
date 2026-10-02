@@ -435,4 +435,42 @@ document.getElementById("add-user-btn").addEventListener("click", async () => {
   }
 });
 
+// --- display time zone ------------------------------------------------------------
+
+(function setupTimeZonePicker() {
+  const select = document.getElementById("acct-timezone");
+  let zones = [];
+  try {
+    zones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
+  } catch {
+    zones = [];
+  }
+  const browserZone = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return null;
+    }
+  })();
+  if (browserZone) select.options[0].textContent = `This browser's zone (${browserZone})`;
+  for (const z of zones) {
+    if (z === "UTC") continue;
+    const opt = document.createElement("option");
+    opt.value = z;
+    opt.textContent = z;
+    select.appendChild(opt);
+  }
+  select.value = displayTimeZone;
+  if (select.value !== displayTimeZone) {
+    // A zone this browser does not know: fall back rather than show a blank picker.
+    setDisplayTimeZone("local");
+    select.value = "local";
+  }
+  select.addEventListener("change", () => {
+    setDisplayTimeZone(select.value);
+    setStatus(`Times are now shown in ${select.value === "local" ? "this browser's zone" : select.value}.`);
+    loadAll();
+  });
+})();
+
 /** Loads everything the signed-in app needs. */
