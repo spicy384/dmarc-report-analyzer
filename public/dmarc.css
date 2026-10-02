@@ -1384,3 +1384,24 @@ td.dns-history-value {
   margin: 0 0 0.4rem;
   font-size: 0.95rem;
 }
+
+/* One-time analysis: the banner, and everything that would touch the live store goes away. */
+.scratch-banner {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.scratch-banner .alerts-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.scratch-summary {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+body.scratch-mode .writer-only,
+body.scratch-mode #alerts-banner,
+body.scratch-mode #senders-panel,
+body.scratch-mode #upload-panel,
+body.scratch-mode #mailbox-label {
+  display: none !important;
+}

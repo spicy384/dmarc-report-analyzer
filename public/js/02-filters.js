@@ -84,7 +84,7 @@ reporterFilter.addEventListener("change", () => { reportsPage = 1; loadReports()
 
 exportBtn.addEventListener("click", () => {
   const a = document.createElement("a");
-  a.href = `/api/export/records.csv${filterQuery()}`;
+  a.href = apiPath(`/api/export/records.csv${filterQuery()}`);
   a.download = "dmarc-records.csv";
   document.body.appendChild(a);
   a.click();

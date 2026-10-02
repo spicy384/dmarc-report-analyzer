@@ -250,6 +250,29 @@ async function waitForServer(tries = 60) {
     check("upload: audited", (await req("/api/audit?action=reports.upload")).body.entries.length >= 5);
     check("tls: mailbox filter", (await req("/api/tls?mailbox=upload")).body.total === 1 && (await req("/api/tls?mailbox=env")).body.total === 0);
 
+    // --- one-time (scratch) analysis: same endpoints, separate in-memory database ---
+    const scratchUpload = async (id, file, bytes) => {
+      const res = await fetch(`http://127.0.0.1:${APP_PORT}/api/scratch${id ? `/${id}` : ""}/upload`, { method: "POST", headers: { Cookie: cookie, "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file) }, body: bytes });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    };
+    const liveReports = (await req("/api/status")).body.stats.reports.reports;
+    const liveSummary = (await req("/api/summary?range=all")).body;
+    const sc1 = await scratchUpload(null, "microsoft.xml", Buffer.from(microsoftXml));
+    const scratchId = sc1.body.id;
+    check("scratch: first upload creates an analysis", sc1.status === 200 && /^[0-9a-f]{24}$/.test(scratchId || "") && sc1.body.aggregate.added === 1 && sc1.body.analysis.reports === 1, JSON.stringify(sc1.body).slice(0, 300));
+    check("scratch: the live store is untouched", (await req("/api/status")).body.stats.reports.reports === liveReports && JSON.stringify((await req("/api/summary?range=all")).body.totals) === JSON.stringify(liveSummary.totals));
+    const scSummary = await req(`/api/scratch/${scratchId}/summary`);
+    const scReports = await req(`/api/scratch/${scratchId}/reports`);
+    check("scratch: analysis endpoints answer from the scratch database", scSummary.status === 200 && scSummary.body.totals.reports === 1 && scReports.body.total === 1 && scReports.body.rows[0].orgName !== "google.com" && scReports.body.rows[0].mailboxId === "upload", JSON.stringify(scSummary.body.totals));
+    check("scratch: sources carry the live store's PTR and labels", (await req(`/api/scratch/${scratchId}/ips`)).body.ips.length > 0 && (await req(`/api/scratch/${scratchId}/domains`)).body.domains.length === 1);
+    const sc2 = await scratchUpload(scratchId, "tls.json", fs.readFileSync(path.join(EX, "tls-report.json")));
+    check("scratch: adding a file to the same analysis", sc2.status === 200 && sc2.body.id === scratchId && sc2.body.tls.added === 1 && (await req(`/api/scratch/${scratchId}/tls`)).body.total === 1);
+    check("scratch: status lists the files", (await req(`/api/scratch/${scratchId}`)).body.files.length === 2 && (await req(`/api/scratch/${scratchId}`)).body.tls === 1);
+    check("scratch: the XML of a scratch report downloads, and the live store has no such id collision issue", (await req(`/api/scratch/${scratchId}/reports/${scReports.body.rows[0].id}/xml`, { raw: true })).status === 200);
+    check("scratch: unknown id is 404", (await req("/api/scratch/000000000000000000000000/summary")).status === 404 && (await req("/api/scratch/000000000000000000000000")).status === 404);
+    check("scratch: delete, then gone", (await req(`/api/scratch/${scratchId}`, { method: "DELETE" })).status === 200 && (await req(`/api/scratch/${scratchId}/summary`)).status === 404);
+    check("scratch: live TLS count unchanged by the scratch upload", (await req("/api/status")).body.tlsCount === 1);
+
     // --- weekly summary ---
     const wk = await req("/api/weekly?end=2025-09-19");
     check("weekly: shape and totals", wk.status === 200 && wk.body.thisWeek.totals.messages === 53 && wk.body.lastWeek.totals.messages === 0 && wk.body.newSources.length === 4 && wk.body.topFailing.length === 2);

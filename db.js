@@ -1746,6 +1746,31 @@ function openDatabase({ dataDir, file } = {}) {
       .run(ip, now(), info.countryCode || null, info.country || null, info.city || null, info.asn || null, info.asOrg || null, info.source || "none", now());
   }
 
+  /** The ip_info rows for these IPs, for copying into a scratch analysis. */
+  function ipInfoRows(ips) {
+    if (!ips || !ips.length) return [];
+    return db.prepare("SELECT * FROM ip_info WHERE ip IN (SELECT value FROM json_each(?))").all(JSON.stringify(ips));
+  }
+
+  /** Stores ip_info rows taken from another database, replacing what is there. */
+  function importIpInfo(rows) {
+    const stmt = db.prepare(`INSERT OR REPLACE INTO ip_info (ip, ptr, looked_up_at, country_code, country, city, asn, as_org, geo_source, geo_at)
+      VALUES (@ip, @ptr, @looked_up_at, @country_code, @country, @city, @asn, @as_org, @geo_source, @geo_at)`);
+    let n = 0;
+    db.transaction(() => {
+      for (const r of rows || []) {
+        stmt.run({ ip: r.ip, ptr: r.ptr ?? null, looked_up_at: r.looked_up_at ?? now(), country_code: r.country_code ?? null, country: r.country ?? null, city: r.city ?? null, asn: r.asn ?? null, as_org: r.as_org ?? null, geo_source: r.geo_source ?? null, geo_at: r.geo_at ?? null });
+        n += 1;
+      }
+    })();
+    return n;
+  }
+
+  /** Every distinct source IP in the records table. */
+  function allSourceIps() {
+    return db.prepare("SELECT DISTINCT source_ip AS ip FROM records").all().map((r) => r.ip);
+  }
+
   /** Forgets every geo answer so the next lookup pass redoes them (after adding the MaxMind files, say). */
   function clearGeo() {
     return db.prepare("UPDATE ip_info SET country_code = NULL, country = NULL, city = NULL, asn = NULL, as_org = NULL, geo_source = NULL, geo_at = NULL").run().changes;
@@ -1968,6 +1993,9 @@ function openDatabase({ dataDir, file } = {}) {
     forensics,
     forensicById,
     forensicCount,
+    ipInfoRows,
+    importIpInfo,
+    allSourceIps,
     insertTlsReport,
     tlsReports,
     tlsReportById,

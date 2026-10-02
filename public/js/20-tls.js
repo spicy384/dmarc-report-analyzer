@@ -83,7 +83,7 @@ function tlsDetail(r) {
   actions.className = "row-actions";
   const dl = document.createElement("a");
   dl.className = "button-link secondary small";
-  dl.href = `/api/tls/${encodeURIComponent(r.id)}/json`;
+  dl.href = apiPath(`/api/tls/${encodeURIComponent(r.id)}/json`);
   dl.setAttribute("download", "");
   dl.textContent = "Download JSON";
   actions.appendChild(dl);

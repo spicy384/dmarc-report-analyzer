@@ -25,8 +25,14 @@ function readHash() {
   hideForwards.checked = p.get("hide") === "1";
   if (p.has("failing")) failingOnly.checked = p.get("failing") !== "0";
   pendingOpen = p.has("ip") ? { ip: p.get("ip") } : p.has("report") ? { report: p.get("report") } : null;
-  if (p.get("view") === "settings" && currentView !== "settings") setView("settings");
-  else if (p.get("view") !== "settings" && currentView === "settings") setView("dashboard");
+  const view = VIEWS[p.get("view") || ""] ? p.get("view") : "dashboard";
+  if (view !== currentView) setView(view);
+  // A one-time analysis survives a reload while the server still has it.
+  const scratch = p.get("scratch") || null;
+  if (scratch !== scratchId) {
+    if (scratch) enterScratch(scratch, { verify: true });
+    else exitScratch({ reload: false });
+  }
   const wanted = p.get("lookup") || "";
   if (wanted && wanted !== lookupQuery) {
     lookupInput.value = wanted;
@@ -51,7 +57,8 @@ function writeHash(extra = {}) {
   if (hideForwards.checked) p.set("hide", "1");
   if (!failingOnly.checked) p.set("failing", "0");
   if (lookupQuery) p.set("lookup", lookupQuery);
-  if (currentView === "settings") p.set("view", "settings");
+  if (currentView !== "dashboard") p.set("view", currentView);
+  if (scratchId) p.set("scratch", scratchId);
   for (const [k, v] of Object.entries(extra)) {
     if (v !== null && v !== undefined && v !== "") p.set(k, String(v));
   }

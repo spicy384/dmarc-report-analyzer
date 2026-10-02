@@ -107,6 +107,16 @@ shown once any exist, gives sessions succeeded and failed, the policy mode sende
 sending MTA; each report expands to its failing sessions and the JSON can be downloaded.
 A failure here is mail a sender in enforce mode did not deliver.
 
+**Analyze files** (its own page): drop one or more reports to look at them with the full
+dashboard without storing them. The analysis lives in an in-memory database on the server
+that only you can see, is served by the same endpoints under `/api/scratch/<id>/`, and is
+dropped after an hour without use or when you discard it. Your known-sender labels and the
+reverse-DNS and GeoIP answers already on file are applied, and new IPs are resolved on the
+spot, so the sources table reads the same as the live one. While an analysis is open a
+banner says so, the mailbox filter and everything that would write to the live store
+(labels, acknowledgements, uploads) are hidden, and the page link carries the analysis id
+so a reload lands back in it. Any signed-in user can do this, since nothing is saved.
+
 **Upload reports**: writers can drop files on the dashboard instead of (or as well as)
 reading a mailbox: aggregate reports as `.xml`, `.xml.gz` or `.zip`, TLS reports as `.json`
 or `.json.gz`, and whole emails saved as `.eml` (forensic reports, or messages carrying
@@ -565,8 +575,9 @@ npm test
 npm run lint
 ```
 
-Nineteen plain-Node suites, no test framework: the parser (containers and XML shapes
-from the samples in `examples/`), TLS reports and the shared ingest path, storage,
+Twenty plain-Node suites, no test framework: the parser (containers and XML shapes
+from the samples in `examples/`), TLS reports and the shared ingest path, one-time
+analyses (isolation, enrichment, expiry), storage,
 verdicts, DNS (including MTA-STS against a fake policy host), Graph with certificates, the
 mailbox store, the other mail sources against mock POP3, IMAP, Gmail and S3 servers, alerts,
 monitoring (record drift, silent reporters, stalled ingestion against a scripted zone),
@@ -581,8 +592,10 @@ builds and publishes the image when they pass.
 ### Code layout
 
 Server modules sit in the repository root, one concern each (`db.js`, `sync.js`,
-`graph.js`, `source-*.js`, `ingest.js`, `tlsrpt-parser.js`, `verdict.js`, `alerts.js`,
-`monitor.js`, `backup.js`, `notify.js`, ...). The browser side
+`graph.js`, `source-*.js`, `ingest.js`, `tlsrpt-parser.js`, `scratch.js`, `verdict.js`,
+`alerts.js`, `monitor.js`, `backup.js`, `notify.js`, ...). The report-reading endpoints
+sit on one Express router that takes its database from `req.db`, mounted under `/api` for
+the live store and under `/api/scratch/:id` for a one-time analysis. The browser side
 has no build step: `public/js/` holds numbered classic scripts that `index.html` loads in
 order into one shared global scope, one file per panel or concern, so a function defined
 in an earlier file is visible to later ones. `eslint.config.js` collects their top-level

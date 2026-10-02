@@ -9,14 +9,13 @@
 // view is part of the page link so a reload or a shared link lands on the same one.
 
 const viewNav = document.getElementById("view-nav");
-const VIEWS = { dashboard: document.getElementById("view-dashboard"), settings: document.getElementById("view-settings") };
+const VIEWS = { dashboard: document.getElementById("view-dashboard"), analyze: document.getElementById("view-analyze"), settings: document.getElementById("view-settings") };
 let currentView = "dashboard";
 
 async function setView(name, { scrollTo = null } = {}) {
   currentView = VIEWS[name] ? name : "dashboard";
   for (const [key, el] of Object.entries(VIEWS)) el.hidden = key !== currentView;
-  document.getElementById("nav-dashboard").classList.toggle("is-active", currentView === "dashboard");
-  document.getElementById("nav-settings").classList.toggle("is-active", currentView === "settings");
+  for (const key of Object.keys(VIEWS)) document.getElementById(`nav-${key}`).classList.toggle("is-active", currentView === key);
   if (currentView === "settings" && currentUser) {
     accountPanel.hidden = false;
     renderAccountPanel();
@@ -40,6 +39,7 @@ async function setView(name, { scrollTo = null } = {}) {
 }
 
 document.getElementById("nav-dashboard").addEventListener("click", () => setView("dashboard"));
+document.getElementById("nav-analyze").addEventListener("click", () => setView("analyze"));
 document.getElementById("nav-settings").addEventListener("click", () => setView("settings"));
 accountBtn.addEventListener("click", () => setView("settings", { scrollTo: "account-panel" }));
 usersBtn.addEventListener("click", () => setView("settings", { scrollTo: "users-panel" }));

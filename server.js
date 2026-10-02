@@ -17,6 +17,7 @@ const { createBackup, restoreBackup } = require("./backup");
 const { createNotifier } = require("./notify");
 const { createMonitor } = require("./monitor");
 const { createIngest } = require("./ingest");
+const { createScratchStore } = require("./scratch");
 
 // Manually uploaded files are stored under this pseudo-mailbox id.
 const UPLOAD_MAILBOX = "upload";
@@ -68,6 +69,8 @@ function afterIngest(addedReportIds = []) {
 }
 
 const ingest = createIngest({ db });
+// One-time analyses of uploaded files: in-memory databases, never written to DATA_DIR.
+const scratches = createScratchStore({ openDatabase, createIngest, createSync, mainDb: db, geoip });
 const sync = createSync({
   db,
   mailboxes,
@@ -229,27 +232,35 @@ app.get("/api/sync/:id", route(async (req, res) => {
   res.json(publicJob(job));
 }));
 
+// --- analysis router -------------------------------------------------------------
+//
+// Every endpoint that reads report data lives on this router and takes the
+// database from req.db. It is mounted twice: under /api for the live store, and
+// under /api/scratch/:id for a one-time analysis of uploaded files that is never
+// written to disk (see scratch.js).
+const analysis = express.Router();
+
 // --- TLS reports (RFC 8460) ----------------------------------------------------
 
-app.get("/api/tls", route(async (req, res) => {
+analysis.get("/tls", route(async (req, res) => {
   const filter = filterFrom(req);
-  res.json(db.tlsReports(filter, { page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
+  res.json(req.db.tlsReports(filter, { page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
 }));
 
-app.get("/api/tls/summary", route(async (req, res) => {
-  res.json(db.tlsSummary(filterFrom(req)));
+analysis.get("/tls/summary", route(async (req, res) => {
+  res.json(req.db.tlsSummary(filterFrom(req)));
 }));
 
-app.get("/api/tls/:id", route(async (req, res) => {
-  const row = db.tlsReportById(positiveInt(req.params.id, 0));
+analysis.get("/tls/:id", route(async (req, res) => {
+  const row = req.db.tlsReportById(positiveInt(req.params.id, 0));
   if (!row) {
     return res.status(404).json({ error: "No such TLS report." });
   }
   res.json(row);
 }));
 
-app.get("/api/tls/:id/json", route(async (req, res) => {
-  const raw = db.tlsReportRaw(positiveInt(req.params.id, 0));
+analysis.get("/tls/:id/json", route(async (req, res) => {
+  const raw = req.db.tlsReportRaw(positiveInt(req.params.id, 0));
   if (!raw) {
     return res.status(404).json({ error: "No such TLS report, or its JSON was not kept." });
   }
@@ -297,13 +308,13 @@ app.post("/api/upload", authGuard.requireWriter, express.raw({ type: () => true,
 
 // --- forensic reports -----------------------------------------------------------
 
-app.get("/api/forensic", route(async (req, res) => {
+analysis.get("/forensic", route(async (req, res) => {
   const filter = filterFrom(req);
-  res.json(db.forensics(filter, { ip: req.query.ip, page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
+  res.json(req.db.forensics(filter, { ip: req.query.ip, page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
 }));
 
-app.get("/api/forensic/:id", route(async (req, res) => {
-  const row = db.forensicById(positiveInt(req.params.id, 0));
+analysis.get("/forensic/:id", route(async (req, res) => {
+  const row = req.db.forensicById(positiveInt(req.params.id, 0));
   if (!row) {
     return res.status(404).json({ error: "No such forensic report." });
   }
@@ -362,35 +373,35 @@ function weeklyText(w) {
 }
 
 /** This week against last week, plus a plain-text version to paste into email or chat. */
-app.get("/api/weekly", route(async (req, res) => {
+analysis.get("/weekly", route(async (req, res) => {
   let end;
   try {
     end = req.query.end ? parseTime(req.query.end, "end") : null;
   } catch (error) {
     return res.status(400).json({ error: error.message });
   }
-  res.json(buildWeekly({ end, domain: req.query.domain ? String(req.query.domain).toLowerCase() : null, mailbox: req.query.mailbox || null }));
+  res.json(buildWeekly({ db: req.db, end, domain: req.query.domain ? String(req.query.domain).toLowerCase() : null, mailbox: req.query.mailbox || null }));
 }));
 
 /** The week ending on `end` (unix seconds, default today) against the week before, plus its plain-text form. */
-function buildWeekly({ end = null, domain = null, mailbox = null } = {}) {
+function buildWeekly({ db: store = db, end = null, domain = null, mailbox = null } = {}) {
   const DAY = 86400;
   const today = Math.floor(Date.now() / 1000 / DAY) * DAY;
   const to = (end === null ? today : Math.floor(end / DAY) * DAY) + DAY; // week ending on this day, inclusive
   const from = to - 7 * DAY;
   const base = { domain, mailbox, excludeForwards: false };
 
-  const thisWeek = db.summary({ ...base, from, to });
-  const lastWeek = db.summary({ ...base, from: from - 7 * DAY, to: from });
-  const ips = db.ips({ ...base, from, to }, { limit: 5000 });
+  const thisWeek = store.summary({ ...base, from, to });
+  const lastWeek = store.summary({ ...base, from: from - 7 * DAY, to: from });
+  const ips = store.ips({ ...base, from, to }, { limit: 5000 });
   const w = {
     domain: base.domain,
     thisWeek: { from, to, totals: thisWeek.totals, days: thisWeek.days, reporters: thisWeek.topReporters },
     lastWeek: { from: from - 7 * DAY, to: from, totals: lastWeek.totals, days: lastWeek.days },
-    newSources: db.firstSeenSources({ ...base, from, to }).slice(0, 10),
+    newSources: store.firstSeenSources({ ...base, from, to }).slice(0, 10),
     topFailing: ips.filter((r) => r.failed > 0).sort((a, b) => b.failed - a.failed).slice(0, 5),
     topForwards: ips.filter((r) => r.likelyForwards > 0).sort((a, b) => b.likelyForwards - a.likelyForwards).slice(0, 5),
-    openAlerts: db.openAlertCount()
+    openAlerts: store.openAlertCount()
   };
   w.text = weeklyText(w);
   return w;
@@ -442,7 +453,7 @@ app.get("/api/lookup", route(async (req, res) => {
  * Everything needed to decide whether the domain is ready for p=reject: the DNS
  * records with warnings, and what rejecting would have done in the period.
  */
-app.get("/api/policy", route(async (req, res) => {
+analysis.get("/policy", route(async (req, res) => {
   const filter = filterFrom(req);
   const domain = String(req.query.domain || filter.domain || "").trim().toLowerCase();
   if (!/^[a-z0-9.-]+\.[a-z0-9-]{2,}$/.test(domain)) {
@@ -475,7 +486,7 @@ app.get("/api/policy", route(async (req, res) => {
 
   // Sources in the period, annotated with whether SPF authorises them.
   const spfNets = compileSenders((spf.networks || []).map((n) => ({ pattern: n.cidr, via: n.via })));
-  const rows = db.ips(scoped, { limit: 5000 }).map((r) => {
+  const rows = req.db.ips(scoped, { limit: 5000 }).map((r) => {
     const inSpf = findSender(spfNets, r.ip, null);
     const nonForwardFailed = r.failed - (r.likelyForwards || 0);
     return { ...r, inSpf: Boolean(inSpf), spfVia: inSpf ? inSpf.via : null, nonForwardFailed };
@@ -499,15 +510,15 @@ app.get("/api/policy", route(async (req, res) => {
   const failingInsideSpf = rows.filter((r) => r.inSpf && r.nonForwardFailed > 0);
 
   // DKIM selectors seen for the domain, checked in DNS.
-  const selectors = db.dkimSelectors(domain, filter).filter((s) => s.signingDomain === domain || String(s.signingDomain || "").endsWith(`.${domain}`) || domain.endsWith(`.${s.signingDomain}`));
+  const selectors = req.db.dkimSelectors(domain, filter).filter((s) => s.signingDomain === domain || String(s.signingDomain || "").endsWith(`.${domain}`) || domain.endsWith(`.${s.signingDomain}`));
   const dkim = await Promise.all(selectors.slice(0, 20).map(async (s) => {
     const check = await dnsRecords.checkDkim(s.signingDomain, s.selector, { refresh }).catch((error) => ({ found: false, error: error.message }));
     // When the daily snapshot has tracked this key, say how long the current value has stood.
-    const latest = db.dnsLatest(s.signingDomain, "dkim", s.selector);
+    const latest = req.db.dnsLatest(s.signingDomain, "dkim", s.selector);
     return { ...s, ...check, unchangedSince: latest && Boolean(latest.found) === Boolean(check.found) && (!check.found || latest.value === check.record) ? latest.first_seen : null };
   }));
   const sinceFor = (kind, found, value) => {
-    const latest = db.dnsLatest(domain, kind);
+    const latest = req.db.dnsLatest(domain, kind);
     return latest && Boolean(latest.found) === Boolean(found) && (!found || latest.value === value) ? latest.first_seen : null;
   };
 
@@ -520,9 +531,9 @@ app.get("/api/policy", route(async (req, res) => {
     transport: {
       mtaSts: { ...mtaSts, unchangedSince: sinceFor("mta_sts", mtaSts.found, mtaSts.record), policyUnchangedSince: mtaSts.policyText ? sinceFor("mta_sts_policy", true, mtaSts.policyText.trim()) : null },
       tlsRpt: { ...tlsRpt, warnings: tlsRptWarnings, toUs: tlsRptToUs, unchangedSince: sinceFor("tlsrpt", tlsRpt.found, tlsRpt.record) },
-      tlsSummary: db.tlsSummary(scoped)
+      tlsSummary: req.db.tlsSummary(scoped)
     },
-    history: db.dnsHistory(domain, { limit: 50 }),
+    history: req.db.dnsHistory(domain, { limit: 50 }),
     reject,
     yoursOutsideSpf: yoursOutsideSpf.map((r) => ({ ip: r.ip, ptr: r.ptr, sender: r.sender.label, total: r.total, spfPassed: r.spfPassed, failed: r.failed })),
     failingInsideSpf: failingInsideSpf.map((r) => ({ ip: r.ip, ptr: r.ptr, sender: r.sender ? r.sender.label : null, via: r.spfVia, failed: r.nonForwardFailed, dkimPassed: r.dkimPassed, total: r.total }))
@@ -803,33 +814,33 @@ app.get("/api/audit", authGuard.requireAdmin, route(async (req, res) => {
 
 // --- analysis --------------------------------------------------------------
 
-app.get("/api/summary", route(async (req, res) => {
-  res.json(db.summary(filterFrom(req)));
+analysis.get("/summary", route(async (req, res) => {
+  res.json(req.db.summary(filterFrom(req)));
 }));
 
-app.get("/api/ips", route(async (req, res) => {
+analysis.get("/ips", route(async (req, res) => {
   const filter = filterFrom(req);
   const failingOnly = String(req.query.failing || "") === "1";
-  const ips = db.ips(filter, { failingOnly, limit: positiveInt(req.query.limit, 500) });
+  const ips = req.db.ips(filter, { failingOnly, limit: positiveInt(req.query.limit, 500) });
   // Per-day series for sparklines, fetched in one query for every row returned.
   if (String(req.query.days || "") === "1") {
-    const byIp = db.ipDays(filter, ips.map((r) => r.ip));
+    const byIp = req.db.ipDays(filter, ips.map((r) => r.ip));
     for (const row of ips) row.days = byIp.get(row.ip) || [];
   }
   res.json({ ips });
 }));
 
-app.get("/api/ips/:ip", route(async (req, res) => {
-  const detail = db.ipDetail(req.params.ip, filterFrom(req));
+analysis.get("/ips/:ip", route(async (req, res) => {
+  const detail = req.db.ipDetail(req.params.ip, filterFrom(req));
   if (!detail) {
     return res.status(404).json({ error: "No records for that IP in the selected range." });
   }
   res.json(detail);
 }));
 
-app.get("/api/records", route(async (req, res) => {
+analysis.get("/records", route(async (req, res) => {
   const filter = filterFrom(req);
-  res.json(db.records(filter, {
+  res.json(req.db.records(filter, {
     result: req.query.result,
     ip: req.query.ip,
     org: req.query.org,
@@ -838,25 +849,25 @@ app.get("/api/records", route(async (req, res) => {
   }));
 }));
 
-app.get("/api/reports", route(async (req, res) => {
+analysis.get("/reports", route(async (req, res) => {
   const filter = filterFrom(req);
-  res.json(db.reports(filter, {
+  res.json(req.db.reports(filter, {
     org: req.query.org,
     page: positiveInt(req.query.page, 1),
     pageSize: positiveInt(req.query.pageSize, 50)
   }));
 }));
 
-app.get("/api/reports/:id", route(async (req, res) => {
-  const report = db.reportById(positiveInt(req.params.id, 0));
+analysis.get("/reports/:id", route(async (req, res) => {
+  const report = req.db.reportById(positiveInt(req.params.id, 0));
   if (!report) {
     return res.status(404).json({ error: "No such report." });
   }
   res.json(report);
 }));
 
-app.get("/api/reports/:id/xml", route(async (req, res) => {
-  const result = db.reportXml(positiveInt(req.params.id, 0));
+analysis.get("/reports/:id/xml", route(async (req, res) => {
+  const result = req.db.reportXml(positiveInt(req.params.id, 0));
   if (!result) {
     return res.status(404).json({ error: "No XML stored for that report." });
   }
@@ -865,25 +876,25 @@ app.get("/api/reports/:id/xml", route(async (req, res) => {
   res.send(result.xml);
 }));
 
-app.get("/api/reporters", route(async (req, res) => {
-  res.json({ reporters: db.reporters(filterFrom(req)) });
+analysis.get("/reporters", route(async (req, res) => {
+  res.json({ reporters: req.db.reporters(filterFrom(req)) });
 }));
 
-app.get("/api/subdomains", route(async (req, res) => {
-  res.json({ subdomains: db.subdomains(filterFrom(req)) });
+analysis.get("/subdomains", route(async (req, res) => {
+  res.json({ subdomains: req.db.subdomains(filterFrom(req)) });
 }));
 
-app.get("/api/scorecard", route(async (req, res) => {
-  res.json({ domains: db.scorecard(filterFrom(req)) });
+analysis.get("/scorecard", route(async (req, res) => {
+  res.json({ domains: req.db.scorecard(filterFrom(req)) });
 }));
 
-app.get("/api/domains", route(async (req, res) => {
-  res.json({ domains: db.domains() });
+analysis.get("/domains", route(async (req, res) => {
+  res.json({ domains: req.db.domains() });
 }));
 
-app.get("/api/export/records.csv", route(async (req, res) => {
+analysis.get("/export/records.csv", route(async (req, res) => {
   const filter = filterFrom(req);
-  const { rows, total } = db.records(filter, { result: req.query.result, ip: req.query.ip, org: req.query.org, page: 1, pageSize: CSV_ROW_CAP });
+  const { rows, total } = req.db.records(filter, { result: req.query.result, ip: req.query.ip, org: req.query.org, page: 1, pageSize: CSV_ROW_CAP });
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=\"dmarc-records.csv\"");
   if (total > rows.length) {
@@ -891,6 +902,50 @@ app.get("/api/export/records.csv", route(async (req, res) => {
   }
   res.send(toCsv(rows));
 }));
+
+// --- scratch analyses: upload, inspect, discard ----------------------------------
+
+/** Creates a scratch analysis on the first upload, or adds to an existing one. */
+async function scratchUpload(req, res, scratch) {
+  const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (!bytes.length) {
+    return res.status(400).json({ error: "No file was uploaded." });
+  }
+  let name = String(req.get("X-File-Name") || "");
+  try {
+    name = decodeURIComponent(name);
+  } catch { /* keep as sent */ }
+  name = path.basename(name).slice(0, 200);
+  const target = scratch || scratches.create(req.user?.username || null);
+  const result = await scratches.addFile(target, { bytes, name });
+  res.json({ id: target.id, name, ...result, analysis: scratches.describe(target) });
+}
+
+const scratchGate = (req, res, next) => {
+  const scratch = scratches.get(req.params.id, req.user?.username || null);
+  if (!scratch) {
+    return res.status(404).json({ error: "That analysis has expired or does not exist. Upload the files again." });
+  }
+  req.scratch = scratch;
+  req.db = scratch.db;
+  next();
+};
+
+app.post("/api/scratch/upload", express.raw({ type: () => true, limit: "200mb" }), route(async (req, res) => scratchUpload(req, res, null)));
+app.post("/api/scratch/:id/upload", scratchGate, express.raw({ type: () => true, limit: "200mb" }), route(async (req, res) => scratchUpload(req, res, req.scratch)));
+app.get("/api/scratch/:id", scratchGate, route(async (req, res) => {
+  res.json(scratches.describe(req.scratch));
+}));
+app.delete("/api/scratch/:id", scratchGate, route(async (req, res) => {
+  scratches.remove(req.scratch.id);
+  res.json({ ok: true });
+}));
+
+app.use("/api/scratch/:id", scratchGate, analysis);
+app.use("/api", (req, res, next) => {
+  req.db = db;
+  next();
+}, analysis);
 
 // --- boot ------------------------------------------------------------------
 
@@ -950,6 +1005,7 @@ if (require.main === module) {
       console.log("Retention: keeping everything (set RETENTION_MONTHS to roll up old reports).");
     }
     notifier.start();
+    scratches.start();
     monitor.start({ onAlerts: (created) => {
       console.log(`monitor: ${created.length} new alert(s) (${created.map((a) => a.type).join(", ")})`);
       notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));
@@ -993,6 +1049,7 @@ if (require.main === module) {
 
   const shutdown = () => {
     sync.stopScheduler();
+    scratches.stop();
     server.close(() => {
       db.close();
       process.exit(0);

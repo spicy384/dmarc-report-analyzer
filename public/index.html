@@ -26,6 +26,7 @@
       <div class="header-actions">
         <nav id="view-nav" class="view-nav" aria-label="Pages" hidden>
           <button id="nav-dashboard" type="button" class="tab is-active">Dashboard</button>
+          <button id="nav-analyze" type="button" class="tab">Analyze files</button>
           <button id="nav-settings" type="button" class="tab">Settings</button>
         </nav>
         <span id="current-user" class="badge" hidden></span>
@@ -234,6 +235,17 @@
 
   <main>
   <div id="view-dashboard">
+    <div id="scratch-banner" class="alerts-banner scratch-banner" hidden>
+      <div class="alerts-head">
+        <strong id="scratch-title">One-time analysis</strong>
+        <span id="scratch-summary" class="scratch-summary"></span>
+        <span class="wizard-spacer"></span>
+        <button id="scratch-add" type="button" class="secondary small">Add files</button>
+        <button id="scratch-exit" type="button" class="secondary small">Back to live data</button>
+        <button id="scratch-discard" type="button" class="secondary small">Discard</button>
+      </div>
+    </div>
+
     <div id="alerts-banner" class="alerts-banner" hidden>
       <div class="alerts-head">
         <strong id="alerts-title"></strong>
@@ -582,6 +594,36 @@
 
   </div>
 
+  <div id="view-analyze" hidden>
+    <section class="panel" id="analyze-panel">
+      <div class="panel-head">
+        <h2>Analyze files without saving them</h2>
+        <span id="analyze-badge" class="badge"></span>
+      </div>
+      <p class="bulk-hint">
+        Drop one or more reports here to look at them with the full dashboard: aggregate
+        reports (<span class="mono">.xml</span>, <span class="mono">.xml.gz</span>,
+        <span class="mono">.zip</span>), TLS reports (<span class="mono">.json</span>,
+        <span class="mono">.json.gz</span>) and whole emails (<span class="mono">.eml</span>).
+        Nothing is written to the database: the analysis lives in memory, is visible only to
+        you, and is dropped after an hour without use or when you discard it. Your known-sender
+        labels and the reverse-DNS answers already on file are applied so the sources read the
+        same as on the live dashboard. Use <strong>Upload reports</strong> on the dashboard
+        instead when the reports should be kept.
+      </p>
+      <div id="analyze-zone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop report files to analyze">
+        Drop files here, or click to choose
+      </div>
+      <input id="analyze-input" type="file" multiple hidden accept=".xml,.gz,.zip,.json,.eml,application/xml,text/xml,application/gzip,application/zip,application/json,message/rfc822" />
+      <p id="analyze-status" class="bulk-hint" hidden></p>
+      <ul id="analyze-results" class="upload-results"></ul>
+      <div class="actions" id="analyze-actions" hidden>
+        <button id="analyze-open" type="button">Open the analysis</button>
+        <button id="analyze-discard" type="button" class="secondary">Discard and start over</button>
+      </div>
+    </section>
+  </div>
+
   <div id="view-settings" hidden>
     <section class="panel" id="sync-panel">
       <div class="panel-head">
@@ -928,6 +970,7 @@
   <script src="/js/19-wizard.js"></script>
   <script src="/js/20-tls.js"></script>
   <script src="/js/21-upload.js"></script>
-  <script src="/js/22-init.js"></script>
+  <script src="/js/22-scratch.js"></script>
+  <script src="/js/23-init.js"></script>
 </body>
 </html>

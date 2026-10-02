@@ -40,7 +40,7 @@ async function openReportDetail(id) {
   try {
     const r = await api(`/api/reports/${encodeURIComponent(id)}`);
     reportDetailTitle.textContent = `${r.orgName} - ${formatWindow(r.rangeBegin, r.rangeEnd)} - ${r.domain}`;
-    reportDetailXml.href = `/api/reports/${encodeURIComponent(id)}/xml`;
+    reportDetailXml.href = apiPath(`/api/reports/${encodeURIComponent(id)}/xml`);
     reportDetailSummary.replaceChildren(
       kv("Report ID", r.reportId),
       kv("Window (UTC)", `${formatUtcDateTime(r.rangeBegin)} to ${formatUtcDateTime(r.rangeEnd)}`),

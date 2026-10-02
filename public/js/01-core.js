@@ -145,13 +145,25 @@ function applyTheme(theme) {
 
 themeToggleBtn.addEventListener("click", () => applyTheme(currentTheme === "dark" ? "light" : "dark"));
 
+// A one-time analysis (uploaded files, never stored) is served by the same analysis
+// endpoints under /api/scratch/<id>; while one is open, report-reading paths are
+// redirected there. Everything else (auth, status, settings) stays global.
+let scratchId = null;
+const SCRATCH_ROUTES = ["summary", "ips", "records", "reports", "reporters", "subdomains", "scorecard", "domains", "export", "weekly", "forensic", "tls", "policy"];
+
+function apiPath(path) {
+  if (!scratchId) return path;
+  const m = String(path).match(/^\/api\/([a-z-]+)(\/|\?|$)/);
+  return m && SCRATCH_ROUTES.includes(m[1]) ? `/api/scratch/${encodeURIComponent(scratchId)}${path.slice(4)}` : path;
+}
+
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (csrfToken) {
     headers["X-CSRF-Token"] = csrfToken;
   }
 
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(apiPath(path), { ...options, headers });
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
