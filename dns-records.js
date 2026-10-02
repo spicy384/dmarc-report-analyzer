@@ -89,7 +89,44 @@ function parseDmarcTags(record) {
   return tags;
 }
 
-function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 1000, now = Date.now } = {}) {
+const MTA_STS_MODES = new Set(["enforce", "testing", "none"]);
+const MTA_STS_MAX_POLICY_BYTES = 64 * 1024;
+
+/** Parses an MTA-STS policy file (RFC 8461 section 3.2): "key: value" lines, mx repeating. */
+function parseMtaStsPolicy(text) {
+  const policy = { version: null, mode: null, mx: [], maxAge: null, unknown: [] };
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const m = line.match(/^([a-z_]+)\s*:\s*(.*)$/i);
+    if (!m) {
+      policy.unknown.push(line);
+      continue;
+    }
+    const key = m[1].toLowerCase();
+    const value = m[2].trim();
+    if (key === "version") policy.version = value;
+    else if (key === "mode") policy.mode = value.toLowerCase();
+    else if (key === "mx") policy.mx.push(value.toLowerCase());
+    else if (key === "max_age") policy.maxAge = Number(value);
+    else policy.unknown.push(line);
+  }
+  return policy;
+}
+
+/** Whether an MX host name is covered by an MTA-STS mx pattern ("mail.example.com" or "*.example.com", one label). */
+function mxMatches(pattern, host) {
+  const p = String(pattern || "").toLowerCase().replace(/\.$/, "");
+  const h = String(host || "").toLowerCase().replace(/\.$/, "");
+  if (!p || !h) return false;
+  if (p.startsWith("*.")) {
+    const suffix = p.slice(1);
+    return h.endsWith(suffix) && !h.slice(0, -suffix.length).includes(".");
+  }
+  return p === h;
+}
+
+function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 1000, now = Date.now, fetchImpl = globalThis.fetch } = {}) {
   const r = resolvers || defaultResolvers({ timeoutMs });
   const cache = new Map();
 
@@ -280,6 +317,108 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
     });
   }
 
+  /** The TLS-RPT record (RFC 8460): `_smtp._tls.<domain>` TXT "v=TLSRPTv1; rua=mailto:...,https://...". */
+  async function getTlsRpt(domain, { refresh = false } = {}) {
+    const d = String(domain || "").trim().toLowerCase();
+    return cached(`tlsrpt:${d}`, refresh, async () => {
+      const name = `_smtp._tls.${d}`;
+      const records = await txtRecords(r, name);
+      const matching = records.filter((t) => /^v=tlsrptv1\b/i.test(t.trim()));
+      if (!matching.length) {
+        return { domain: d, name, found: false, record: null, rua: [], warnings: ["No TLS-RPT record: nobody tells you when senders cannot reach your MX over TLS. Publish _smtp._tls with a rua= address this analyzer reads."] };
+      }
+      const record = matching[0];
+      const warnings = [];
+      if (matching.length > 1) warnings.push(`${matching.length} TLS-RPT records published; senders must ignore them all. Keep one.`);
+      const ruaMatch = record.match(/(?:^|;)\s*rua=([^;]*)/i);
+      const rua = ruaMatch ? ruaMatch[1].split(",").map((s) => s.trim()).filter(Boolean) : [];
+      if (!rua.length) warnings.push("The record has no rua= address, so no reports are sent.");
+      for (const target of rua) {
+        if (!/^(mailto:|https:\/\/)/i.test(target)) warnings.push(`rua target "${target}" is neither mailto: nor https://; senders will skip it.`);
+      }
+      return { domain: d, name, found: true, record, rua: rua.map((s) => s.replace(/^mailto:/i, "")), warnings };
+    });
+  }
+
+  /** Fetches the MTA-STS policy file over HTTPS with a timeout and a size cap. */
+  async function fetchMtaStsPolicy(domain) {
+    const url = `https://mta-sts.${domain}/.well-known/mta-sts.txt`;
+    if (typeof fetchImpl !== "function") {
+      return { url, ok: false, error: "fetch is not available" };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(url, { redirect: "manual", signal: controller.signal, headers: { "User-Agent": "dmarc-report-analyzer" } });
+      if (res.status >= 300 && res.status < 400) {
+        return { url, ok: false, status: res.status, error: `the policy host redirected (HTTP ${res.status}); RFC 8461 forbids redirects, senders treat this as no policy` };
+      }
+      if (!res.ok) {
+        return { url, ok: false, status: res.status, error: `HTTP ${res.status}` };
+      }
+      const type = String(res.headers.get("content-type") || "");
+      const text = (await res.text()).slice(0, MTA_STS_MAX_POLICY_BYTES);
+      return { url, ok: true, status: res.status, text, contentType: type };
+    } catch (error) {
+      return { url, ok: false, error: error.name === "AbortError" ? `timed out after ${timeoutMs} ms` : (error.cause && error.cause.code) || error.message };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * MTA-STS (RFC 8461): the `_mta-sts.<domain>` TXT record and the policy file it
+   * points to, checked against the domain's MX hosts.
+   */
+  async function getMtaSts(domain, { refresh = false } = {}) {
+    const d = String(domain || "").trim().toLowerCase();
+    return cached(`mtasts:${d}`, refresh, async () => {
+      const name = `_mta-sts.${d}`;
+      const records = await txtRecords(r, name);
+      const matching = records.filter((t) => /^v=stsv1\b/i.test(t.trim()));
+      const warnings = [];
+      if (!matching.length) {
+        return { domain: d, name, found: false, record: null, id: null, policy: null, policyUrl: `https://mta-sts.${d}/.well-known/mta-sts.txt`, policyText: null, policyError: null, mxCoverage: [], warnings: ["No MTA-STS record: senders may deliver to your MX without TLS, or to an impostor MX, without noticing. Publish _mta-sts and a policy file to require TLS."] };
+      }
+      const record = matching[0];
+      if (matching.length > 1) warnings.push(`${matching.length} MTA-STS records published; senders must ignore them all. Keep one.`);
+      const id = (record.match(/(?:^|;)\s*id=([^;]*)/i) || [])[1] || null;
+      if (!id) warnings.push("The record has no id= value; senders cannot tell when the policy changed.");
+
+      const fetched = await fetchMtaStsPolicy(d);
+      let policy = null;
+      const mxCoverage = [];
+      if (!fetched.ok) {
+        warnings.push(`The policy file at ${fetched.url} could not be fetched: ${fetched.error}. Senders then behave as if there were no policy.`);
+      } else {
+        policy = parseMtaStsPolicy(fetched.text);
+        if (fetched.contentType && !/^text\/plain\b/i.test(fetched.contentType)) warnings.push(`The policy is served as "${fetched.contentType}"; it must be text/plain.`);
+        if ((policy.version || "").toLowerCase() !== "stsv1") warnings.push(`The policy's version is "${policy.version || "(missing)"}"; it must be STSv1.`);
+        if (!MTA_STS_MODES.has(policy.mode || "")) warnings.push(`The policy's mode is "${policy.mode || "(missing)"}"; it must be enforce, testing or none.`);
+        else if (policy.mode === "testing") warnings.push("mode: testing: senders report TLS failures but still deliver without TLS. Move to enforce once the reports are clean.");
+        else if (policy.mode === "none") warnings.push("mode: none: the policy is switched off; senders treat the domain as having no MTA-STS.");
+        if (policy.mode !== "none" && !policy.mx.length) warnings.push("The policy lists no mx: entries, so no MX host is allowed; senders in enforce mode will refuse to deliver.");
+        if (!Number.isFinite(policy.maxAge)) warnings.push("The policy has no numeric max_age.");
+        else if (policy.maxAge < 86400) warnings.push(`max_age ${policy.maxAge} is under a day; senders re-fetch constantly and a brief outage of the policy host drops the protection. RFC 8461 suggests weeks.`);
+        else if (policy.maxAge > 31557600) warnings.push(`max_age ${policy.maxAge} is over a year, the maximum senders accept.`);
+        if (policy.unknown.length) warnings.push(`Unrecognised policy lines: ${policy.unknown.slice(0, 3).join(" / ")}.`);
+
+        // Every MX host must be covered, or senders in enforce mode cannot use it.
+        try {
+          const mx = await getMx(d, { refresh });
+          for (const h of mx.hosts || []) {
+            const covered = policy.mx.some((p) => mxMatches(p, h.host));
+            mxCoverage.push({ host: h.host, priority: h.priority, covered });
+            if (!covered && policy.mode !== "none") warnings.push(`MX host ${h.host} is not covered by the policy's mx: entries; senders in enforce mode will not deliver through it.`);
+          }
+        } catch (error) {
+          warnings.push(`MX lookup failed while checking policy coverage: ${error.code || error.message}`);
+        }
+      }
+      return { domain: d, name, found: true, record, id, policy, policyUrl: fetched.url, policyText: fetched.ok ? fetched.text : null, policyError: fetched.ok ? null : fetched.error, mxCoverage, warnings };
+    });
+  }
+
   /** A and AAAA addresses of a name; a missing record type is an empty list, not an error. */
   async function getAddresses(name) {
     const [v4, v6] = await Promise.all([
@@ -389,11 +528,13 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
       throw error;
     }
     const fail = (error) => ({ found: false, error: error.code || error.message, warnings: [`DNS lookup failed: ${error.code || error.message}`] });
-    const [dmarc, spf, mx, addresses] = await Promise.all([
+    const [dmarc, spf, mx, addresses, mtaSts, tlsRpt] = await Promise.all([
       getDmarc(q, { refresh }).catch((e) => ({ domain: q, tags: {}, ...fail(e) })),
       getSpf(q, { refresh }).catch((e) => ({ domain: q, networks: [], errors: [], ...fail(e) })),
       getMx(q, { refresh }).catch((e) => ({ domain: q, hosts: [], ...fail(e) })),
-      getAddresses(q).catch((e) => ({ error: e.code || e.message }))
+      getAddresses(q).catch((e) => ({ error: e.code || e.message })),
+      getMtaSts(q, { refresh }).catch((e) => ({ domain: q, policy: null, mxCoverage: [], ...fail(e) })),
+      getTlsRpt(q, { refresh }).catch((e) => ({ domain: q, rua: [], ...fail(e) }))
     ]);
     return {
       query: q,
@@ -401,6 +542,8 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
       dmarc,
       spf,
       mx,
+      mtaSts,
+      tlsRpt,
       addresses: Array.isArray(addresses) ? addresses : [],
       addressError: Array.isArray(addresses) ? null : addresses.error
     };
@@ -410,7 +553,7 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
     cache.clear();
   }
 
-  return { getDmarc, getSpf, checkDkim, getMx, getPtr, getAddresses, lookup, clearCache, organizationalDomain, parseDmarcTags };
+  return { getDmarc, getSpf, checkDkim, getMx, getPtr, getAddresses, getMtaSts, getTlsRpt, lookup, clearCache, organizationalDomain, parseDmarcTags };
 }
 
-module.exports = { createDnsRecords, organizationalDomain, parseDmarcTags, dkimKeyBits, SPF_LOOKUP_LIMIT, DKIM_MIN_BITS };
+module.exports = { createDnsRecords, organizationalDomain, parseDmarcTags, parseMtaStsPolicy, mxMatches, dkimKeyBits, SPF_LOOKUP_LIMIT, DKIM_MIN_BITS };

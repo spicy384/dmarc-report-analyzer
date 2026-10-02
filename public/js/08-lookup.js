@@ -107,6 +107,10 @@ function renderLookupDomain(d) {
   if (d.mx.warnings && d.mx.warnings.length) mxBox.appendChild(warningList(d.mx.warnings));
   tabs.push({ key: "mx", label: "MX", box: mxBox });
 
+  if (d.mtaSts && d.tlsRpt) {
+    tabs.push({ key: "transport", label: "MTA-STS / TLS-RPT", box: transportBox(d.mtaSts, d.tlsRpt) });
+  }
+
   const addrBox = policyBox("Addresses", {
     badge: d.addresses.length ? `${d.addresses.length} address${d.addresses.length === 1 ? "" : "es"}` : "none",
     badgeClass: d.addresses.length ? "pill-pass" : ""

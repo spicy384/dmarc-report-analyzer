@@ -226,6 +226,30 @@ async function waitForServer(tries = 60) {
     check("forensic: empty list", (await req("/api/forensic")).body.total === 0 && (await req("/api/status")).body.forensicCount === 0);
     check("forensic: unknown id is 404", (await req("/api/forensic/999")).status === 404);
 
+    // --- TLS reports and manual upload ---
+    check("tls: empty list and count", (await req("/api/tls")).body.total === 0 && (await req("/api/status")).body.tlsCount === 0 && (await req("/api/tls/summary")).body.reports === 0);
+    const upload = async (file, bytes) => {
+      const res = await fetch(`http://127.0.0.1:${APP_PORT}/api/upload`, { method: "POST", headers: { Cookie: cookie, "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file) }, body: bytes });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    };
+    const reportsBeforeUpload = (await req("/api/status")).body.stats.reports.reports;
+    const up1 = await upload("tls-report.json", fs.readFileSync(path.join(EX, "tls-report.json")));
+    check("upload: TLS report stored and filed under the upload mailbox", up1.status === 200 && up1.body.tls.added === 1 && up1.body.status === "ingested" && (await req("/api/tls")).body.rows[0].mailboxId === "upload", JSON.stringify(up1.body));
+    check("upload: tls list, detail, summary and JSON download", (await req("/api/tls/summary")).body.failed === 303 && (await req(`/api/tls/${(await req("/api/tls")).body.rows[0].id}`)).body.failures.length === 3 && (await req(`/api/tls/${(await req("/api/tls")).body.rows[0].id}/json`, { raw: true })).text.includes("Company-X"));
+    const up2 = await upload("tls-report.json", fs.readFileSync(path.join(EX, "tls-report.json")));
+    check("upload: the same file again is a duplicate", up2.status === 200 && up2.body.tls.added === 0 && up2.body.tls.duplicates === 1);
+    const up3 = await upload("google.xml", Buffer.from(googleXml));
+    check("upload: an aggregate report already in the database is a duplicate", up3.status === 200 && up3.body.aggregate.duplicates === 1 && up3.body.aggregate.added === 0);
+    const up4 = await upload("forensic.eml", fs.readFileSync(path.join(EX, "forensic-report.eml")));
+    check("upload: a forensic .eml is stored", up4.status === 200 && up4.body.forensic.added === 1 && (await req("/api/status")).body.forensicCount === 1, JSON.stringify(up4.body));
+    const up5 = await upload("notes.txt", Buffer.from("just some text"));
+    check("upload: junk is reported as a problem, HTTP 200, status error", up5.status === 200 && up5.body.status === "error" && up5.body.problems.length === 1);
+    check("upload: empty body is 400", (await upload("x.xml", Buffer.alloc(0))).status === 400);
+    const stAfter = await req("/api/status");
+    check("upload: report count unchanged by duplicates; upload mailbox listed in counts; problem listed under errors", stAfter.body.stats.reports.reports === reportsBeforeUpload && stAfter.body.mailboxCounts.some((c) => c.id === "upload") && stAfter.body.errors.some((e) => /notes\.txt/.test(e.subject || "") || /not a DMARC/.test(e.error || "")), JSON.stringify(stAfter.body.errors).slice(0, 300));
+    check("upload: audited", (await req("/api/audit?action=reports.upload")).body.entries.length >= 5);
+    check("tls: mailbox filter", (await req("/api/tls?mailbox=upload")).body.total === 1 && (await req("/api/tls?mailbox=env")).body.total === 0);
+
     // --- weekly summary ---
     const wk = await req("/api/weekly?end=2025-09-19");
     check("weekly: shape and totals", wk.status === 200 && wk.body.thisWeek.totals.messages === 53 && wk.body.lastWeek.totals.messages === 0 && wk.body.newSources.length === 4 && wk.body.topFailing.length === 2);

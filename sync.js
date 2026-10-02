@@ -4,8 +4,8 @@
  * exposed for the UI to poll, and each mailbox's run is recorded in sync_runs.
  */
 const dns = require("dns");
-const { extractXmlDocuments, parseAggregateReport } = require("./dmarc-parser");
 const { parseArf, looksLikeArf } = require("./arf-parser");
+const { createIngest } = require("./ingest");
 
 const MAX_MIME_BYTES = 4 * 1024 * 1024;
 const { GraphError } = require("./graph");
@@ -37,14 +37,16 @@ function isFatal(error) {
     || error.code === "folder_not_found" || error.code === "throttled";
 }
 
-const COUNTERS = ["seen", "skipped", "added", "duplicates", "noReport", "errors", "warnings", "forensic"];
+const COUNTERS = ["seen", "skipped", "added", "duplicates", "noReport", "errors", "warnings", "forensic", "tls"];
 
 /**
  * `mailboxes` is a mailbox store (enabledWithClients()). `graph` alone is still
- * accepted for a single client, which the older tests use.
+ * accepted for a single client, which the older tests use. `ingest` (ingest.js)
+ * turns attachments into stored reports and is shared with the manual upload.
  */
-function createSync({ db, mailboxes, graph, geoip = null, logger = console, backfillDays = 90, resolver, onRunFinished } = {}) {
+function createSync({ db, mailboxes, graph, geoip = null, logger = console, backfillDays = 90, resolver, onRunFinished, ingest = null } = {}) {
   const jobs = new Map();
+  const ingester = ingest || createIngest({ db });
   let running = null;
   let nextJobId = 1;
   let timer = null;
@@ -106,41 +108,14 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
     let reportsFound = 0;
     const problems = [];
     for (const att of attachments) {
-      let docs;
-      try {
-        docs = extractXmlDocuments(att.bytes, att.name);
-      } catch (error) {
-        problems.push(`${att.name || "attachment"}: ${error.message}`);
-        continue;
-      }
-
-      for (const doc of docs) {
-        let parsed;
-        try {
-          parsed = parseAggregateReport(doc.xml);
-        } catch (error) {
-          if (error.code === "not_a_report") {
-            continue; // some other XML riding along (signatures, calendar items)
-          }
-          problems.push(`${doc.name}: ${error.message}`);
-          continue;
-        }
-
-        const result = db.insertReport({
-          messageId: message.id,
-          mailboxId: box.id,
-          attachmentName: doc.name || att.name,
-          parsed,
-          xml: doc.xml
-        });
-        reportsFound += 1;
-        if (result.duplicate) {
-          bump(job, box, "duplicates");
-        } else {
-          bump(job, box, "added");
-          job.addedReportIds.push(result.reportId);
-        }
-      }
+      // Aggregate reports in any container, and TLS reports (RFC 8460) as JSON or gzip.
+      const result = ingester.ingestBytes({ bytes: att.bytes, name: att.name, messageId: message.id, mailboxId: box.id });
+      reportsFound += result.found;
+      problems.push(...result.problems);
+      bump(job, box, "duplicates", result.aggregate.duplicates + result.tls.duplicates);
+      bump(job, box, "added", result.aggregate.added);
+      bump(job, box, "tls", result.tls.added);
+      job.addedReportIds.push(...result.aggregate.ids);
     }
 
     // No aggregate report: maybe a forensic (ARF) one, whose parts are not ordinary attachments.

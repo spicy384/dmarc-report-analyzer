@@ -139,6 +139,49 @@ const dnsr = createDnsRecords({ resolvers, now: () => clock, cacheTtlMs: 1000 })
   const empty = await dnsr.lookup("").catch((e) => e);
   check("lookup: empty is a 400", empty instanceof Error && empty.status === 400);
 
+  // --- MTA-STS and TLS-RPT (policy host faked) ---
+  zone.txt["_mta-sts.sts.test"] = [["v=STSv1; id=20260901T000000"]];
+  zone.txt["_mta-sts.testing.test"] = [["v=STSv1; id=1"]];
+  zone.txt["_mta-sts.redirect.test"] = [["v=STSv1; id=2"]];
+  zone.txt["_mta-sts.down.test"] = [["v=STSv1"]];
+  zone.txt["_smtp._tls.sts.test"] = [["v=TLSRPTv1; rua=mailto:tls@sts.test,https://tls.sts.test/report"]];
+  zone.txt["_smtp._tls.testing.test"] = [["v=TLSRPTv1; rua=ftp://nope"], ["v=TLSRPTv1; rua=mailto:x@y"]];
+  zone.mx["sts.test"] = [{ exchange: "mx1.sts.test", priority: 10 }, { exchange: "mx9.other.test", priority: 20 }];
+  zone.a["mx1.sts.test"] = ["203.0.113.70"];
+  zone.a["mx9.other.test"] = ["203.0.113.71"];
+  const policies = {
+    "https://mta-sts.sts.test/.well-known/mta-sts.txt": { status: 200, type: "text/plain", text: "version: STSv1\r\nmode: enforce\r\nmx: *.sts.test\r\nmax_age: 604800\r\n" },
+    "https://mta-sts.testing.test/.well-known/mta-sts.txt": { status: 200, type: "text/html", text: "version: STSv1\nmode: testing\nmx: mail.testing.test\nmax_age: 3600\nfoo: bar\n" },
+    "https://mta-sts.redirect.test/.well-known/mta-sts.txt": { status: 301, type: "text/plain", text: "" }
+  };
+  const fakeFetch = async (url) => {
+    const p = policies[url];
+    if (!p) { const e = new Error("getaddrinfo ENOTFOUND"); e.cause = { code: "ENOTFOUND" }; throw e; }
+    return { ok: p.status >= 200 && p.status < 300, status: p.status, headers: { get: (h) => (h.toLowerCase() === "content-type" ? p.type : null) }, text: async () => p.text };
+  };
+  const dnsrSts = createDnsRecords({ resolvers, fetchImpl: fakeFetch, cacheTtlMs: 0 });
+  const sts = await dnsrSts.getMtaSts("sts.test");
+  check("mta-sts: record, id and policy parsed", sts.found && sts.id === "20260901T000000" && sts.policy.mode === "enforce" && sts.policy.mx[0] === "*.sts.test" && sts.policy.maxAge === 604800 && sts.policyText.includes("mode: enforce"), JSON.stringify(sts));
+  check("mta-sts: MX coverage checked, the uncovered host is a warning", sts.mxCoverage.length === 2 && sts.mxCoverage.find((m) => m.host === "mx1.sts.test").covered === true && sts.mxCoverage.find((m) => m.host === "mx9.other.test").covered === false && sts.warnings.some((w) => /mx9\.other\.test is not covered/.test(w)) && sts.warnings.length === 1, JSON.stringify(sts.warnings));
+  const testing = await dnsrSts.getMtaSts("testing.test");
+  check("mta-sts: testing mode, short max_age, wrong content type and unknown line all warn", testing.policy.mode === "testing" && ["testing", "max_age 3600", "text/html", "Unrecognised"].every((s) => testing.warnings.some((w) => w.includes(s))), JSON.stringify(testing.warnings));
+  const redirect = await dnsrSts.getMtaSts("redirect.test");
+  check("mta-sts: redirects are refused, policy null", redirect.found && redirect.policy === null && redirect.policyError.includes("redirected") && redirect.warnings.some((w) => /could not be fetched/.test(w)));
+  const down = await dnsrSts.getMtaSts("down.test");
+  check("mta-sts: unreachable policy host and missing id", down.found && down.policy === null && down.policyError === "ENOTFOUND" && down.warnings.some((w) => /no id=/.test(w)));
+  const nosts = await dnsrSts.getMtaSts("example.com");
+  check("mta-sts: absent", nosts.found === false && nosts.warnings.length === 1);
+  const rpt = await dnsrSts.getTlsRpt("sts.test");
+  check("tls-rpt: record and rua targets", rpt.found && rpt.rua.length === 2 && rpt.rua[0] === "tls@sts.test" && rpt.rua[1] === "https://tls.sts.test/report" && rpt.warnings.length === 0, JSON.stringify(rpt));
+  const rpt2 = await dnsrSts.getTlsRpt("testing.test");
+  check("tls-rpt: duplicate records and a bad scheme warn", rpt2.found && rpt2.warnings.some((w) => /2 TLS-RPT records/.test(w)) && rpt2.warnings.some((w) => /ftp:\/\/nope/.test(w)));
+  check("tls-rpt: absent", (await dnsrSts.getTlsRpt("example.com")).found === false);
+  const ldSts = await dnsrSts.lookup("sts.test");
+  check("lookup: domain carries MTA-STS and TLS-RPT", ldSts.mtaSts.found && ldSts.mtaSts.policy.mode === "enforce" && ldSts.tlsRpt.found);
+  const { parseMtaStsPolicy, mxMatches } = require("../dns-records");
+  check("mxMatches: wildcard covers one label only", mxMatches("*.sts.test", "mx1.sts.test") && !mxMatches("*.sts.test", "a.b.sts.test") && !mxMatches("*.sts.test", "sts.test") && mxMatches("mail.x.test", "MAIL.x.test."));
+  check("parseMtaStsPolicy: tolerates CRLF and spacing", parseMtaStsPolicy("version:STSv1\r\nmode : enforce\r\nmx: a.test\r\nmx: b.test\r\nmax_age: 1\r\n").mx.length === 2);
+
   // --- cache ---
   const before = calls;
   await dnsr.getDmarc("example.com");

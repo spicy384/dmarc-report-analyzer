@@ -1324,3 +1324,63 @@ td.dns-history-value {
   word-break: break-all;
   max-width: 40rem;
 }
+
+/* Manual upload: the drop zone and per-file results. */
+.dropzone {
+  border: 2px dashed var(--border-strong);
+  border-radius: 10px;
+  padding: 1.75rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.dropzone:hover,
+.dropzone:focus-visible,
+.dropzone.is-over {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  outline: none;
+}
+.upload-results {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.upload-results li.upload-result {
+  padding: 0.5rem 0.75rem;
+}
+.upload-results li.is-fail {
+  border-color: var(--danger);
+}
+.upload-results li.is-warn {
+  border-color: var(--warning);
+}
+.upload-problems {
+  margin: 0.35rem 0 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+.upload-problems li {
+  display: list-item;
+  border: 0;
+  padding: 0.1rem 0;
+  background: none;
+  box-shadow: none;
+}
+
+/* TLS reports: the failure breakdown tables sit side by side when there is room. */
+.tls-breakdown {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  margin: 1rem 0;
+}
+.tls-breakdown h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}

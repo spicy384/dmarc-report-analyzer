@@ -519,6 +519,27 @@
       </div>
     </section>
 
+    <section class="panel" id="tls-panel" hidden>
+      <div class="panel-head">
+        <h2>TLS reports</h2>
+        <span id="tls-count" class="badge">0 reports</span>
+      </div>
+      <p class="bulk-hint">
+        SMTP TLS reports (RFC 8460) from senders that honour your MTA-STS or DANE policy: how
+        many connections to your MX succeeded over TLS and how many failed, and why. A failure
+        here is mail that senders in enforce mode did not deliver. Click a row for the failing
+        sessions and the reporter's details.
+      </p>
+      <div id="tls-tiles" class="stat-grid"></div>
+      <div id="tls-breakdown" class="tls-breakdown"></div>
+      <div id="tls-results" class="table-scroll"></div>
+      <div class="pager">
+        <button id="tls-prev" type="button" class="secondary small">Previous</button>
+        <span id="tls-page-label"></span>
+        <button id="tls-next" type="button" class="secondary small">Next</button>
+      </div>
+    </section>
+
     <section class="panel" id="forensic-panel" hidden>
       <div class="panel-head">
         <h2>Forensic reports</h2>
@@ -536,6 +557,27 @@
         <span id="forensic-page-label"></span>
         <button id="forensic-next" type="button" class="secondary small">Next</button>
       </div>
+    </section>
+
+    <section class="panel writer-only" id="upload-panel">
+      <div class="panel-head">
+        <h2>Upload reports</h2>
+      </div>
+      <p class="bulk-hint">
+        Drop report files here to analyse them without a mailbox: DMARC aggregate reports as
+        <span class="mono">.xml</span>, <span class="mono">.xml.gz</span> or
+        <span class="mono">.zip</span>, TLS reports as <span class="mono">.json</span> or
+        <span class="mono">.json.gz</span>, and whole emails saved as <span class="mono">.eml</span>
+        (forensic reports, or messages carrying report attachments). Each file is inspected by
+        content, duplicates are skipped, and the result is filed under the "Manual uploads"
+        mailbox.
+      </p>
+      <div id="upload-zone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop report files">
+        Drop files here, or click to choose
+      </div>
+      <input id="upload-input" type="file" multiple hidden accept=".xml,.gz,.zip,.json,.eml,application/xml,text/xml,application/gzip,application/zip,application/json,message/rfc822" />
+      <p id="upload-status" class="bulk-hint" hidden></p>
+      <ul id="upload-results" class="upload-results"></ul>
     </section>
 
   </div>
@@ -735,8 +777,9 @@
         <span id="monitor-badge" class="badge"></span>
       </div>
       <p class="bulk-hint">
-        Once a day the analyzer looks up the DMARC, SPF and DKIM records of every domain that
-        reported in the last 90 days and raises an alert when one changes or disappears (the
+        Once a day the analyzer looks up the DMARC, SPF, DKIM, MTA-STS and TLS-RPT records (and
+        the MTA-STS policy file) of every domain that reported in the last 90 days and raises an
+        alert when one changes or disappears (the
         first snapshot is the baseline). After each sync and every hour it also checks that
         reporting services which used to send regularly are still sending, and that reports
         keep arriving at all. Those two alerts clear themselves when the data resumes.
@@ -883,6 +926,8 @@
   <script src="/js/17-settings.js"></script>
   <script src="/js/18-account.js"></script>
   <script src="/js/19-wizard.js"></script>
-  <script src="/js/20-init.js"></script>
+  <script src="/js/20-tls.js"></script>
+  <script src="/js/21-upload.js"></script>
+  <script src="/js/22-init.js"></script>
 </body>
 </html>

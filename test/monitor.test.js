@@ -40,8 +40,12 @@ ingest({ org: "Tiny Mail Co", begin: NOW - 12 * DAY });
 const zone = {
   "_dmarc.example.com": [["v=DMARC1; p=reject; rua=mailto:dmarc@example.com"]],
   "example.com": [["v=spf1 ip4:203.0.113.0/24 -all"]],
-  "s1._domainkey.example.com": [["v=DKIM1; k=rsa; p=MIIBIjANBgkq"]]
+  "s1._domainkey.example.com": [["v=DKIM1; k=rsa; p=MIIBIjANBgkq"]],
+  "_mta-sts.example.com": [["v=STSv1; id=20260901"]],
+  "_smtp._tls.example.com": [["v=TLSRPTv1; rua=mailto:tls@example.com"]]
 };
+let stsPolicy = "version: STSv1\nmode: enforce\nmx: mx1.example.com\nmax_age: 604800\n";
+const fetchImpl = async () => ({ ok: true, status: 200, headers: { get: () => "text/plain" }, text: async () => stsPolicy });
 const failing = new Set();
 const notFound = () => { const e = new Error("ENOTFOUND"); e.code = "ENOTFOUND"; throw e; };
 const servfail = () => { const e = new Error("ESERVFAIL"); e.code = "ESERVFAIL"; throw e; };
@@ -52,7 +56,7 @@ const resolvers = {
   resolveMx: async () => notFound(),
   reverse: async () => notFound()
 };
-const dnsRecords = createDnsRecords({ resolvers, cacheTtlMs: 0 });
+const dnsRecords = createDnsRecords({ resolvers, cacheTtlMs: 0, fetchImpl });
 let enabledBoxes = [{ id: "env", name: "DMARC inbox", mailbox: "dmarc@example.com", enabled: true }];
 const mailboxes = { list: () => enabledBoxes };
 const monitor = createMonitor({ db, dnsRecords, mailboxes, logger: { warn() {} } });
@@ -63,25 +67,31 @@ const monitor = createMonitor({ db, dnsRecords, mailboxes, logger: { warn() {} }
   const first = await monitor.snapshotDns({ at: t });
   check("first snapshot is the baseline: nothing alerts", first.created.length === 0 && first.errors.length === 0 && first.domains === 1, JSON.stringify(first));
   const hist = db.dnsHistory("example.com");
-  check("baseline stored one row per record", hist.length === 3 && hist.map((h) => h.kind).sort().join() === "dkim,dmarc,spf" && hist.every((h) => h.found === 1 && h.first_seen === t), JSON.stringify(hist));
+  check("baseline stored one row per record, MTA-STS policy and TLS-RPT included", hist.length === 6 && hist.map((h) => h.kind).sort().join() === "dkim,dmarc,mta_sts,mta_sts_policy,spf,tlsrpt" && hist.every((h) => h.found === 1 && h.first_seen === t), JSON.stringify(hist));
+  check("policy file text is what is tracked", db.dnsLatest("example.com", "mta_sts_policy").value === stsPolicy.trim());
   check("snapshot time remembered and not due again", monitor.lastSnapshotAt() === t && monitor.snapshotDue(t + HOUR) === false && monitor.snapshotDue(t + 25 * HOUR) === true);
 
   t += DAY;
   const same = await monitor.snapshotDns({ at: t });
-  check("unchanged records: no alert, windows extended, no new rows", same.created.length === 0 && db.dnsHistory("example.com").length === 3 && db.dnsLatest("example.com", "dmarc").last_seen === t);
+  check("unchanged records: no alert, windows extended, no new rows", same.created.length === 0 && db.dnsHistory("example.com").length === 6 && db.dnsLatest("example.com", "dmarc").last_seen === t);
 
   zone["_dmarc.example.com"] = [["v=DMARC1; p=none; pct=50; rua=mailto:dmarc@example.com"]];
   zone["example.com"] = [["v=spf1 ip4:203.0.113.0/24 include:spf.protection.outlook.com -all"], ["other txt"]];
   zone["spf.protection.outlook.com"] = [["v=spf1 ip4:40.92.0.0/15 -all"]];
   delete zone["s1._domainkey.example.com"];
+  stsPolicy = "version: STSv1\nmode: testing\nmx: mx1.example.com\nmax_age: 604800\n";
+  delete zone["_smtp._tls.example.com"];
   t += DAY;
   const drift = await monitor.snapshotDns({ at: t });
   const byKey = Object.fromEntries(drift.created.map((a) => [a.key, a]));
-  check("three changes, three alerts", drift.created.length === 3, JSON.stringify(drift.created.map((a) => a.key)));
+  check("five changes, five alerts", drift.created.length === 5, JSON.stringify(drift.created.map((a) => a.key)));
+  check("MTA-STS policy going from enforce to testing is high with the mode change", byKey["mta_sts_policy:example.com"] && byKey["mta_sts_policy:example.com"].severity === "high" && byKey["mta_sts_policy:example.com"].detail.summary === "mode enforce → testing" && byKey["mta_sts_policy:example.com"].title.includes("MTA-STS policy"), JSON.stringify(byKey["mta_sts_policy:example.com"]));
+  check("vanished TLS-RPT record is high", byKey["tlsrpt:example.com"] && byKey["tlsrpt:example.com"].severity === "high" && byKey["tlsrpt:example.com"].title === "TLS-RPT record for example.com is gone");
+  check("unchanged MTA-STS record itself did not alert", !byKey["mta_sts:example.com"]);
   check("weakened DMARC policy is high severity with a tag summary", byKey["dmarc:example.com"] && byKey["dmarc:example.com"].severity === "high" && byKey["dmarc:example.com"].detail.summary.includes("p=reject → none") && byKey["dmarc:example.com"].detail.summary.includes("pct=(unset) → 50"), JSON.stringify(byKey["dmarc:example.com"]));
   check("SPF change is medium and carries both values", byKey["spf:example.com"] && byKey["spf:example.com"].severity === "medium" && byKey["spf:example.com"].detail.previous.includes("-all") && byKey["spf:example.com"].detail.current.includes("outlook"));
   check("vanished DKIM key is high and says since when it stood", byKey["dkim:s1:example.com"] && byKey["dkim:s1:example.com"].severity === "high" && byKey["dkim:s1:example.com"].title.includes("is gone") && byKey["dkim:s1:example.com"].detail.previousSince === NOW);
-  check("history grew by one row per change, newest first", db.dnsHistory("example.com").length === 6 && db.dnsHistory("example.com")[0].first_seen === t);
+  check("history grew by one row per change, newest first", db.dnsHistory("example.com").length === 11 && db.dnsHistory("example.com")[0].first_seen === t);
   for (const a of drift.created) {
     check(`webhook text for ${a.key} is readable`, !describeAlert(a).includes("[object") && describeAlert(a).length > 10, describeAlert(a));
   }
@@ -90,7 +100,7 @@ const monitor = createMonitor({ db, dnsRecords, mailboxes, logger: { warn() {} }
   failing.add("example.com");
   t += DAY;
   const flaky = await monitor.snapshotDns({ at: t });
-  check("SERVFAIL on SPF: no alert, error reported, history untouched", flaky.created.length === 0 && flaky.errors.length === 1 && flaky.errors[0].includes("SPF") && db.dnsHistory("example.com").length === 6, JSON.stringify(flaky));
+  check("SERVFAIL on SPF: no alert, error reported, history untouched", flaky.created.length === 0 && flaky.errors.length === 1 && flaky.errors[0].includes("SPF") && db.dnsHistory("example.com").length === 11, JSON.stringify(flaky));
   failing.clear();
 
   zone["_dmarc.example.com"] = [["v=DMARC1; p=reject; rua=mailto:dmarc@example.com"]];

@@ -30,8 +30,11 @@ tags explained and warnings (no record, `p=none`, `pct` below 100, no `rua`, rep
 to an address the analyzer does not read), the SPF record expanded through its includes
 with the DNS-lookup count against the limit of 10, which of your labelled senders fail
 SPF and are missing from it, the DKIM selectors seen in reports with whether each still
-resolves, its key type and size, and how long it has stood, the history of every record
-the daily snapshot has seen, and **what `p=reject` would have done** in the selected period: legitimate mail
+resolves, its key type and size, and how long it has stood, the transport side (the
+**MTA-STS** record and policy file with its mode, max_age and whether every MX host is
+covered, the **TLS-RPT** record, and what the period's TLS reports say), the history of
+every record the daily snapshot has seen, and **what `p=reject` would have done** in the
+selected period: legitimate mail
 that would have been rejected (from sources labelled yours or vendor), spoofing that would
 have been blocked, and forwards that would have been lost. A domain is called ready when
 nothing legitimate would be rejected and every failing source has a label.
@@ -96,6 +99,19 @@ tab title.
 
 **Reporting services**: which receivers (Google, Microsoft, Yahoo, ...) sent reports, how
 many, and the failure rate each of them saw.
+
+**TLS reports**: SMTP TLS reports (RFC 8460) arrive in the same mailbox when the domain
+publishes a TLS-RPT record, and are parsed from their JSON (plain or gzipped). The panel,
+shown once any exist, gives sessions succeeded and failed, the policy mode senders saw
+(MTA-STS enforce or testing, DANE, or none), and failures by reason, by receiving MX and by
+sending MTA; each report expands to its failing sessions and the JSON can be downloaded.
+A failure here is mail a sender in enforce mode did not deliver.
+
+**Upload reports**: writers can drop files on the dashboard instead of (or as well as)
+reading a mailbox: aggregate reports as `.xml`, `.xml.gz` or `.zip`, TLS reports as `.json`
+or `.json.gz`, and whole emails saved as `.eml` (forensic reports, or messages carrying
+report attachments). Files are inspected by content, duplicates are skipped, and the
+reports are filed under a "Manual uploads" mailbox so they can be filtered like any other.
 
 **Reports**: every report with its window, reporter, domain, published policy and counts.
 Click one for its records; the original XML can be downloaded.
@@ -420,10 +436,11 @@ in the **Network** column and searchable. Two sources, files preferred:
 
 Every email with attachments in the folder. Each attachment is inspected by content, not by
 name or type, since senders mislabel them: `.zip` (one or more XML files inside), `.xml.gz`
-and bare `.xml` are all handled, as is a zip inside a gzip. Attachments that are not DMARC
-aggregate reports (logos, signatures, calendar items) are ignored; an email with none is
-recorded as "no report" and not looked at again. An email whose report is malformed is
-listed under **Messages that could not be read** with the reason.
+and bare `.xml` are all handled, as is a zip inside a gzip, and TLS reports (RFC 8460) as
+`.json` or `.json.gz`. Attachments that are neither (logos, signatures, calendar items)
+are ignored; an email with none is recorded as "no report" and not looked at again. An
+email whose report is malformed is listed under **Messages that could not be read** with
+the reason. Files uploaded by hand go through exactly the same path (`ingest.js`).
 
 ## HTTPS and reverse proxies
 
@@ -483,14 +500,16 @@ Some problems show up as an absence: a broken `rua=` address means fewer reports
 more failures, and an SPF record someone edited by hand is wrong long before the failures
 climb. So, besides the checks that run on new data, the analyzer keeps a clock:
 
-- **DNS record drift.** Once a day it looks up the DMARC and SPF records of every domain
-  that reported in the last 90 days, and the DKIM key of every selector seen signing for
-  them in the last 30 days. Each distinct value is stored in a history with the window it
+- **DNS record drift.** Once a day it looks up the DMARC, SPF, MTA-STS and TLS-RPT records
+  of every domain that reported in the last 90 days, fetches the MTA-STS policy file, and
+  checks the DKIM key of every selector seen signing for them in the last 30 days. Each
+  distinct value is stored in a history with the window it
   was seen in (the **History** tab of the Policy panel shows it, and the DMARC, SPF and
   DKIM tabs say how long the current value has stood). The first snapshot is the baseline;
   after that a changed record is an alert, a vanished one a high alert, and a DMARC change
-  that weakens the policy (`p=` loosened, `pct=` lowered) is high too. A resolver failure
-  is never read as "the record is gone".
+  that weakens the policy (`p=` loosened, `pct=` lowered) or an MTA-STS policy that drops
+  from enforce to testing is high too. A resolver failure, or a policy file that could not
+  be fetched, is never read as "the record is gone".
 - **Silent reporters.** A reporting service that had sent at least 7 reports in its last
   30 days with no more than two days between report days, and has then sent nothing for
   4 days, is flagged. That usually means the `rua=` address, a mailbox rule or the
@@ -546,8 +565,9 @@ npm test
 npm run lint
 ```
 
-Eighteen plain-Node suites, no test framework: the parser (containers and XML shapes
-from the samples in `examples/`), storage, verdicts, DNS, Graph with certificates, the
+Nineteen plain-Node suites, no test framework: the parser (containers and XML shapes
+from the samples in `examples/`), TLS reports and the shared ingest path, storage,
+verdicts, DNS (including MTA-STS against a fake policy host), Graph with certificates, the
 mailbox store, the other mail sources against mock POP3, IMAP, Gmail and S3 servers, alerts,
 monitoring (record drift, silent reporters, stalled ingestion against a scripted zone),
 GeoIP, retention, backup and restore, notifications, the ingest job against a mock Graph
@@ -561,8 +581,8 @@ builds and publishes the image when they pass.
 ### Code layout
 
 Server modules sit in the repository root, one concern each (`db.js`, `sync.js`,
-`graph.js`, `source-*.js`, `verdict.js`, `alerts.js`, `monitor.js`, `backup.js`,
-`notify.js`, ...). The browser side
+`graph.js`, `source-*.js`, `ingest.js`, `tlsrpt-parser.js`, `verdict.js`, `alerts.js`,
+`monitor.js`, `backup.js`, `notify.js`, ...). The browser side
 has no build step: `public/js/` holds numbered classic scripts that `index.html` loads in
 order into one shared global scope, one file per panel or concern, so a function defined
 in an earlier file is visible to later ones. `eslint.config.js` collects their top-level

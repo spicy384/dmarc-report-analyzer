@@ -54,7 +54,7 @@ function showAlertTarget(a) {
       document.getElementById("lookup-panel").scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
-    policyTabState.tab = d.kind === "dkim" ? "dkim" : "history";
+    policyTabState.tab = d.kind === "dkim" ? "dkim" : d.kind === "mta_sts" || d.kind === "mta_sts_policy" || d.kind === "tlsrpt" ? "transport" : "history";
     loadPolicy();
     document.getElementById("policy-panel").scrollIntoView({ behavior: "smooth", block: "start" });
     return;

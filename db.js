@@ -22,7 +22,7 @@ const { sourceVerdict } = require("./verdict");
 // 6: ip_info country/city/ASN columns
 // 7: daily_totals (retention rollups) and reports.purged_at
 // 8: forensic_reports (created by the schema; version bump only)
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -220,6 +220,33 @@ CREATE TABLE IF NOT EXISTS dns_history (
   last_seen  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dns_history_key ON dns_history(domain, kind, selector, last_seen);
+
+-- SMTP TLS reports (RFC 8460): one row per policy in a report (reports almost always
+-- carry one). Failures are kept as JSON; the raw report is gzipped for download.
+CREATE TABLE IF NOT EXISTS tls_reports (
+  id              INTEGER PRIMARY KEY,
+  message_id      TEXT,
+  mailbox_id      TEXT NOT NULL DEFAULT 'env',
+  org_name        TEXT NOT NULL,
+  report_id       TEXT NOT NULL,
+  contact_info    TEXT,
+  range_begin     INTEGER NOT NULL,
+  range_end       INTEGER NOT NULL,
+  policy_domain   TEXT,
+  policy_type     TEXT,                -- sts | tlsa | no-policy-found
+  policy_mode     TEXT,                -- enforce | testing | none, from the policy string
+  policy_string   TEXT,                -- JSON [lines]
+  mx_hosts        TEXT,                -- JSON [patterns]
+  successful      INTEGER NOT NULL DEFAULT 0,
+  failed          INTEGER NOT NULL DEFAULT 0,
+  failures        TEXT,                -- JSON [{resultType, sendingMtaIp, receivingMxHostname, ...}]
+  attachment_name TEXT,
+  raw_gz          BLOB,
+  ingested_at     INTEGER NOT NULL,
+  UNIQUE(org_name, report_id, policy_domain)
+);
+CREATE INDEX IF NOT EXISTS idx_tls_begin  ON tls_reports(range_begin);
+CREATE INDEX IF NOT EXISTS idx_tls_domain ON tls_reports(policy_domain);
 `;
 
 const DISPOSITIONS = ["none", "quarantine", "reject"];
@@ -481,8 +508,13 @@ function openDatabase({ dataDir, file } = {}) {
     setSetting: db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
     startRun: db.prepare("INSERT INTO sync_runs (started_at, trigger, since, mailbox_id) VALUES (?, ?, ?, ?)"),
     lastRunsByMailbox: db.prepare(`SELECT * FROM sync_runs s WHERE s.id = (SELECT MAX(id) FROM sync_runs WHERE mailbox_id IS s.mailbox_id)`),
-    mailboxCounts: db.prepare(`SELECT mailbox_id AS id, COUNT(*) AS reports, COALESCE(SUM(messages), 0) AS messages,
-      MAX(range_end) AS lastWindow FROM reports GROUP BY mailbox_id`),
+    // Every kind of report counts towards a mailbox, so one that only ever received TLS
+    // or forensic reports (or the "upload" pseudo-mailbox) still shows in the filter.
+    mailboxCounts: db.prepare(`SELECT id, SUM(reports) AS reports, SUM(messages) AS messages, MAX(lastWindow) AS lastWindow FROM (
+        SELECT mailbox_id AS id, COUNT(*) AS reports, COALESCE(SUM(messages), 0) AS messages, MAX(range_end) AS lastWindow FROM reports GROUP BY mailbox_id
+        UNION ALL SELECT mailbox_id, COUNT(*), 0, MAX(range_end) FROM tls_reports GROUP BY mailbox_id
+        UNION ALL SELECT mailbox_id, COUNT(*), 0, MAX(arrival_at) FROM forensic_reports GROUP BY mailbox_id
+      ) GROUP BY id`),
     finishRun: db.prepare(`UPDATE sync_runs SET finished_at = @finishedAt, messages_seen = @messagesSeen,
       reports_added = @reportsAdded, duplicates = @duplicates, errors = @errors, error_text = @errorText WHERE id = @id`),
     runs: db.prepare("SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?"),
@@ -1256,6 +1288,157 @@ function openDatabase({ dataDir, file } = {}) {
     return db.prepare("SELECT COUNT(*) AS n FROM forensic_reports").get().n;
   }
 
+  // --- TLS reports (RFC 8460) --------------------------------------------------
+
+  function policyMode(lines) {
+    for (const line of lines || []) {
+      const m = String(line).match(/^\s*mode\s*:\s*(\w+)/i);
+      if (m) return m[1].toLowerCase();
+    }
+    return null;
+  }
+
+  /** Stores every policy of a parsed TLS report; duplicates (same reporter, id and domain) are skipped. */
+  function insertTlsReport({ messageId, mailboxId, attachmentName, parsed, json }) {
+    const rawGz = json ? zlib.gzipSync(Buffer.from(json, "utf8")) : null;
+    const stmt = db.prepare(`INSERT OR IGNORE INTO tls_reports (message_id, mailbox_id, org_name, report_id, contact_info, range_begin, range_end,
+        policy_domain, policy_type, policy_mode, policy_string, mx_hosts, successful, failed, failures, attachment_name, raw_gz, ingested_at)
+      VALUES (@messageId, @mailboxId, @orgName, @reportId, @contactInfo, @rangeBegin, @rangeEnd, @policyDomain, @policyType, @policyMode,
+        @policyString, @mxHosts, @successful, @failed, @failures, @attachmentName, @rawGz, @ingestedAt)`);
+    const out = { added: 0, duplicates: 0, ids: [] };
+    db.transaction(() => {
+      for (const p of parsed.policies) {
+        const result = stmt.run({
+          messageId: messageId || null,
+          mailboxId: mailboxId || "env",
+          orgName: parsed.orgName,
+          reportId: parsed.reportId,
+          contactInfo: parsed.contactInfo || null,
+          rangeBegin: parsed.rangeBegin,
+          rangeEnd: parsed.rangeEnd,
+          policyDomain: p.policyDomain || "",
+          policyType: p.policyType || null,
+          policyMode: policyMode(p.policyString),
+          policyString: JSON.stringify(p.policyString || []),
+          mxHosts: JSON.stringify(p.mxHosts || []),
+          successful: p.successful || 0,
+          failed: p.failed || 0,
+          failures: JSON.stringify(p.failures || []),
+          attachmentName: attachmentName || null,
+          rawGz,
+          ingestedAt: now()
+        });
+        if (result.changes) {
+          out.added += 1;
+          out.ids.push(Number(result.lastInsertRowid));
+        } else {
+          out.duplicates += 1;
+        }
+      }
+    })();
+    return out;
+  }
+
+  function tlsFilter(filter = {}) {
+    const clauses = [];
+    const params = [];
+    const from = toInt(filter.from);
+    const to = toInt(filter.to);
+    if (from !== null) { clauses.push("t.range_begin >= ?"); params.push(from); }
+    if (to !== null) { clauses.push("t.range_begin < ?"); params.push(to); }
+    if (filter.domain) { clauses.push("t.policy_domain = ?"); params.push(String(filter.domain).toLowerCase()); }
+    if (filter.mailbox) { clauses.push("t.mailbox_id = ?"); params.push(String(filter.mailbox)); }
+    const q = filter.q && String(filter.q).trim();
+    if (q) {
+      const like = likePattern(q);
+      const cols = ["t.org_name", "t.policy_domain", "t.failures", "t.mx_hosts"];
+      clauses.push(`(${cols.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
+      params.push(...Array(cols.length).fill(like));
+    }
+    return { sql: clauses.length ? clauses.join(" AND ") : "1=1", params };
+  }
+
+  function shapeTls(row, { full = false } = {}) {
+    const failures = parseJson(row.failures, []);
+    const out = {
+      id: row.id,
+      messageId: row.message_id,
+      mailboxId: row.mailbox_id,
+      orgName: row.org_name,
+      reportId: row.report_id,
+      contactInfo: row.contact_info,
+      rangeBegin: row.range_begin,
+      rangeEnd: row.range_end,
+      policyDomain: row.policy_domain || null,
+      policyType: row.policy_type,
+      policyMode: row.policy_mode,
+      mxHosts: parseJson(row.mx_hosts, []),
+      successful: row.successful,
+      failed: row.failed,
+      failureTypes: [...new Set(failures.map((f) => f.resultType))],
+      attachmentName: row.attachment_name,
+      ingestedAt: row.ingested_at
+    };
+    if (full) {
+      out.policyString = parseJson(row.policy_string, []);
+      out.failures = failures;
+    }
+    return out;
+  }
+
+  function tlsReports(filter = {}, { page = 1, pageSize = 50 } = {}) {
+    const f = tlsFilter(filter);
+    const size = Math.min(Math.max(1, toInt(pageSize, 50)), 1000);
+    const offset = (Math.max(1, toInt(page, 1)) - 1) * size;
+    const total = db.prepare(`SELECT COUNT(*) AS n FROM tls_reports t WHERE ${f.sql}`).get(...f.params).n;
+    const rows = db.prepare(`SELECT t.id, t.message_id, t.mailbox_id, t.org_name, t.report_id, t.contact_info, t.range_begin, t.range_end, t.policy_domain,
+        t.policy_type, t.policy_mode, t.mx_hosts, t.successful, t.failed, t.failures, t.attachment_name, t.ingested_at
+      FROM tls_reports t WHERE ${f.sql} ORDER BY t.range_begin DESC, t.id DESC LIMIT ? OFFSET ?`).all(...f.params, size, offset);
+    return { total, page: Math.max(1, toInt(page, 1)), pageSize: size, rows: rows.map((r) => shapeTls(r)) };
+  }
+
+  function tlsReportById(id) {
+    const row = db.prepare("SELECT * FROM tls_reports WHERE id = ?").get(id);
+    return row ? shapeTls(row, { full: true }) : null;
+  }
+
+  function tlsReportRaw(id) {
+    const row = db.prepare("SELECT raw_gz, attachment_name, org_name, report_id FROM tls_reports WHERE id = ?").get(id);
+    if (!row || !row.raw_gz) return null;
+    return { json: zlib.gunzipSync(row.raw_gz).toString("utf8"), name: row.attachment_name || `${row.org_name}-${row.report_id}.json` };
+  }
+
+  /** Totals for the period plus failures by result type, receiving MX and sending MTA. */
+  function tlsSummary(filter = {}) {
+    const f = tlsFilter(filter);
+    const totals = db.prepare(`
+      SELECT COUNT(*) AS reports, COUNT(DISTINCT t.org_name) AS reporters, COUNT(DISTINCT t.policy_domain) AS domains,
+             COALESCE(SUM(t.successful), 0) AS successful, COALESCE(SUM(t.failed), 0) AS failed,
+             MIN(t.range_begin) AS firstWindow, MAX(t.range_end) AS lastWindow,
+             SUM(CASE WHEN t.policy_mode = 'enforce' THEN 1 ELSE 0 END) AS enforceReports,
+             SUM(CASE WHEN t.policy_mode = 'testing' THEN 1 ELSE 0 END) AS testingReports,
+             SUM(CASE WHEN t.policy_type = 'no-policy-found' THEN 1 ELSE 0 END) AS noPolicyReports
+      FROM tls_reports t WHERE ${f.sql}`).get(...f.params);
+    const grouped = (expr) => db.prepare(`
+      SELECT ${expr} AS key, SUM(json_extract(d.value, '$.failedSessionCount')) AS sessions, COUNT(DISTINCT t.id) AS reports
+      FROM tls_reports t, json_each(t.failures) d WHERE ${f.sql}
+      GROUP BY key ORDER BY sessions DESC LIMIT 25`).all(...f.params).filter((r) => r.key !== null);
+    const days = db.prepare(`
+      SELECT date(t.range_begin, 'unixepoch') AS day, SUM(t.successful) AS successful, SUM(t.failed) AS failed
+      FROM tls_reports t WHERE ${f.sql} GROUP BY day ORDER BY day`).all(...f.params);
+    return {
+      ...totals,
+      byType: grouped("json_extract(d.value, '$.resultType')").map((r) => ({ resultType: r.key, sessions: r.sessions, reports: r.reports })),
+      byMx: grouped("json_extract(d.value, '$.receivingMxHostname')").map((r) => ({ host: r.key, sessions: r.sessions, reports: r.reports })),
+      bySender: grouped("json_extract(d.value, '$.sendingMtaIp')").map((r) => ({ ip: r.key, sessions: r.sessions, reports: r.reports })),
+      days
+    };
+  }
+
+  function tlsCount() {
+    return db.prepare("SELECT COUNT(*) AS n FROM tls_reports").get().n;
+  }
+
   // --- retention: rollups and purge ----------------------------------------------
 
   /** Daily totals of purged reports inside the filter's window, domain and mailbox. */
@@ -1785,6 +1968,12 @@ function openDatabase({ dataDir, file } = {}) {
     forensics,
     forensicById,
     forensicCount,
+    insertTlsReport,
+    tlsReports,
+    tlsReportById,
+    tlsReportRaw,
+    tlsSummary,
+    tlsCount,
     insertAlert,
     openAlerts,
     recentAlerts,

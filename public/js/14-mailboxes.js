@@ -32,8 +32,10 @@ function populateMailboxSelect(list, counts) {
   for (const m of list) mailboxNames.set(m.id, m.name);
   const known = new Map(list.map((m) => [m.id, m]));
   // Reports may belong to a mailbox that was deleted since; keep it selectable.
+  // Manually uploaded files sit under their own pseudo-mailbox.
   for (const c of counts || []) {
-    if (!known.has(c.id)) mailboxNames.set(c.id, `${c.id} (removed)`);
+    if (c.id === "upload") mailboxNames.set(c.id, "Manual uploads");
+    else if (!known.has(c.id)) mailboxNames.set(c.id, `${c.id} (removed)`);
   }
   const current = mailboxSelect.value;
   mailboxSelect.replaceChildren();
@@ -525,6 +527,8 @@ function setSyncBusy(busy) {
 function describeJob(job) {
   const bits = [`${job.seen} new message${job.seen === 1 ? "" : "s"} read`, `${job.added} report${job.added === 1 ? "" : "s"} added`];
   if (job.skipped) bits.push(`${job.skipped} already seen`);
+  if (job.tls) bits.push(`${job.tls} TLS report${job.tls === 1 ? "" : "s"}`);
+  if (job.forensic) bits.push(`${job.forensic} forensic`);
   if (job.duplicates) bits.push(`${job.duplicates} duplicate${job.duplicates === 1 ? "" : "s"}`);
   if (job.noReport) bits.push(`${job.noReport} without a report`);
   if (job.errors) bits.push(`${job.errors} error${job.errors === 1 ? "" : "s"}`);

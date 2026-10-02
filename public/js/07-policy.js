@@ -79,6 +79,72 @@ function sourceList(sources, unit) {
   return ul;
 }
 
+const DNS_KIND_LABELS = { dmarc: "DMARC", spf: "SPF", mta_sts: "MTA-STS", mta_sts_policy: "MTA-STS policy", tlsrpt: "TLS-RPT" };
+
+/**
+ * One box for transport security: the MTA-STS record and policy with MX coverage,
+ * the TLS-RPT record, and (when given) what the TLS reports for the period say.
+ * Shared by the Policy panel and the Lookup panel.
+ */
+function transportBox(sts, rpt, { tlsSummary = null } = {}) {
+  const mode = sts.found && sts.policy ? sts.policy.mode : null;
+  const box = policyBox("MTA-STS and TLS-RPT", {
+    badge: !sts.found ? "no MTA-STS" : !sts.policy ? "policy unreachable" : `MTA-STS ${mode || "?"}`,
+    badgeClass: mode === "enforce" ? "pill-pass" : mode === "testing" ? "pill-quarantine" : "pill-reject"
+  });
+
+  const h1 = document.createElement("h4");
+  h1.textContent = "MTA-STS";
+  box.appendChild(h1);
+  if (sts.found) {
+    box.appendChild(recordLine(sts.record));
+    const facts = [];
+    if (sts.policy) {
+      facts.push(`Policy ${sts.policy.mode || "?"}${Number.isFinite(sts.policy.maxAge) ? `, cached by senders for ${formatDurationShort(sts.policy.maxAge)}` : ""}${sts.id ? `, id ${sts.id}` : ""}`);
+      if (sts.policy.mx.length) facts.push(`Allowed MX: ${sts.policy.mx.join(", ")}`);
+      if (sts.mxCoverage && sts.mxCoverage.length) facts.push(`MX hosts covered: ${sts.mxCoverage.filter((m) => m.covered).length} of ${sts.mxCoverage.length}`);
+      if (sts.policyUnchangedSince) facts.push(`Policy unchanged since at least ${formatUtcDate(sts.policyUnchangedSince)} (daily snapshots)`);
+    } else {
+      facts.push(`Policy file: ${sts.policyUrl}`);
+    }
+    if (sts.unchangedSince) facts.push(`Record unchanged since at least ${formatUtcDate(sts.unchangedSince)} (daily snapshots)`);
+    box.appendChild(warningList(facts, "policy-facts"));
+    if (sts.policyText) {
+      const pre = recordLine(sts.policyText);
+      pre.title = sts.policyUrl;
+      box.appendChild(pre);
+    }
+  }
+  if (sts.warnings && sts.warnings.length) box.appendChild(warningList(sts.warnings));
+
+  const h2 = document.createElement("h4");
+  h2.textContent = "TLS-RPT";
+  box.appendChild(h2);
+  if (rpt.found) {
+    box.appendChild(recordLine(rpt.record));
+    const facts = [`TLS reports to ${(rpt.rua || []).join(", ") || "nobody"}${rpt.toUs ? " (this analyzer)" : ""}`];
+    if (rpt.unchangedSince) facts.push(`Record unchanged since at least ${formatUtcDate(rpt.unchangedSince)} (daily snapshots)`);
+    box.appendChild(warningList(facts, "policy-facts"));
+  }
+  if (rpt.warnings && rpt.warnings.length) box.appendChild(warningList(rpt.warnings));
+
+  if (tlsSummary && tlsSummary.reports) {
+    const total = (tlsSummary.successful || 0) + (tlsSummary.failed || 0);
+    const facts = [`${formatNumber(tlsSummary.reports)} TLS report${tlsSummary.reports === 1 ? "" : "s"} in this period from ${formatNumber(tlsSummary.reporters)} sender${tlsSummary.reporters === 1 ? "" : "s"}: ${formatNumber(tlsSummary.successful)} sessions succeeded, ${formatNumber(tlsSummary.failed)} failed${total ? ` (${(100 * (tlsSummary.failed || 0) / total).toFixed(1)}%)` : ""}.`];
+    for (const t of (tlsSummary.byType || []).slice(0, 4)) facts.push(`${formatNumber(t.sessions)} × ${t.resultType}`);
+    box.appendChild(warningList(facts, tlsSummary.failed ? "policy-warnings" : "policy-facts"));
+  }
+  return box;
+}
+
+function formatDurationShort(seconds) {
+  const s = Number(seconds) || 0;
+  if (s >= 7 * 86400) return `${Math.round(s / 86400)} days`;
+  if (s >= 86400) return `${Math.round(s / 3600)} hours`;
+  if (s >= 3600) return `${Math.round(s / 3600)} h`;
+  return `${s} s`;
+}
+
 // The four sections are tabs: side by side they squeezed each other and the
 // DKIM table spilled into the next column. The chosen tab survives a re-render
 // (domain change, Re-check DNS) so the user stays where they were.
@@ -217,6 +283,11 @@ function renderPolicy(p) {
   }
   tabs.push({ key: "dkim", label: "DKIM selectors", box: dkimBox });
 
+  // --- transport security: MTA-STS and TLS-RPT ---
+  if (p.transport) {
+    tabs.push({ key: "transport", label: "MTA-STS / TLS-RPT", box: transportBox(p.transport.mtaSts, p.transport.tlsRpt, { tlsSummary: p.transport.tlsSummary }) });
+  }
+
   // --- record history ---
   // One row per distinct value the daily snapshot has seen; the first row of each
   // record is the baseline, every further one is a change.
@@ -236,7 +307,7 @@ function renderPolicy(p) {
     const scroll = document.createElement("div");
     scroll.className = "table-scroll";
     historyBox.appendChild(scroll);
-    const label = (h) => (h.kind === "dkim" ? `DKIM ${h.selector}._domainkey.${h.domain}` : `${h.kind.toUpperCase()} ${h.domain}`);
+    const label = (h) => (h.kind === "dkim" ? `DKIM ${h.selector}._domainkey.${h.domain}` : `${DNS_KIND_LABELS[h.kind] || h.kind.toUpperCase()} ${h.domain}`);
     scroll.appendChild(buildTable(
       ["Record", "Value", "First seen", "Last seen"],
       history.map((h) => ({

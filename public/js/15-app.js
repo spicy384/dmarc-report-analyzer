@@ -85,6 +85,7 @@ async function loadAll() {
     ["policy", loadPolicy],
     ["weekly", loadWeekly],
     ["forensic", loadForensic],
+    ["tls", loadTls],
     ["reports", loadReports],
     ["sync status", loadSyncStatus]
   ];

@@ -55,6 +55,18 @@ function dmarcChangeSummary(previousValue, currentValue, parseDmarcTags) {
   return { text: bits.join("; "), weakened };
 }
 
+const KIND_LABELS = { dmarc: "DMARC record", spf: "SPF record", dkim: "DKIM key", mta_sts: "MTA-STS record", mta_sts_policy: "MTA-STS policy", tlsrpt: "TLS-RPT record" };
+const MODE_RANK = { none: 0, testing: 1, enforce: 2 };
+
+/** What an MTA-STS policy change means: mode going from enforce towards none is a weakening. */
+function mtaStsChangeSummary(previousValue, currentValue) {
+  const mode = (text) => ((String(text || "").match(/^\s*mode\s*:\s*(\w+)/im) || [])[1] || "").toLowerCase();
+  const a = mode(previousValue);
+  const b = mode(currentValue);
+  if (a === b) return { text: "", weakened: false };
+  return { text: `mode ${a || "(unset)"} → ${b || "(unset)"}`, weakened: (MODE_RANK[b] ?? -1) < (MODE_RANK[a] ?? -1) };
+}
+
 function createMonitor({ db, dnsRecords, mailboxes = null, logger = console, now = nowSeconds, parseDmarcTags = null } = {}) {
   let timer = null;
   let running = null;
@@ -75,7 +87,7 @@ function createMonitor({ db, dnsRecords, mailboxes = null, logger = console, now
     const outcome = db.observeDnsRecord({ domain, kind, selector, found, value, at });
     if (!outcome.changed || !outcome.previous) return null;
     const previous = outcome.previous;
-    const label = kind === "dkim" ? `DKIM key ${selector}._domainkey.${domain}` : `${kind.toUpperCase()} record for ${domain}`;
+    const label = kind === "dkim" ? `DKIM key ${selector}._domainkey.${domain}` : `${KIND_LABELS[kind] || `${kind} record`} for ${domain}`;
     let title;
     let severity = "medium";
     let summary = "";
@@ -127,6 +139,32 @@ function createMonitor({ db, dnsRecords, mailboxes = null, logger = console, now
         if (alert) created.push(alert);
       } catch (error) {
         errors.push(`${domain} SPF: ${error.message}`);
+      }
+      // Transport security: the MTA-STS record, the policy file it points to, and TLS-RPT.
+      if (typeof dnsRecords.getMtaSts === "function") {
+        try {
+          const sts = await dnsRecords.getMtaSts(domain, { refresh });
+          const alert = observe({ domain, kind: "mta_sts", found: Boolean(sts.found), value: sts.found ? sts.record : null, at });
+          if (alert) created.push(alert);
+          // Only a fetched policy is evidence; a fetch failure says nothing about the file's content.
+          if (sts.found && sts.policyText !== null) {
+            const policyAlert = observe({ domain, kind: "mta_sts_policy", found: true, value: sts.policyText.trim(), at, describe: mtaStsChangeSummary });
+            if (policyAlert) created.push(policyAlert);
+          } else if (sts.found && sts.policyError) {
+            errors.push(`${domain} MTA-STS policy: ${sts.policyError}`);
+          }
+        } catch (error) {
+          errors.push(`${domain} MTA-STS: ${error.message}`);
+        }
+      }
+      if (typeof dnsRecords.getTlsRpt === "function") {
+        try {
+          const rpt = await dnsRecords.getTlsRpt(domain, { refresh });
+          const alert = observe({ domain, kind: "tlsrpt", found: Boolean(rpt.found), value: rpt.found ? rpt.record : null, at });
+          if (alert) created.push(alert);
+        } catch (error) {
+          errors.push(`${domain} TLS-RPT: ${error.message}`);
+        }
       }
       const selectors = db.dkimSelectors(domain, { from: at - DKIM_SELECTOR_DAYS * DAY })
         .filter((s) => s.selector && s.signingDomain && (s.signingDomain === domain || s.signingDomain.endsWith(`.${domain}`)));
@@ -286,6 +324,8 @@ function createMonitor({ db, dnsRecords, mailboxes = null, logger = console, now
 module.exports = {
   createMonitor,
   dmarcChangeSummary,
+  mtaStsChangeSummary,
+  KIND_LABELS,
   DNS_SNAPSHOT_HOURS,
   REPORTER_SILENT_DAYS,
   REPORTER_MIN_REPORTS,

@@ -16,6 +16,10 @@ const { createRetention } = require("./retention");
 const { createBackup, restoreBackup } = require("./backup");
 const { createNotifier } = require("./notify");
 const { createMonitor } = require("./monitor");
+const { createIngest } = require("./ingest");
+
+// Manually uploaded files are stored under this pseudo-mailbox id.
+const UPLOAD_MAILBOX = "upload";
 const { createSync, publicJob } = require("./sync");
 
 const app = express();
@@ -48,24 +52,29 @@ const geoip = createGeoIp({
   asnDb: process.env.GEOIP_ASN_DB || undefined,
   online: String(process.env.GEOIP_ONLINE || "true").toLowerCase() !== "false"
 });
+/** After reports were stored (by a sync or an upload): evaluate alerts, then notify. */
+function afterIngest(addedReportIds = []) {
+  const created = [...evaluateAfterSync({ db, addedReportIds }).created];
+  // Also the moment to notice that nothing arrived (or that it did again).
+  try {
+    created.push(...monitor.checkHealth().created);
+  } catch (error) {
+    console.warn(`monitor: ${error.message}`);
+  }
+  if (created.length) {
+    console.log(`alerts: ${created.length} new (${created.map((a) => a.type).join(", ")})`);
+    notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));
+  }
+}
+
+const ingest = createIngest({ db });
 const sync = createSync({
   db,
   mailboxes,
   geoip,
+  ingest,
   backfillDays: BACKFILL_DAYS,
-  onRunFinished: (job) => {
-    const created = [...evaluateAfterSync({ db, addedReportIds: job.addedReportIds }).created];
-    // A sync is also the moment to notice that nothing arrived (or that it did again).
-    try {
-      created.push(...monitor.checkHealth().created);
-    } catch (error) {
-      console.warn(`monitor: ${error.message}`);
-    }
-    if (created.length) {
-      console.log(`alerts: ${created.length} new (${created.map((a) => a.type).join(", ")})`);
-      notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));
-    }
-  }
+  onRunFinished: (job) => afterIngest(job.addedReportIds)
 });
 // Webhook notifications (Teams, Slack or generic JSON) for new alerts and the weekly summary.
 const notifier = createNotifier({ db, buildWeekly: (options) => buildWeekly(options), appUrl: process.env.APP_URL || "" });
@@ -177,6 +186,7 @@ app.get("/api/status", route(async (req, res) => {
     geoip: { ...geoip.describe(), stats: db.geoStats() },
     retention: retention.describe(),
     forensicCount: db.forensicCount(),
+    tlsCount: db.tlsCount(),
     configured: list.some((m) => m.enabled),
     // First-run walkthrough: offered while no mailbox exists (no env variables, nothing
     // added in the app) until an administrator dismisses it.
@@ -217,6 +227,72 @@ app.get("/api/sync/:id", route(async (req, res) => {
     return res.status(404).json({ error: "No such sync job." });
   }
   res.json(publicJob(job));
+}));
+
+// --- TLS reports (RFC 8460) ----------------------------------------------------
+
+app.get("/api/tls", route(async (req, res) => {
+  const filter = filterFrom(req);
+  res.json(db.tlsReports(filter, { page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
+}));
+
+app.get("/api/tls/summary", route(async (req, res) => {
+  res.json(db.tlsSummary(filterFrom(req)));
+}));
+
+app.get("/api/tls/:id", route(async (req, res) => {
+  const row = db.tlsReportById(positiveInt(req.params.id, 0));
+  if (!row) {
+    return res.status(404).json({ error: "No such TLS report." });
+  }
+  res.json(row);
+}));
+
+app.get("/api/tls/:id/json", route(async (req, res) => {
+  const raw = db.tlsReportRaw(positiveInt(req.params.id, 0));
+  if (!raw) {
+    return res.status(404).json({ error: "No such TLS report, or its JSON was not kept." });
+  }
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${raw.name.replace(/[^\w.!@-]+/g, "_")}"`);
+  res.send(raw.json);
+}));
+
+// --- manual upload ---------------------------------------------------------------
+
+/**
+ * One file per request, raw body, name in X-File-Name (URL-encoded). The file is
+ * treated exactly like a mailbox attachment: aggregate XML in any container, a TLS
+ * report, or a whole .eml (forensic report or carrier of attachments).
+ */
+app.post("/api/upload", authGuard.requireWriter, express.raw({ type: () => true, limit: "200mb" }), route(async (req, res) => {
+  const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (!bytes.length) {
+    return res.status(400).json({ error: "No file was uploaded." });
+  }
+  let name = String(req.get("X-File-Name") || "");
+  try {
+    name = decodeURIComponent(name);
+  } catch { /* keep as sent */ }
+  name = path.basename(name).slice(0, 200);
+  const messageId = `${UPLOAD_MAILBOX}:${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const result = ingest.ingestFile({ bytes, name, messageId, mailboxId: UPLOAD_MAILBOX });
+  const status = result.found ? "ingested" : result.problems.length ? "error" : "no_report";
+  db.recordMessage({
+    graphId: messageId,
+    mailboxId: UPLOAD_MAILBOX,
+    receivedAt: Math.floor(Date.now() / 1000),
+    subject: name || "uploaded file",
+    fromAddr: req.user?.username || null,
+    status,
+    error: result.problems.length ? result.problems.join("; ").slice(0, 2000) : null
+  });
+  if (result.aggregate.ids.length) {
+    afterIngest(result.aggregate.ids);
+  }
+  const duplicates = result.aggregate.duplicates + result.tls.duplicates + result.forensic.duplicates;
+  auditFrom(req, "reports.upload", name || "(unnamed)", `${result.aggregate.added} aggregate, ${result.tls.added} TLS, ${result.forensic.added} forensic added; ${duplicates} duplicate(s); ${result.problems.length} problem(s)`);
+  res.json({ name, status, ...result });
 }));
 
 // --- forensic reports -----------------------------------------------------------
@@ -375,13 +451,21 @@ app.get("/api/policy", route(async (req, res) => {
   const refresh = String(req.query.refresh || "") === "1";
   const scoped = { ...filter, domain };
 
-  const [dmarc, spf] = await Promise.all([
+  const [dmarc, spf, mtaSts, tlsRpt] = await Promise.all([
     dnsRecords.getDmarc(domain, { refresh }).catch((error) => ({ domain, found: false, error: error.message, tags: {}, warnings: [`DNS lookup failed: ${error.message}`] })),
-    dnsRecords.getSpf(domain, { refresh }).catch((error) => ({ domain, found: false, error: error.message, networks: [], warnings: [`DNS lookup failed: ${error.message}`], errors: [] }))
+    dnsRecords.getSpf(domain, { refresh }).catch((error) => ({ domain, found: false, error: error.message, networks: [], warnings: [`DNS lookup failed: ${error.message}`], errors: [] })),
+    dnsRecords.getMtaSts(domain, { refresh }).catch((error) => ({ domain, found: false, error: error.message, policy: null, mxCoverage: [], warnings: [`DNS lookup failed: ${error.message}`] })),
+    dnsRecords.getTlsRpt(domain, { refresh }).catch((error) => ({ domain, found: false, error: error.message, rua: [], warnings: [`DNS lookup failed: ${error.message}`] }))
   ]);
 
   // Which of the mailbox addresses the reports actually reach.
   const addresses = mailboxes.list().map((m) => m.mailbox.toLowerCase());
+  const tlsRua = (tlsRpt.rua || []).map((a) => String(a).toLowerCase());
+  const tlsRptToUs = tlsRua.some((a) => addresses.includes(a));
+  const tlsRptWarnings = [...(tlsRpt.warnings || [])];
+  if (tlsRpt.found && tlsRua.length && addresses.length && !tlsRptToUs) {
+    tlsRptWarnings.push(`rua= points at ${tlsRua.join(", ")}, none of which is a mailbox this analyzer reads (${addresses.join(", ")}).`);
+  }
   const rua = (dmarc.tags && dmarc.tags.rua) || [];
   const ruaToUs = rua.some((a) => addresses.includes(String(a).toLowerCase()));
   const dmarcWarnings = [...(dmarc.warnings || [])];
@@ -433,6 +517,11 @@ app.get("/api/policy", route(async (req, res) => {
     dmarc: { ...dmarc, warnings: dmarcWarnings, ruaToUs, unchangedSince: sinceFor("dmarc", dmarc.found, dmarc.record) },
     spf: { ...spf, networks: (spf.networks || []).length, unchangedSince: sinceFor("spf", spf.found, spf.record) },
     dkim,
+    transport: {
+      mtaSts: { ...mtaSts, unchangedSince: sinceFor("mta_sts", mtaSts.found, mtaSts.record), policyUnchangedSince: mtaSts.policyText ? sinceFor("mta_sts_policy", true, mtaSts.policyText.trim()) : null },
+      tlsRpt: { ...tlsRpt, warnings: tlsRptWarnings, toUs: tlsRptToUs, unchangedSince: sinceFor("tlsrpt", tlsRpt.found, tlsRpt.record) },
+      tlsSummary: db.tlsSummary(scoped)
+    },
     history: db.dnsHistory(domain, { limit: 50 }),
     reject,
     yoursOutsideSpf: yoursOutsideSpf.map((r) => ({ ip: r.ip, ptr: r.ptr, sender: r.sender.label, total: r.total, spfPassed: r.spfPassed, failed: r.failed })),
