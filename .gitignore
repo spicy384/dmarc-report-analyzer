@@ -4,3 +4,8 @@ data/
 .env
 error.txt
 certs/
+
+# Playwright output
+test-results/
+playwright-report/
+playwright/.cache/

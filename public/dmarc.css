@@ -1405,3 +1405,90 @@ body.scratch-mode #upload-panel,
 body.scratch-mode #mailbox-label {
   display: none !important;
 }
+
+/* Footer: version and update state. */
+.app-footer {
+  max-width: 1400px;
+  margin: 8px auto 24px;
+  padding: 0 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.app-update.is-update {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* Labelling suggestion under the known-sender form. */
+.ks-suggestion code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--bg-accent);
+}
+
+/* Printing one panel: everything else goes, every tab of the panel shows, and a
+   heading with the filter in force is added by printPanel(). */
+@media print {
+  body.print-focus > header,
+  body.print-focus .filter-bar,
+  body.print-focus #alerts-banner,
+  body.print-focus #scratch-banner,
+  body.print-focus .app-footer,
+  body.print-focus .panel:not(.print-target),
+  body.print-focus .print-target .print-btn,
+  body.print-focus .print-target .head-toggle,
+  body.print-focus .print-target .pager {
+    display: none !important;
+  }
+  body.print-focus {
+    background: #fff;
+  }
+  body.print-focus .print-target {
+    box-shadow: none;
+    border: 0;
+    padding: 0;
+    max-width: none;
+  }
+  body.print-focus .print-target .tabs {
+    display: none;
+  }
+  body.print-focus .print-target .tab-panel[hidden] {
+    display: block !important;
+  }
+  body.print-focus .print-target .tab-panel::before {
+    content: attr(data-print-title);
+    display: block;
+    font-weight: 700;
+    margin: 12px 0 4px;
+  }
+  body.print-focus .print-target .table-scroll {
+    overflow: visible;
+  }
+  body.print-focus .print-target table {
+    font-size: 11px;
+  }
+  body.print-focus .print-target tr {
+    break-inside: avoid;
+  }
+  .print-heading h1 {
+    font-size: 18px;
+    margin: 0 0 2px;
+  }
+  .print-heading p {
+    margin: 0 0 12px;
+    font-size: 12px;
+    color: #555;
+  }
+}
+.print-heading {
+  display: none;
+}
+@media print {
+  .print-heading {
+    display: block;
+  }
+}

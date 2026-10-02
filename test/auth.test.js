@@ -63,7 +63,8 @@ const PROTECTED = [
   const app = spawn("node", ["server.js"], {
     cwd: PROJECT,
     // Passkeys are bound to a hostname; pin the relying party so the fake authenticator can match it.
-    env: { ...process.env, PORT: String(APP_PORT), DATA_DIR, PASSKEY_RP_ID: "localhost", PASSKEY_ORIGIN: `http://localhost:${APP_PORT}` },
+    // The address throttle is off here: this suite deliberately fails sign-in many times.
+    env: { ...process.env, PORT: String(APP_PORT), DATA_DIR, PASSKEY_RP_ID: "localhost", PASSKEY_ORIGIN: `http://localhost:${APP_PORT}`, LOGIN_RATE_LIMIT: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   app.stderr.on("data", (d) => console.error("[app stderr]", d.toString().trim()));

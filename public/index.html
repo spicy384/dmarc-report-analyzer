@@ -334,6 +334,9 @@
       <div class="panel-head">
         <h2>Domains</h2>
         <span id="scorecard-count" class="badge">0 domains</span>
+        <div class="head-toggle">
+          <button type="button" class="secondary small print-btn" data-print="scorecard-panel" title="Print this panel, or save it as a PDF">Print</button>
+        </div>
       </div>
       <p class="bulk-hint">
         One row per domain in the period: the policy it publishes, how its mail fares, and what
@@ -351,6 +354,7 @@
           <label class="inline-label">Week ending <input type="date" id="weekly-end" /></label>
           <button id="weekly-next" type="button" class="secondary small" title="Next week">&rarr;</button>
           <button id="weekly-copy" type="button" class="secondary small">Copy as text</button>
+          <button type="button" class="secondary small print-btn" data-print="weekly-panel" title="Print this panel, or save it as a PDF">Print</button>
         </div>
       </div>
       <p class="bulk-hint">
@@ -480,6 +484,7 @@
         </label>
         <label>Label <input id="ks-label" placeholder="Microsoft 365" /></label>
         <label>Note <input id="ks-note" placeholder="optional" /></label>
+        <p id="ks-suggestion" class="bulk-hint ks-suggestion" hidden></p>
         <div class="actions">
           <button id="ks-save" type="button">Add</button>
           <button id="ks-cancel" type="button" class="secondary" hidden>Cancel</button>
@@ -901,6 +906,20 @@
           </div>
         </div>
 
+        <div>
+          <h3 class="account-heading">Display</h3>
+          <p class="bulk-hint">
+            Times of events (syncs, alerts, sessions, forensic arrivals) are shown in this zone.
+            Report windows and chart days stay UTC dates, which is how receivers cut them.
+          </p>
+          <label>Time zone
+            <select id="acct-timezone">
+              <option value="local">This browser's zone</option>
+              <option value="UTC">UTC</option>
+            </select>
+          </label>
+        </div>
+
         <div class="account-wide">
           <h3 class="account-heading">Sessions</h3>
           <p class="bulk-hint">
@@ -948,6 +967,12 @@
     </section>
   </div>
   </main>
+
+  <footer class="app-footer" id="app-footer" hidden>
+    <span id="app-version"></span>
+    <span id="app-update" class="app-update"></span>
+    <button id="app-update-check" type="button" class="link-btn" hidden>Check now</button>
+  </footer>
 
   <script src="/js/01-core.js"></script>
   <script src="/js/02-filters.js"></script>

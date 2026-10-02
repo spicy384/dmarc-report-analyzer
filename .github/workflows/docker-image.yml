@@ -44,6 +44,22 @@ jobs:
       - name: Test
         run: npm test
 
+      # One real browser run: signs in, tours the dashboard with seeded data, uploads a
+      # file on the Analyze page. Chromium only; the suite is about our scripts, not browsers.
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser test
+        run: npm run e2e
+
+      - name: Keep the browser test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
   # Each platform builds natively on its own runner (GitHub's free arm64 runners
   # for public repositories replace QEMU emulation, which was slow and crashed
   # at random) and pushes the image by digest. The merge job below stitches the
@@ -75,12 +91,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Note the build date
+        id: date
+        run: echo "now=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.date.outputs.now }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}

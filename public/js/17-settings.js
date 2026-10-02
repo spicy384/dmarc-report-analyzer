@@ -176,6 +176,44 @@ async function loadNotify() {
   }
 }
 
+// --- version footer and update check ---------------------------------------------
+
+function renderVersion(v) {
+  const footer = document.getElementById("app-footer");
+  const label = document.getElementById("app-version");
+  const update = document.getElementById("app-update");
+  const button = document.getElementById("app-update-check");
+  footer.hidden = false;
+  const build = [v.commit ? v.commit.slice(0, 7) : null, v.buildDate ? `built ${String(v.buildDate).slice(0, 10)}` : null].filter(Boolean).join(", ");
+  label.textContent = `DMARC Report Analyzer v${v.version}${build ? ` (${build})` : ""}`;
+  update.className = "app-update";
+  if (!v.enabled) {
+    update.textContent = "Update check off.";
+  } else if (v.updateAvailable) {
+    update.textContent = `Version ${v.latest} is available: pull the new image (docker compose pull && docker compose up -d).`;
+    update.classList.add("is-update");
+  } else if (v.error) {
+    update.textContent = `Update check failed: ${v.error}.`;
+  } else if (v.checkedAt) {
+    update.textContent = `Up to date${v.latest ? ` (latest release ${v.latest})` : ""}; checked ${formatTimestamp(v.checkedAt)}.`;
+  } else {
+    update.textContent = "Update check pending.";
+  }
+  button.hidden = !isAdmin() || !v.enabled;
+}
+
+document.getElementById("app-update-check").addEventListener("click", async () => {
+  const button = document.getElementById("app-update-check");
+  button.disabled = true;
+  try {
+    renderVersion(await api("/api/version/check", { method: "POST", body: "{}" }));
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 // --- monitoring (DNS drift, reporter silence, stalled ingestion) -----------------
 
 async function loadMonitor() {

@@ -1,6 +1,6 @@
 {
   "name": "dmarc-report-analyzer",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Web app that pulls DMARC aggregate reports out of a Microsoft 365 mailbox and analyzes them.",
   "main": "server.js",
@@ -8,6 +8,7 @@
     "start": "node server.js",
     "dev": "node server.js",
     "test": "node test/run-all.js",
+    "e2e": "playwright test",
     "lint": "eslint ."
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "eslint": "^9.39.5",
     "globals": "^17.13.0"
   }

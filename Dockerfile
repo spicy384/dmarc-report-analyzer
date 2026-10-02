@@ -11,6 +11,12 @@ ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/data
 
+# Baked in by the workflow so the footer can say which build is running.
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ENV APP_COMMIT=$GIT_SHA \
+    APP_BUILD_DATE=$BUILD_DATE
+
 WORKDIR /app
 
 # Copy manifests first so `npm ci` is cached until dependencies actually change.

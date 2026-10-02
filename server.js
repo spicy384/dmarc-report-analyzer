@@ -18,6 +18,8 @@ const { createNotifier } = require("./notify");
 const { createMonitor } = require("./monitor");
 const { createIngest } = require("./ingest");
 const { createScratchStore } = require("./scratch");
+const { createUpdateChecker } = require("./version");
+const pkg = require("./package.json");
 
 // Manually uploaded files are stored under this pseudo-mailbox id.
 const UPLOAD_MAILBOX = "upload";
@@ -37,6 +39,30 @@ const BACKFILL_DAYS = Number(process.env.BACKFILL_DAYS) > 0 ? Number(process.env
 // 0 keeps everything; N rolls reports older than N months into daily totals and drops their records and XML.
 const RETENTION_MONTHS = Number(process.env.RETENTION_MONTHS) > 0 ? Number(process.env.RETENTION_MONTHS) : 0;
 const CSV_ROW_CAP = 50000;
+
+// Security headers. The page loads only its own scripts and styles; inline styles
+// are allowed because the chart and drawers set element styles from JavaScript,
+// and data: images carry the authenticator QR code.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'"
+].join("; ");
+app.use((req, res, next) => {
+  res.setHeader("Content-Security-Policy", CSP);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  next();
+});
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -71,6 +97,15 @@ function afterIngest(addedReportIds = []) {
 const ingest = createIngest({ db });
 // One-time analyses of uploaded files: in-memory databases, never written to DATA_DIR.
 const scratches = createScratchStore({ openDatabase, createIngest, createSync, mainDb: db, geoip });
+// Running version (package.json, plus the commit the image was built from) and the daily
+// look at the registry for a newer release. UPDATE_CHECK=false keeps it entirely offline.
+const updates = createUpdateChecker({
+  version: pkg.version,
+  commit: process.env.APP_COMMIT || null,
+  buildDate: process.env.APP_BUILD_DATE || null,
+  image: process.env.UPDATE_IMAGE || "ghcr.io/spicy384/dmarc-report-analyzer",
+  enabled: String(process.env.UPDATE_CHECK || "true").toLowerCase() !== "false"
+});
 const sync = createSync({
   db,
   mailboxes,
@@ -190,6 +225,7 @@ app.get("/api/status", route(async (req, res) => {
     retention: retention.describe(),
     forensicCount: db.forensicCount(),
     tlsCount: db.tlsCount(),
+    version: updates.describe(),
     configured: list.some((m) => m.enabled),
     // First-run walkthrough: offered while no mailbox exists (no env variables, nothing
     // added in the app) until an administrator dismisses it.
@@ -556,6 +592,17 @@ app.post("/api/alerts/:id/ack", authGuard.requireWriter, route(async (req, res) 
     return res.status(404).json({ error: "No such open alert." });
   }
   res.json({ ok: true, openCount: db.openAlertCount() });
+}));
+
+// --- version -----------------------------------------------------------------
+
+app.get("/api/version", route(async (req, res) => {
+  res.json(updates.describe());
+}));
+
+/** Asks the registry now instead of waiting for the daily check. */
+app.post("/api/version/check", authGuard.requireAdmin, route(async (req, res) => {
+  res.json(await updates.check());
 }));
 
 // --- monitoring --------------------------------------------------------------
@@ -1006,6 +1053,8 @@ if (require.main === module) {
     }
     notifier.start();
     scratches.start();
+    updates.start();
+    console.log(`Version: ${pkg.version}${process.env.APP_COMMIT ? ` (${String(process.env.APP_COMMIT).slice(0, 7)})` : ""}; update check ${updates.describe().enabled ? `daily against ${updates.describe().image}` : "off"}.`);
     monitor.start({ onAlerts: (created) => {
       console.log(`monitor: ${created.length} new alert(s) (${created.map((a) => a.type).join(", ")})`);
       notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));

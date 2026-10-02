@@ -602,4 +602,5 @@ backfillBtn.addEventListener("click", () => {
 async function loadSyncStatus() {
   const [st, runs] = await Promise.all([api("/api/status"), api("/api/sync/runs?limit=15")]);
   renderSyncStatus({ ...st, runs: runs.runs });
+  if (st.version) renderVersion(st.version);
 }
