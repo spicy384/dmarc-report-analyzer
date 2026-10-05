@@ -91,6 +91,25 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
   await hdrTabs.filter({ hasText: "Sending address" }).click();
   await expect(page.locator("#hdr-body .tab-panel:not([hidden])")).toContainText("167.89.12.34");
   await expect(page).not.toHaveURL(/Received|billing/); // the headers never reach the page link
+
+  // Exports: a self-contained HTML report, the JSON, and the plain-text form.
+  const [htmlDownload] = await Promise.all([page.waitForEvent("download"), page.locator("#hdr-export-html").click()]);
+  expect(htmlDownload.suggestedFilename()).toMatch(/^email-header-report-your-september-invoice-2026-09-28\.html$/);
+  const html = fs.readFileSync(await htmlDownload.path(), "utf8");
+  expect(html).toContain("<title>Email header report: Your September invoice</title>");
+  expect(html).toContain("DMARC passes for example.com");
+  expect(html).toContain("167.89.12.34");
+  expect(html).toContain("X-Forefront-Antispam-Report");
+  expect(html).not.toContain("<script");
+  const [jsonDownload] = await Promise.all([page.waitForEvent("download"), page.locator("#hdr-export-json").click()]);
+  const exported = JSON.parse(fs.readFileSync(await jsonDownload.path(), "utf8"));
+  expect(exported.verdicts.dmarc.computed).toBe("pass");
+  expect(exported.hops).toHaveLength(5);
+  const text = await page.evaluate("headerReportText(lastHeaderAnalysis)");
+  expect(text).toContain("Email header report: Your September invoice");
+  expect(text).toContain("[ok]  DMARC passes for example.com");
+  expect(text).toContain("Message-ID                     <AbCdEfGhQ_abc123@geopod-ismtpd-1>");
+  expect(text).toContain("Received: from o1.ptr1234.sendgrid.net");
   await page.fill("#hdr-input", "this is not a set of headers");
   await page.locator("#hdr-analyze").click();
   await expect(page.locator("#hdr-status")).toContainText("does not look like email headers");

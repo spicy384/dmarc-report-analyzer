@@ -268,7 +268,245 @@ function renderHeaderAll(a) {
   return box;
 }
 
+// --- exporting the report -----------------------------------------------------------
+//
+// Every export is built in the browser from the analysis already on screen: the
+// headers are not sent anywhere again. The report carries the raw headers too, so
+// whoever receives it can check the conclusions.
+
+let lastHeaderAnalysis = null;
+
+/** The sections of the report as plain data: [{ title, lines: [..] } | { title, columns, rows }]. */
+function headerReportSections(a) {
+  const v = a.verdicts;
+  const who = (p) => (p ? `${p.name ? `${p.name} ` : ""}<${p.address || "?"}>` : "-");
+  const sections = [];
+  sections.push({
+    title: "Message",
+    pairs: [
+      ["Subject", a.summary.subject || "-"],
+      ["From", who(a.summary.from)],
+      ["Envelope sender (Return-Path)", a.summary.returnPath ? a.summary.returnPath.address || a.summary.returnPath.raw : "-"],
+      ["Reply-To", a.summary.replyTo ? a.summary.replyTo.address : "same as From"],
+      ["To", a.summary.to || "-"],
+      ["Date", a.summary.date ? formatUtcDateTime(a.summary.date) : a.summary.dateRaw || "-"],
+      ["Message-ID", a.summary.messageId || "-"]
+    ]
+  });
+  sections.push({
+    title: "Verdicts",
+    pairs: [
+      ["SPF", `${v.spf.result || "not recorded"}${v.spf.domain ? ` for ${v.spf.domain}` : ""}${v.spf.result === "pass" ? (v.spf.aligned ? ", aligned" : ", NOT aligned") : ""}`],
+      ["DKIM", `${v.dkim.result}${v.dkim.passingDomains.length ? ` for ${v.dkim.passingDomains.join(", ")}` : ""}${v.dkim.passingDomains.length ? (v.dkim.aligned ? ", aligned" : ", NOT aligned") : ""}`],
+      ["DMARC", `${v.dmarc.computed || "cannot tell"}${v.dmarc.via.length ? ` via ${v.dmarc.via.join(" + ")}` : ""}${v.dmarc.reported ? `; receiver recorded ${v.dmarc.reported}` : ""}${v.dmarc.action ? `, action=${v.dmarc.action}` : ""}${v.dmarc.policy ? `; published policy p=${v.dmarc.policy}` : ""}`],
+      ...(v.arc ? [["ARC", `${v.arc.sets} set${v.arc.sets === 1 ? "" : "s"}, chain ${v.arc.chain || "unknown"}${v.arc.result ? `, receiver recorded ${v.arc.result}` : ""}`]] : []),
+      ...(a.microsoft && a.microsoft.compauth ? [["Composite authentication", `${a.microsoft.compauth.result}${a.microsoft.compauth.reason ? ` (reason ${a.microsoft.compauth.reason})` : ""}${a.microsoft.compauth.meaning ? `: ${a.microsoft.compauth.meaning}` : ""}`]] : []),
+      ...(a.dmarcRecord && a.dmarcRecord.found ? [["DMARC record now", a.dmarcRecord.record]] : [])
+    ]
+  });
+  sections.push({ title: "Findings", findings: a.findings });
+  a.authResults.forEach((ar, i) => {
+    sections.push({
+      title: `Authentication-Results${ar.authservId ? ` from ${ar.authservId}` : ""}${i === 0 ? " (newest)" : " (older)"}`,
+      columns: ["Method", "Result", "Properties", "Comment"],
+      rows: ar.results.map((r) => [r.method, r.result, Object.entries(r.props).map(([k, val]) => `${k}=${val}`).join(" "), r.comment || ""])
+    });
+  });
+  sections.push({
+    title: `Path: ${a.hops.length} hop${a.hops.length === 1 ? "" : "s"}, oldest first${a.transit.totalSeconds !== null ? `, ${hdrDuration(a.transit.totalSeconds)} in transit` : ""}`,
+    columns: ["#", "Time (UTC)", "Wait", "From", "Address", "By", "Protocol"],
+    rows: a.hops.map((h) => [String(h.index), h.date ? formatUtcDateTime(h.date) : "no date", h.delaySeconds === null ? "" : hdrDuration(h.delaySeconds), h.from || "-", h.fromIp ? `${h.fromIp}${h.private ? " (private)" : ""}` : "-", h.by || "-", [h.with, h.tls].filter(Boolean).join(", ") || "-"])
+  });
+  sections.push({
+    title: "DKIM signatures",
+    columns: ["Selector", "Domain", "Result", "Aligned", "Key in DNS", "Algorithm", "Notes"],
+    rows: a.signatures.map((s) => [
+      s.selector || "-", s.domain || "-", s.result || "not reported", s.aligned ? "yes" : "no",
+      !s.dns ? "not checked" : s.dns.found ? (s.dns.revoked ? "revoked" : `${s.dns.keyType || "key"}${s.dns.keyBits ? ` ${s.dns.keyBits}-bit` : ""}`) : s.dns.error ? `lookup failed: ${s.dns.error}` : "missing",
+      `${s.algorithm || "?"}, ${s.canonicalization}`,
+      [!s.signsFrom ? "does not sign From" : "", s.expired ? `expired ${formatUtcDate(s.expiresAt)}` : "", s.bodyLength !== null ? `l=${s.bodyLength}` : ""].filter(Boolean).join("; ")
+    ]),
+    empty: "The message carries no DKIM-Signature header."
+  });
+  if (a.source) {
+    const s = a.source;
+    sections.push({
+      title: "Sending address",
+      pairs: [
+        ["Address", `${s.ip}${s.private ? " (private range)" : ""}`],
+        ["Taken from", s.how],
+        ["Reverse DNS", s.ptr ? `${s.ptr}${s.ptrConfirmed === true ? " (forward-confirmed)" : s.ptrConfirmed === false ? " (not forward-confirmed)" : ""}` : "none"],
+        ["Network", s.geo ? [s.geo.country, s.geo.city, s.geo.asn ? `AS${s.geo.asn}` : null, s.geo.asOrg].filter(Boolean).join(", ") : "unknown"],
+        ["Known sender", s.known ? `${s.known.label} (${s.known.kind}, ${s.known.pattern})` : s.catalogue ? `not labelled; looks like ${s.catalogue.name}` : "not labelled"],
+        ["In DMARC reports", s.seen ? `${formatNumber(s.seen.total)} messages, ${formatNumber(s.seen.failed)} failing` : "never seen"]
+      ]
+    });
+  }
+  if (a.microsoft) {
+    const m = a.microsoft;
+    sections.push({
+      title: "Microsoft 365 spam filter",
+      columns: ["Stamp", "Value", "Meaning"],
+      rows: [
+        ["Spam confidence level (SCL)", m.scl === null ? null : String(m.scl), m.sclMeaning],
+        ["Bulk complaint level (BCL)", m.bcl === null ? null : String(m.bcl), m.bclMeaning],
+        ["Filtering verdict (SFV)", m.sfv, m.sfvMeaning],
+        ["Category (CAT)", m.cat, m.catMeaning],
+        ["Connecting IP (CIP)", m.cip, m.ptr ? `reverse DNS ${m.ptr}` : null],
+        ["Country / language", [m.country, m.language].filter(Boolean).join(" / ") || null, null],
+        ["Direction (DIR)", m.direction, null],
+        ["Authenticated as", m.authAs, null]
+      ].filter((r) => r[1]).map((r) => [r[0], r[1], r[2] || ""])
+    });
+  }
+  if (a.otherFilters.length) {
+    sections.push({ title: "Other markers", columns: ["Header", "Value", "What it is"], rows: a.otherFilters.map((o) => [o.name, o.value, o.meaning]) });
+  }
+  sections.push({ title: `All headers (${a.headers.length})`, columns: ["#", "Header", "Value"], rows: a.headers.map((h, i) => [String(i + 1), h.name, h.value]), raw: true });
+  return sections;
+}
+
+function headerReportTitle(a) {
+  return `Email header report${a.summary.subject ? `: ${a.summary.subject}` : ""}`;
+}
+
+function headerReportFooter() {
+  return `Generated ${formatUtcDateTime(Math.floor(Date.now() / 1000))} by DMARC Report Analyzer${currentUser ? ` (${currentUser.username})` : ""}. Results reflect the headers as pasted and DNS at the time of analysis.`;
+}
+
+/** Plain text, for tickets and email. */
+function headerReportText(a) {
+  const out = [headerReportTitle(a), "=".repeat(Math.min(78, headerReportTitle(a).length)), ""];
+  const mark = { good: "[ok]  ", bad: "[!!]  ", warn: "[!]   ", info: "[i]   " };
+  for (const s of headerReportSections(a)) {
+    out.push(s.title, "-".repeat(Math.min(78, s.title.length)));
+    if (s.pairs) {
+      const width = Math.max(...s.pairs.map((p) => p[0].length));
+      for (const [k, val] of s.pairs) out.push(`${k.padEnd(width)}  ${val}`);
+    } else if (s.findings) {
+      for (const f of s.findings) out.push(`${mark[f.severity] || ""}${f.text}`);
+      if (!s.findings.length) out.push("Nothing to report.");
+    } else if (s.raw) {
+      for (const r of s.rows) out.push(`${r[1]}: ${r[2]}`);
+    } else if (!s.rows.length) {
+      out.push(s.empty || "None.");
+    } else {
+      for (const r of s.rows) out.push(r.map((cell, i) => `${s.columns[i]}: ${cell}`).filter((c) => !/: $/.test(c)).join(" | "));
+    }
+    out.push("");
+  }
+  out.push(headerReportFooter());
+  return out.join("\n");
+}
+
+function escapeHtml(value) {
+  return String(value === null || value === undefined ? "" : value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+}
+
+/** A self-contained HTML document: inline styles, no scripts, no external requests. */
+function headerReportHtml(a) {
+  const e = escapeHtml;
+  const v = a.verdicts;
+  const pill = (label, result, good) => `<span class="pill ${good ? "good" : /fail|error|not aligned/.test(result) ? "bad" : "warn"}">${e(label)} ${e(result)}</span>`;
+  const pills = [
+    pill("SPF", v.spf.result ? (v.spf.result === "pass" && !v.spf.aligned ? "pass, not aligned" : v.spf.result) : "none", v.spf.result === "pass" && v.spf.aligned),
+    pill("DKIM", v.dkim.passingDomains.length ? (v.dkim.aligned ? "pass" : "pass, not aligned") : v.dkim.result, v.dkim.aligned),
+    pill("DMARC", v.dmarc.computed || v.dmarc.reported || "unknown", v.dmarc.computed === "pass")
+  ];
+  if (v.arc) pills.push(pill("ARC", v.arc.result || v.arc.chain || "present", (v.arc.result || v.arc.chain) === "pass"));
+  if (a.microsoft && a.microsoft.compauth) pills.push(pill("compauth", a.microsoft.compauth.result, /pass/.test(a.microsoft.compauth.result)));
+  const body = [];
+  for (const s of headerReportSections(a)) {
+    body.push(`<h2>${e(s.title)}</h2>`);
+    if (s.pairs) {
+      body.push(`<table class="kv">${s.pairs.map(([k, val]) => `<tr><th>${e(k)}</th><td>${e(val)}</td></tr>`).join("")}</table>`);
+    } else if (s.findings) {
+      body.push(s.findings.length ? `<ul class="findings">${s.findings.map((f) => `<li class="${e(f.severity)}">${e(f.text)}</li>`).join("")}</ul>` : "<p>Nothing to report.</p>");
+    } else if (!s.rows.length) {
+      body.push(`<p>${e(s.empty || "None.")}</p>`);
+    } else {
+      body.push(`<table class="grid${s.raw ? " raw" : ""}"><thead><tr>${s.columns.map((c) => `<th>${e(c)}</th>`).join("")}</tr></thead><tbody>${s.rows.map((r) => `<tr>${r.map((cell) => `<td>${e(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+    }
+  }
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${e(headerReportTitle(a))}</title>
+<style>
+  body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #1a1a1a; margin: 0; background: #f5f5f4; }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px; background: #fff; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  h2 { font-size: 15px; margin: 24px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #e5e5e5; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+  .pill { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.good { background: #dcfce7; color: #166534; } .pill.bad { background: #fee2e2; color: #991b1b; } .pill.warn { background: #fef3c7; color: #92400e; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; vertical-align: top; padding: 4px 8px; border-bottom: 1px solid #eee; }
+  table.kv th { width: 220px; color: #555; font-weight: 600; }
+  table.grid th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #555; }
+  table.grid td, table.kv td { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-word; }
+  table.raw td:nth-child(2) { white-space: nowrap; }
+  ul.findings { list-style: none; padding: 0; margin: 0; }
+  ul.findings li { padding: 6px 10px; margin: 4px 0; border-left: 4px solid #a3a3a3; background: #fafafa; }
+  ul.findings li.good { border-color: #16a34a; } ul.findings li.bad { border-color: #dc2626; } ul.findings li.warn { border-color: #d97706; }
+  footer { margin-top: 28px; font-size: 12px; color: #666; }
+  @media print { body { background: #fff; } main { padding: 0; max-width: none; } tr { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<main>
+<h1>${e(headerReportTitle(a))}</h1>
+<div class="pills">${pills.join("")}</div>
+${body.join("\n")}
+<footer>${e(headerReportFooter())}</footer>
+</main>
+</body>
+</html>
+`;
+}
+
+function headerReportFileName(a, extension) {
+  const slug = String(a.summary.subject || "message").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "message";
+  const day = formatUtcDate(a.summary.date || Math.floor(Date.now() / 1000));
+  return `email-header-report-${slug}-${day}.${extension}`;
+}
+
+function downloadText(fileName, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+document.getElementById("hdr-export-print").addEventListener("click", () => {
+  if (lastHeaderAnalysis) printPanel("headers-results-panel", { title: headerReportTitle(lastHeaderAnalysis), meta: headerReportFooter() });
+});
+document.getElementById("hdr-export-html").addEventListener("click", () => {
+  if (!lastHeaderAnalysis) return;
+  downloadText(headerReportFileName(lastHeaderAnalysis, "html"), headerReportHtml(lastHeaderAnalysis), "text/html;charset=utf-8");
+});
+document.getElementById("hdr-export-json").addEventListener("click", () => {
+  if (!lastHeaderAnalysis) return;
+  downloadText(headerReportFileName(lastHeaderAnalysis, "json"), `${JSON.stringify(lastHeaderAnalysis, null, 2)}\n`, "application/json");
+});
+document.getElementById("hdr-export-text").addEventListener("click", async () => {
+  if (!lastHeaderAnalysis) return;
+  const text = headerReportText(lastHeaderAnalysis);
+  const ok = await copyToClipboard(text);
+  // Where the browser refuses clipboard access, the text is saved as a file instead.
+  if (!ok) downloadText(headerReportFileName(lastHeaderAnalysis, "txt"), text, "text/plain;charset=utf-8");
+  hdrStatus.hidden = false;
+  hdrStatus.textContent = ok ? "Report copied as text." : "The browser would not allow copying, so the text report was downloaded instead.";
+});
+
 function renderHeaderAnalysis(a) {
+  lastHeaderAnalysis = a;
   hdrResultsPanel.hidden = false;
   const v = a.verdicts;
   document.getElementById("hdr-title").textContent = a.summary.subject ? `Result: ${a.summary.subject}` : "Result";
@@ -353,6 +591,7 @@ hdrFile.addEventListener("change", () => {
 });
 document.getElementById("hdr-clear").addEventListener("click", () => {
   hdrInput.value = "";
+  lastHeaderAnalysis = null;
   hdrResultsPanel.hidden = true;
   hdrStatus.hidden = true;
   hdrBadge.textContent = "";

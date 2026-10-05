@@ -129,7 +129,12 @@ DNS, network, your known-sender label and whether it appears in your DMARC repor
 Microsoft 365 stamps decoded (SCL, BCL, SFV, CAT, compauth reason, connecting IP) and
 SpamAssassin-style markers; and all headers in order. Findings in plain language sit on
 top: a disguised display name, a Reply-To in another domain, a slow hop, a signature that
-no longer has a key. An Exchange Online trace is prefilled with the Message-ID. The headers
+no longer has a key. An Exchange Online trace is prefilled with the Message-ID. The result
+can be exported: **Print / PDF** prints the whole report with every section expanded,
+**Download report** saves a self-contained HTML file (no scripts, no external requests) to
+attach to a ticket, **Copy as text** puts a plain-text version on the clipboard, and
+**JSON** saves the raw analysis; each includes the original headers so the reader can
+check the conclusions, and all are produced in the browser. The headers
 are analysed and returned; they are not stored, logged or put in the page link.
 
 **Upload reports**: writers can drop files on the dashboard instead of (or as well as)

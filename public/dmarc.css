@@ -1547,3 +1547,11 @@ body.scratch-mode #mailbox-label {
 .badge:empty {
   display: none;
 }
+
+/* Printed reports leave out controls and the long Exchange Online helper. */
+@media print {
+  body.print-focus .print-target .actions,
+  body.print-focus .print-target .exo {
+    display: none !important;
+  }
+}

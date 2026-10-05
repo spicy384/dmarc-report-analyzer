@@ -195,16 +195,17 @@ const pad = (n) => String(n).padStart(2, "0");
 // then hides everything else, shows every tab of the panel, and adds a heading
 // with the app name, the filter in force and the date, so the sheet stands alone.
 
-function printPanel(panelId) {
+function printPanel(panelId, { title: customTitle = null, meta: customMeta = null } = {}) {
   const panel = document.getElementById(panelId);
   if (!panel) return;
   const heading = document.createElement("div");
   heading.className = "print-heading";
   const title = document.createElement("h1");
-  title.textContent = `DMARC Report Analyzer: ${(panel.querySelector(".panel-head h2") || {}).textContent || panelId}`;
+  title.textContent = customTitle || `DMARC Report Analyzer: ${(panel.querySelector(".panel-head h2") || {}).textContent || panelId}`;
   const meta = document.createElement("p");
   const bits = [rangeLabel ? rangeLabel.textContent : "", domainSelect.value ? `domain ${domainSelect.value}` : "all domains", mailboxSelect.value ? `mailbox ${mailboxSelect.options[mailboxSelect.selectedIndex].textContent}` : ""];
-  meta.textContent = `${bits.filter(Boolean).join(" · ")} · printed ${formatTimestamp(Math.floor(Date.now() / 1000))}`;
+  // Panels that do not depend on the dashboard filter pass their own line.
+  meta.textContent = customMeta || `${bits.filter(Boolean).join(" · ")} · printed ${formatTimestamp(Math.floor(Date.now() / 1000))}`;
   heading.append(title, meta);
   panel.prepend(heading);
   document.body.classList.add("print-focus");
