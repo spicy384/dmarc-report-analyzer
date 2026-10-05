@@ -99,13 +99,20 @@ const ingest = createIngest({ db });
 const scratches = createScratchStore({ openDatabase, createIngest, createSync, mainDb: db, geoip });
 // Running version (package.json, plus the commit the image was built from) and the daily
 // look at the registry for a newer release. UPDATE_CHECK=false keeps it entirely offline.
+// The check can be switched off in two places: UPDATE_CHECK=false in the environment
+// (which wins, and locks the setting), or the checkbox under Settings.
+const UPDATE_CHECK_ALLOWED = String(process.env.UPDATE_CHECK || "true").toLowerCase() !== "false";
 const updates = createUpdateChecker({
   version: pkg.version,
   commit: process.env.APP_COMMIT || null,
   buildDate: process.env.APP_BUILD_DATE || null,
   image: process.env.UPDATE_IMAGE || "ghcr.io/spicy384/dmarc-report-analyzer",
-  enabled: String(process.env.UPDATE_CHECK || "true").toLowerCase() !== "false"
+  enabled: () => UPDATE_CHECK_ALLOWED && db.getSetting("update_check") !== "0"
 });
+/** What the API reports: the checker's state plus whether the environment has locked it off. */
+function versionInfo() {
+  return { ...updates.describe(), lockedByEnvironment: !UPDATE_CHECK_ALLOWED };
+}
 const sync = createSync({
   db,
   mailboxes,
@@ -225,7 +232,7 @@ app.get("/api/status", route(async (req, res) => {
     retention: retention.describe(),
     forensicCount: db.forensicCount(),
     tlsCount: db.tlsCount(),
-    version: updates.describe(),
+    version: versionInfo(),
     configured: list.some((m) => m.enabled),
     // First-run walkthrough: offered while no mailbox exists (no env variables, nothing
     // added in the app) until an administrator dismisses it.
@@ -597,12 +604,27 @@ app.post("/api/alerts/:id/ack", authGuard.requireWriter, route(async (req, res) 
 // --- version -----------------------------------------------------------------
 
 app.get("/api/version", route(async (req, res) => {
-  res.json(updates.describe());
+  res.json(versionInfo());
 }));
 
 /** Asks the registry now instead of waiting for the daily check. */
 app.post("/api/version/check", authGuard.requireAdmin, route(async (req, res) => {
-  res.json(await updates.check());
+  await updates.check();
+  res.json(versionInfo());
+}));
+
+/** Switches the daily update check on or off. The environment variable, when set to false, wins. */
+app.put("/api/version/settings", authGuard.requireAdmin, route(async (req, res) => {
+  const enabled = Boolean(req.body && req.body.enabled);
+  if (enabled && !UPDATE_CHECK_ALLOWED) {
+    return res.status(409).json({ error: "The update check is switched off by UPDATE_CHECK=false in the environment; remove that to enable it here." });
+  }
+  db.setSetting("update_check", enabled ? "1" : "0");
+  if (!enabled) updates.forget();
+  auditFrom(req, "version.update-check", enabled ? "on" : "off", null);
+  // Turning it on asks straight away, so the page shows a result rather than "pending".
+  if (enabled) await updates.check();
+  res.json(versionInfo());
 }));
 
 // --- monitoring --------------------------------------------------------------
@@ -1054,7 +1076,7 @@ if (require.main === module) {
     notifier.start();
     scratches.start();
     updates.start();
-    console.log(`Version: ${pkg.version}${process.env.APP_COMMIT ? ` (${String(process.env.APP_COMMIT).slice(0, 7)})` : ""}; update check ${updates.describe().enabled ? `daily against ${updates.describe().image}` : "off"}.`);
+    console.log(`Version: ${pkg.version}${process.env.APP_COMMIT ? ` (${String(process.env.APP_COMMIT).slice(0, 7)})` : ""}; update check ${updates.describe().enabled ? `daily against ${updates.describe().image}` : UPDATE_CHECK_ALLOWED ? "off (switched off under Settings)" : "off (UPDATE_CHECK=false)"}.`);
     monitor.start({ onAlerts: (created) => {
       console.log(`monitor: ${created.length} new alert(s) (${created.map((a) => a.type).join(", ")})`);
       notifier.notifyAlerts(created).catch((error) => console.warn(`notify: ${error.message}`));

@@ -838,6 +838,28 @@
       <p id="monitor-status" class="bulk-hint" hidden></p>
     </section>
 
+    <section class="panel" id="version-panel" hidden>
+      <div class="panel-head">
+        <h2>Version and updates</h2>
+        <span id="version-badge" class="badge"></span>
+      </div>
+      <p class="bulk-hint">
+        Once a day the app asks GitHub Container Registry which releases of its image exist and
+        says in the footer when a newer one than this is published. Only the image name is sent.
+        Switch it off for an installation that must not make outbound requests, or that you
+        update on your own schedule.
+      </p>
+      <p id="version-current" class="bulk-hint"></p>
+      <label class="check-inline"><input type="checkbox" id="version-check-enabled" /> Check daily for a newer release</label>
+      <p id="version-locked" class="bulk-hint" hidden>
+        Switched off by <span class="mono">UPDATE_CHECK=false</span> in the environment; remove
+        that variable to control it here.
+      </p>
+      <div class="actions">
+        <button id="version-check-now" type="button" class="secondary">Check now</button>
+      </div>
+    </section>
+
     <section class="panel" id="users-panel" hidden>
       <div class="panel-head">
         <h2>Users</h2>

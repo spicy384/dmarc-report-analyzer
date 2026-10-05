@@ -78,6 +78,11 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
   await expect(page.locator("#notify-panel")).toBeVisible();
   await expect(page.locator("#users-panel")).toBeVisible();
   await expect(page.locator("#app-version")).toContainText(/\d+\.\d+\.\d+/);
+  // The test server runs with UPDATE_CHECK=false, so the switch is shown off and locked.
+  await expect(page.locator("#version-panel")).toBeVisible();
+  await expect(page.locator("#version-check-enabled")).not.toBeChecked();
+  await expect(page.locator("#version-check-enabled")).toBeDisabled();
+  await expect(page.locator("#version-locked")).toBeVisible();
 
   expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
 });

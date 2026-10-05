@@ -35,7 +35,10 @@ function splitImage(image) {
 function createUpdateChecker({ version, commit = null, buildDate = null, image = "ghcr.io/spicy384/dmarc-report-analyzer", enabled = true, fetchImpl = globalThis.fetch, now = Date.now, logger = console, timeoutMs = 10000 } = {}) {
   const current = parseSemver(version);
   let timer = null;
-  let last = { checkedAt: null, latest: null, updateAvailable: false, error: null, tags: 0 };
+  const EMPTY = { checkedAt: null, latest: null, updateAvailable: false, error: null, tags: 0 };
+  let last = { ...EMPTY };
+  // `enabled` may be a function, so a setting changed at runtime takes effect at once.
+  const isEnabled = () => Boolean(typeof enabled === "function" ? enabled() : enabled);
 
   async function fetchJson(url, headers = {}) {
     const controller = new AbortController();
@@ -51,7 +54,7 @@ function createUpdateChecker({ version, commit = null, buildDate = null, image =
 
   /** Lists the image's tags and remembers the highest release. Never throws. */
   async function check() {
-    if (!enabled) return describe();
+    if (!isEnabled()) return describe();
     const { host, repository } = splitImage(image);
     try {
       const token = await fetchJson(`https://${host}/token?scope=repository:${repository}:pull`);
@@ -73,11 +76,18 @@ function createUpdateChecker({ version, commit = null, buildDate = null, image =
   }
 
   function describe() {
-    return { version, commit, buildDate, image, enabled, ...last };
+    // While switched off, an earlier answer is not shown: it would only go stale.
+    return { version, commit, buildDate, image, enabled: isEnabled(), ...(isEnabled() ? last : EMPTY) };
   }
 
+  /** Forgets the last answer (used when the check is switched off). */
+  function forget() {
+    last = { ...EMPTY };
+  }
+
+  // The timers always run; each tick does nothing while the check is switched off.
   function start() {
-    if (!enabled || timer) return;
+    if (timer) return;
     const first = setTimeout(() => { check(); }, FIRST_CHECK_MS);
     if (typeof first.unref === "function") first.unref();
     timer = setInterval(() => { check(); }, CHECK_EVERY_MS);
@@ -89,7 +99,7 @@ function createUpdateChecker({ version, commit = null, buildDate = null, image =
     timer = null;
   }
 
-  return { check, describe, start, stop };
+  return { check, describe, forget, start, stop };
 }
 
 module.exports = { createUpdateChecker, parseSemver, compareSemver, splitImage };

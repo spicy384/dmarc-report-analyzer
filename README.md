@@ -552,7 +552,10 @@ The footer shows the running version (from `package.json`) and, in the container
 commit and build date baked in by the workflow. Once a day the app lists the image's tags
 on GitHub Container Registry and, when a higher release than its own is published, the
 footer says so with the `docker compose pull` to run; administrators can **Check now**.
-Only the image name goes over the wire; set `UPDATE_CHECK=false` to never ask, or
+Only the image name goes over the wire. To switch the check off, untick **Check daily for
+a newer release** under **Settings → Version and updates** (administrators; takes effect at
+once and is remembered), or set `UPDATE_CHECK=false` in the environment, which wins and
+locks the checkbox. Set
 `UPDATE_IMAGE` if you publish the image under another name.
 
 Releases are git tags: `git tag v1.2.3 && git push origin v1.2.3` builds and publishes

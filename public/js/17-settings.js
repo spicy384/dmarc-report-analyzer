@@ -24,6 +24,7 @@ async function setView(name, { scrollTo = null } = {}) {
     document.getElementById("audit-panel").hidden = !isAdmin();
     document.getElementById("notify-panel").hidden = !isAdmin();
     document.getElementById("monitor-panel").hidden = !isAdmin();
+    document.getElementById("version-panel").hidden = !isAdmin();
     if (isAdmin()) {
       try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
       loadMaintenance();
@@ -200,10 +201,18 @@ function renderVersion(v) {
     update.textContent = "Update check pending.";
   }
   button.hidden = !isAdmin() || !v.enabled;
+
+  // The Settings panel mirrors the footer and carries the switch.
+  const box = document.getElementById("version-check-enabled");
+  box.checked = Boolean(v.enabled);
+  box.disabled = Boolean(v.lockedByEnvironment);
+  document.getElementById("version-locked").hidden = !v.lockedByEnvironment;
+  document.getElementById("version-badge").textContent = v.enabled ? (v.updateAvailable ? `${v.latest} available` : "checking daily") : "update check off";
+  document.getElementById("version-current").textContent = `${label.textContent}. ${update.textContent}`;
+  document.getElementById("version-check-now").disabled = !v.enabled;
 }
 
-document.getElementById("app-update-check").addEventListener("click", async () => {
-  const button = document.getElementById("app-update-check");
+async function checkForUpdateNow(button) {
   button.disabled = true;
   try {
     renderVersion(await api("/api/version/check", { method: "POST", body: "{}" }));
@@ -211,6 +220,28 @@ document.getElementById("app-update-check").addEventListener("click", async () =
     setStatus(error.message, true);
   } finally {
     button.disabled = false;
+  }
+}
+
+document.getElementById("app-update-check").addEventListener("click", (e) => checkForUpdateNow(e.currentTarget));
+document.getElementById("version-check-now").addEventListener("click", (e) => checkForUpdateNow(e.currentTarget));
+
+document.getElementById("version-check-enabled").addEventListener("change", async (e) => {
+  const box = e.currentTarget;
+  box.disabled = true;
+  try {
+    const v = await api("/api/version/settings", { method: "PUT", body: JSON.stringify({ enabled: box.checked }) });
+    renderVersion(v);
+    setStatus(v.enabled ? "Update check switched on." : "Update check switched off; the app no longer contacts the registry.");
+  } catch (error) {
+    setStatus(error.message, true);
+    try {
+      renderVersion(await api("/api/version"));
+    } catch {
+      // Could not even read the state back: undo the click and let the user try again.
+      box.checked = !box.checked;
+      box.disabled = false;
+    }
   }
 });
 

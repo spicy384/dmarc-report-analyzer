@@ -273,6 +273,13 @@ async function waitForServer(tries = 60) {
     check("scratch: delete, then gone", (await req(`/api/scratch/${scratchId}`, { method: "DELETE" })).status === 200 && (await req(`/api/scratch/${scratchId}/summary`)).status === 404);
     check("scratch: live TLS count unchanged by the scratch upload", (await req("/api/status")).body.tlsCount === 1);
 
+    // --- version and the update-check switch (never enabled here: that would call the registry) ---
+    const ver = (await req("/api/version")).body;
+    check("version: reports the package version, check on by default and not locked", /^\d+\.\d+\.\d+$/.test(ver.version) && ver.enabled === true && ver.lockedByEnvironment === false && ver.checkedAt === null, JSON.stringify(ver));
+    const verOff = await req("/api/version/settings", { method: "PUT", body: { enabled: false } });
+    check("version: switching the check off sticks and shows in status", verOff.status === 200 && verOff.body.enabled === false && (await req("/api/status")).body.version.enabled === false && (await req("/api/version")).body.enabled === false);
+    check("version: the switch is audited", (await req("/api/audit?action=version.update-check")).body.entries.some((e) => e.target === "off" && e.username === "admin"));
+
     // --- weekly summary ---
     const wk = await req("/api/weekly?end=2025-09-19");
     check("weekly: shape and totals", wk.status === 200 && wk.body.thisWeek.totals.messages === 53 && wk.body.lastWeek.totals.messages === 0 && wk.body.newSources.length === 4 && wk.body.topFailing.length === 2);

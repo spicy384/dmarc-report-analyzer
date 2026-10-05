@@ -37,5 +37,21 @@ const fakeFetch = async (url, options) => {
   const off = createUpdateChecker({ version: "1.0.0", enabled: false, fetchImpl: async () => { throw new Error("must not be called"); } });
   check("disabled: no network, describe says so", (await off.check()).enabled === false && (await off.check()).checkedAt === null);
 
+  // A setting changed at runtime: `enabled` as a function is read on every call.
+  let allowed = true;
+  let fetches = 0;
+  tags = ["1.0.0", "1.3.0"];
+  const dynamic = createUpdateChecker({ version: "1.0.0", enabled: () => allowed, fetchImpl: async (url, options) => { fetches += 1; return fakeFetch(url, options); }, logger: { warn() {} } });
+  const on = await dynamic.check();
+  check("dynamic: on, so it asks and finds the release", on.enabled === true && on.updateAvailable === true && on.latest === "1.3.0" && fetches === 2);
+  allowed = false;
+  const hidden = dynamic.describe();
+  check("dynamic: switched off, the earlier answer is no longer shown", hidden.enabled === false && hidden.updateAvailable === false && hidden.latest === null && hidden.checkedAt === null);
+  await dynamic.check();
+  check("dynamic: switched off, no request is made", fetches === 2);
+  dynamic.forget();
+  allowed = true;
+  check("dynamic: forget() cleared the answer for when it is switched back on", dynamic.describe().enabled === true && dynamic.describe().latest === null);
+
   process.exit(report() ? 0 : 1);
 })();
