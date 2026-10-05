@@ -19,6 +19,7 @@ const { createMonitor } = require("./monitor");
 const { createIngest } = require("./ingest");
 const { createScratchStore } = require("./scratch");
 const { createUpdateChecker } = require("./version");
+const { createHeaderAnalyzer } = require("./header-analyzer");
 const pkg = require("./package.json");
 
 // Manually uploaded files are stored under this pseudo-mailbox id.
@@ -599,6 +600,15 @@ app.post("/api/alerts/:id/ack", authGuard.requireWriter, route(async (req, res) 
     return res.status(404).json({ error: "No such open alert." });
   }
   res.json({ ok: true, openCount: db.openAlertCount() });
+}));
+
+// --- email header analysis ------------------------------------------------------
+
+// Pasted headers are analysed and returned; nothing about them is stored or logged.
+const headerAnalyzer = createHeaderAnalyzer({ dnsRecords, geoip, db });
+
+app.post("/api/headers/analyze", route(async (req, res) => {
+  res.json(await headerAnalyzer.analyze(req.body && req.body.raw));
 }));
 
 // --- version -----------------------------------------------------------------

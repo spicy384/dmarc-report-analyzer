@@ -27,6 +27,7 @@
         <nav id="view-nav" class="view-nav" aria-label="Pages" hidden>
           <button id="nav-dashboard" type="button" class="tab is-active">Dashboard</button>
           <button id="nav-analyze" type="button" class="tab">Analyze files</button>
+          <button id="nav-headers" type="button" class="tab">Analyze headers</button>
           <button id="nav-settings" type="button" class="tab">Settings</button>
         </nav>
         <span id="current-user" class="badge" hidden></span>
@@ -629,6 +630,43 @@
     </section>
   </div>
 
+  <div id="view-headers" hidden>
+    <section class="panel" id="headers-panel">
+      <div class="panel-head">
+        <h2>Analyze email headers</h2>
+        <span id="hdr-badge" class="badge"></span>
+      </div>
+      <p class="bulk-hint">
+        Paste the full headers of one message to see why it passed or failed: what the receiving
+        server concluded about SPF, DKIM and DMARC, whether those align with the From address,
+        the path it took and where it waited, its DKIM signatures checked against DNS, the
+        address that delivered it, and what the spam filter stamped on it. In Outlook: open the
+        message, File &gt; Properties &gt; Internet headers. In Outlook on the web: the "..." menu
+        &gt; View &gt; View message details. In Gmail: the "&#8942;" menu &gt; Show original. You can
+        also drop a saved <span class="mono">.eml</span> file on the box. Nothing is stored.
+      </p>
+      <textarea id="hdr-input" class="mono hdr-input" rows="12" spellcheck="false" autocomplete="off"
+        placeholder="Received: from ...&#10;Authentication-Results: ...&#10;From: ...&#10;Subject: ..."></textarea>
+      <input id="hdr-file" type="file" hidden accept=".eml,.txt,message/rfc822,text/plain" />
+      <div class="actions">
+        <button id="hdr-analyze" type="button">Analyze</button>
+        <button id="hdr-load" type="button" class="secondary">Load a file</button>
+        <button id="hdr-clear" type="button" class="secondary">Clear</button>
+      </div>
+      <p id="hdr-status" class="bulk-hint" hidden></p>
+    </section>
+
+    <section class="panel" id="headers-results-panel" hidden>
+      <div class="panel-head">
+        <h2 id="hdr-title">Result</h2>
+        <div id="hdr-verdicts" class="hdr-verdicts"></div>
+      </div>
+      <div id="hdr-summary" class="detail-summary"></div>
+      <ul id="hdr-findings" class="hdr-findings"></ul>
+      <div id="hdr-body"></div>
+    </section>
+  </div>
+
   <div id="view-settings" hidden>
     <section class="panel" id="sync-panel">
       <div class="panel-head">
@@ -1018,6 +1056,7 @@
   <script src="/js/20-tls.js"></script>
   <script src="/js/21-upload.js"></script>
   <script src="/js/22-scratch.js"></script>
-  <script src="/js/23-init.js"></script>
+  <script src="/js/23-headers.js"></script>
+  <script src="/js/24-init.js"></script>
 </body>
 </html>

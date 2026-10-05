@@ -273,6 +273,11 @@ async function waitForServer(tries = 60) {
     check("scratch: delete, then gone", (await req(`/api/scratch/${scratchId}`, { method: "DELETE" })).status === 200 && (await req(`/api/scratch/${scratchId}/summary`)).status === 404);
     check("scratch: live TLS count unchanged by the scratch upload", (await req("/api/status")).body.tlsCount === 1);
 
+    // --- header analysis endpoint ---
+    const hdr = await req("/api/headers/analyze", { method: "POST", body: { raw: fs.readFileSync(path.join(EX, "sample-headers.txt"), "utf8") } });
+    check("headers: sample analysed (verdicts, hops, source)", hdr.status === 200 && hdr.body.verdicts.dmarc.computed === "pass" && hdr.body.hops.length === 5 && hdr.body.source.ip === "167.89.12.34" && hdr.body.microsoft.scl === 1, JSON.stringify(hdr.body).slice(0, 300));
+    check("headers: junk is a 400, nothing is a 400", (await req("/api/headers/analyze", { method: "POST", body: { raw: "hello" } })).status === 400 && (await req("/api/headers/analyze", { method: "POST", body: {} })).status === 400);
+
     // --- version and the update-check switch (never enabled here: that would call the registry) ---
     const ver = (await req("/api/version")).body;
     check("version: reports the package version, check on by default and not locked", /^\d+\.\d+\.\d+$/.test(ver.version) && ver.enabled === true && ver.lockedByEnvironment === false && ver.checkedAt === null, JSON.stringify(ver));

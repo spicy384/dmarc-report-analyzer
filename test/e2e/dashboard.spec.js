@@ -1,5 +1,6 @@
 // The browser tour: first-run setup, the dashboard with seeded reports, the Policy
 // tabs, a report drawer, a one-time analysis by file upload, and the Settings page.
+const fs = require("fs");
 const path = require("path");
 const { test, expect } = require("@playwright/test");
 
@@ -8,7 +9,8 @@ const EXAMPLES = path.join(__dirname, "..", "..", "examples");
 test("first run, dashboard, policy, analysis and settings", async ({ page }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  page.on("console", (msg) => { if (msg.type() === "error") errors.push(msg.text()); });
+  // The junk-headers step below provokes one 400 on purpose; the browser logs that as an error.
+  page.on("console", (msg) => { if (msg.type() === "error" && !/status of 400/.test(msg.text())) errors.push(msg.text()); });
 
   await page.goto("/");
 
@@ -70,6 +72,28 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
   await page.fill("#lookup-input", "example.com");
   await page.locator("#lookup-input").press("Enter");
   await expect(page.locator("#lookup-body .tab").first()).toBeVisible({ timeout: 20_000 });
+
+  // --- header analysis: paste, analyze, read the verdicts, walk the tabs ---
+  await page.locator("#nav-headers").click();
+  await expect(page.locator("#view-headers")).toBeVisible();
+  await page.fill("#hdr-input", fs.readFileSync(path.join(EXAMPLES, "sample-headers.txt"), "utf8"));
+  await page.locator("#hdr-analyze").click();
+  await expect(page.locator("#headers-results-panel")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#hdr-verdicts")).toContainText("DMARC pass");
+  await expect(page.locator("#hdr-verdicts")).toContainText("SPF pass");
+  await expect(page.locator("#hdr-findings")).toContainText("DMARC passes for example.com");
+  await expect(page.locator("#hdr-summary")).toContainText("billing@example.com");
+  const hdrTabs = page.locator("#hdr-body .tab");
+  for (const label of ["Path (5)", "DKIM signatures (1)", "Sending address", "Spam filter", "All headers", "Authentication"]) {
+    await hdrTabs.filter({ hasText: label }).click();
+    await expect(page.locator("#hdr-body .tab-panel:not([hidden])")).toBeVisible();
+  }
+  await hdrTabs.filter({ hasText: "Sending address" }).click();
+  await expect(page.locator("#hdr-body .tab-panel:not([hidden])")).toContainText("167.89.12.34");
+  await expect(page).not.toHaveURL(/Received|billing/); // the headers never reach the page link
+  await page.fill("#hdr-input", "this is not a set of headers");
+  await page.locator("#hdr-analyze").click();
+  await expect(page.locator("#hdr-status")).toContainText("does not look like email headers");
 
   // --- settings page: admin panels present ---
   await page.locator("#nav-settings").click();

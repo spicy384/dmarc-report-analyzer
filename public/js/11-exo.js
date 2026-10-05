@@ -72,7 +72,7 @@ function exoSnippet(title, note, code) {
  * Ready-to-paste Exchange Online queries for the emails behind a report window
  * or a source IP. Message trace results carry FromIP, so an IP filter is exact.
  */
-function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = null, sender = null, exact = false }) {
+function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = null, sender = null, exact = false, exactSource = "This forensic report gives" }) {
   const wrap = document.createElement("div");
   wrap.className = "exo";
 
@@ -92,7 +92,7 @@ function exoSearchBlock({ begin, end, domain, ip, headerFroms = [], messageId = 
   const intro = document.createElement("p");
   intro.className = "exo-note";
   intro.textContent = (exact
-    ? `This forensic report gives the exact arrival time, so the window below is one hour either side${messageId ? " and the Message-ID makes the trace precise" : ""}. `
+    ? `${exactSource} the exact time, so the window below is one hour either side${messageId ? " and the Message-ID makes the trace precise" : ""}. `
     : `Window ${start} to ${stop} (UTC), which is ${formatTimestamp(begin)} to ${formatTimestamp(end + 1)} in your local time. `) +
     "A message trace only sees mail that passed through your tenant: outbound mail your Microsoft 365 sent, or inbound mail your tenant received. " +
     "Mail sent from elsewhere straight to another provider never touched Exchange Online and will not appear.";

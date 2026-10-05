@@ -1492,3 +1492,58 @@ body.scratch-mode #mailbox-label {
     display: block;
   }
 }
+
+/* Analyze headers page. */
+.hdr-input {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+}
+.hdr-input.is-over {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.hdr-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.hdr-findings {
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.hdr-findings li.hdr-finding,
+.hdr-findings li.hdr-finding:hover {
+  padding: 8px 12px;
+  border-left-width: 4px;
+  cursor: default;
+  transform: none;
+}
+.hdr-findings li.sev-good { border-left-color: var(--success, #16a34a); }
+.hdr-findings li.sev-bad { border-left-color: var(--danger); }
+.hdr-findings li.sev-warn { border-left-color: var(--warning, #d97706); }
+.hdr-findings li.sev-info { border-left-color: var(--border-strong); }
+.hdr-wait-bar {
+  display: inline-block;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--primary);
+  vertical-align: middle;
+  opacity: 0.7;
+}
+#hdr-body h4 {
+  margin: 16px 0 6px;
+  font-size: 13px;
+}
+
+/* A badge with nothing in it is not drawn. */
+.badge:empty {
+  display: none;
+}

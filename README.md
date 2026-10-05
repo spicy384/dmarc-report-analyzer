@@ -117,6 +117,21 @@ banner says so, the mailbox filter and everything that would write to the live s
 (labels, acknowledgements, uploads) are hidden, and the page link carries the analysis id
 so a reload lands back in it. Any signed-in user can do this, since nothing is saved.
 
+**Analyze headers** (its own page): paste the full headers of one message, or drop a saved
+`.eml` (only its header block is read), to see why it passed or failed. The result shows
+what the receiving server recorded for SPF, DKIM, DMARC, ARC and Microsoft's composite
+authentication, and recomputes alignment with the From domain so "SPF passed but for the
+bounce domain" is spelled out; the From domain's DMARC record as published now and what its
+policy does to this message; every hop oldest first with the wait before each and the TLS
+it used; each DKIM signature with its selector checked in DNS, key size, expiry, `l=` and
+whether it covers From; the address that handed the message to the receiver, with reverse
+DNS, network, your known-sender label and whether it appears in your DMARC reports; the
+Microsoft 365 stamps decoded (SCL, BCL, SFV, CAT, compauth reason, connecting IP) and
+SpamAssassin-style markers; and all headers in order. Findings in plain language sit on
+top: a disguised display name, a Reply-To in another domain, a slow hop, a signature that
+no longer has a key. An Exchange Online trace is prefilled with the Message-ID. The headers
+are analysed and returned; they are not stored, logged or put in the page link.
+
 **Upload reports**: writers can drop files on the dashboard instead of (or as well as)
 reading a mailbox: aggregate reports as `.xml`, `.xml.gz` or `.zip`, TLS reports as `.json`
 or `.json.gz`, and whole emails saved as `.eml` (forensic reports, or messages carrying
@@ -619,7 +634,7 @@ npm test
 npm run lint
 ```
 
-Twenty plain-Node suites, no test framework: the parser (containers and XML shapes
+Twenty-three plain-Node suites, no test framework: the parser (containers and XML shapes
 from the samples in `examples/`), TLS reports and the shared ingest path, one-time
 analyses (isolation, enrichment, expiry), storage,
 verdicts, DNS (including MTA-STS against a fake policy host), Graph with certificates, the

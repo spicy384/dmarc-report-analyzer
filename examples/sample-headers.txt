@@ -1,0 +1,44 @@
+Received: from BN8PR01MB1234.prod.exchangelabs.com (2603:10b6:408:1::10) by
+ CH2PR01MB5678.prod.exchangelabs.com with HTTPS; Mon, 28 Sep 2026 14:03:12
+ +0000
+Received: from DS7PR03CA0001.namprd03.prod.outlook.com (2603:10b6:5:3b8::6) by
+ BN8PR01MB1234.prod.exchangelabs.com (2603:10b6:408:1::10) with Microsoft SMTP
+ Server (version=TLS1_2, cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id
+ 15.20.7982.25; Mon, 28 Sep 2026 14:03:11 +0000
+Received: from DM6NAM11FT001.eop-nam11.prod.protection.outlook.com
+ (2603:10b6:5:3b8:cafe::a1) by DS7PR03CA0001.outlook.office365.com
+ (2603:10b6:5:3b8::6) with Microsoft SMTP Server (version=TLS1_2,
+ cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id 15.20.7982.25 via Frontend
+ Transport; Mon, 28 Sep 2026 14:03:10 +0000
+Authentication-Results: spf=pass (sender IP is 167.89.12.34)
+ smtp.mailfrom=em1234.example.com; dkim=pass (signature was verified)
+ header.d=example.com;dmarc=pass action=none
+ header.from=example.com;compauth=pass reason=100
+Received-SPF: Pass (protection.outlook.com: domain of em1234.example.com
+ designates 167.89.12.34 as permitted sender)
+ receiver=protection.outlook.com; client-ip=167.89.12.34;
+ helo=o1.ptr1234.sendgrid.net; pr=C
+Received: from o1.ptr1234.sendgrid.net (167.89.12.34) by
+ DM6NAM11FT001.mail.protection.outlook.com (10.13.172.10) with Microsoft SMTP
+ Server (version=TLS1_3, cipher=TLS_AES_256_GCM_SHA384) id 15.20.7982.25 via
+ Frontend Transport; Mon, 28 Sep 2026 14:03:09 +0000
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com;
+	h=content-type:from:mime-version:subject:reply-to:to:cc;
+	s=s1; bh=47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=;
+	b=Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4
+Received: from app-server-7 (unknown [198.51.100.20])
+	by ismtpd0001p1iad1.sendgrid.net (SG) with ESMTP id AbCdEfGhQ_abc123
+	for <jane@contoso.com>; Mon, 28 Sep 2026 14:02:54 +0000 (UTC)
+Content-Type: multipart/alternative; boundary=abc
+Date: Mon, 28 Sep 2026 14:02:54 +0000 (UTC)
+From: "Example Billing" <billing@example.com>
+Mime-Version: 1.0
+Message-ID: <AbCdEfGhQ_abc123@geopod-ismtpd-1>
+Subject: Your September invoice
+To: jane@contoso.com
+Return-Path: bounces+1234-abcd-jane=contoso.com@em1234.example.com
+X-MS-Exchange-Organization-AuthSource: DM6NAM11FT001.eop-nam11.prod.protection.outlook.com
+X-MS-Exchange-Organization-AuthAs: Anonymous
+X-MS-Exchange-Organization-SCL: 1
+X-Forefront-Antispam-Report: CIP:167.89.12.34;CTRY:US;LANG:en;SCL:1;SRV:;IPV:NLI;SFV:NSPM;H:o1.ptr1234.sendgrid.net;PTR:o1.ptr1234.sendgrid.net;CAT:NONE;SFS:(13230040)(1800799024);DIR:INB;
+X-Microsoft-Antispam: BCL:2;ARA:13230040|1800799024;

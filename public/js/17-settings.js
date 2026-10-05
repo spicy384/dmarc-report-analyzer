@@ -9,7 +9,7 @@
 // view is part of the page link so a reload or a shared link lands on the same one.
 
 const viewNav = document.getElementById("view-nav");
-const VIEWS = { dashboard: document.getElementById("view-dashboard"), analyze: document.getElementById("view-analyze"), settings: document.getElementById("view-settings") };
+const VIEWS = { dashboard: document.getElementById("view-dashboard"), analyze: document.getElementById("view-analyze"), headers: document.getElementById("view-headers"), settings: document.getElementById("view-settings") };
 let currentView = "dashboard";
 
 async function setView(name, { scrollTo = null } = {}) {
@@ -41,6 +41,7 @@ async function setView(name, { scrollTo = null } = {}) {
 
 document.getElementById("nav-dashboard").addEventListener("click", () => setView("dashboard"));
 document.getElementById("nav-analyze").addEventListener("click", () => setView("analyze"));
+document.getElementById("nav-headers").addEventListener("click", () => setView("headers"));
 document.getElementById("nav-settings").addEventListener("click", () => setView("settings"));
 accountBtn.addEventListener("click", () => setView("settings", { scrollTo: "account-panel" }));
 usersBtn.addEventListener("click", () => setView("settings", { scrollTo: "users-panel" }));
