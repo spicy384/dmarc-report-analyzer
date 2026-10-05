@@ -214,6 +214,24 @@
         </label>
         <div class="actions">
           <button type="button" id="enrol-confirm">Enable two-factor</button>
+        </div>
+
+        <div id="enrol-passkey" class="enrol-passkey">
+          <p class="auth-hint">
+            <strong>Or add a passkey.</strong> Sign in next time with a fingerprint, face or PIN:
+            no password and no code. You can set up both; the password and code stay as the
+            fallback for when the passkey is not to hand.
+          </p>
+          <label>Name for this passkey
+            <input id="enrol-passkey-name" placeholder="for example: work laptop, phone" maxlength="60" />
+          </label>
+          <div class="actions">
+            <button type="button" id="enrol-add-passkey" class="secondary">Add a passkey</button>
+          </div>
+          <p id="enrol-passkey-note" class="auth-hint" hidden></p>
+        </div>
+
+        <div class="actions">
           <button type="button" id="enrol-skip" class="secondary">Skip for now</button>
         </div>
       </div>

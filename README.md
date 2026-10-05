@@ -235,8 +235,10 @@ Administrators manage accounts and can test the mailbox connection, users can st
 sync, viewers can only look. It can also run behind an authentication reverse proxy
 (Authelia, Authentik, oauth2-proxy) using the `TRUST_PROXY_AUTH` option.
 
-**Passkeys**: anyone can add passkeys under **Account** (a phone, a laptop, a hardware
-key; up to ten) and then use **Sign in with a passkey** on the sign-in card. No username,
+**Passkeys**: anyone can add passkeys (a phone, a laptop, a hardware key; up to ten),
+either under **Account** or right at first sign-in, where the step that offers the
+authenticator code offers a passkey beside it: set up one, both or neither. Then use
+**Sign in with a passkey** on the sign-in card. No username,
 password or code is asked for: the passkey needs the device plus a fingerprint, face or
 PIN, which is the same two-factor guarantee TOTP gives the password path. The password
 path stays exactly as it is, so a lost device just means signing in with the password and

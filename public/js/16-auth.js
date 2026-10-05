@@ -215,11 +215,13 @@ authRecoveryForm.addEventListener("submit", async (e) => {
 document.getElementById("auth-use-recovery").addEventListener("click", () => setAuthStep("recovery"));
 document.getElementById("auth-use-totp").addEventListener("click", () => setAuthStep("mfa"));
 
-async function beginEnrolment() {
+/** Starts authenticator enrolment. At first sign-in the same step also offers a passkey. */
+async function beginEnrolment({ offerPasskey = true } = {}) {
   try {
     const data = await api("/api/auth/mfa/setup", { method: "POST", body: "{}" });
     document.getElementById("enrol-qr").src = data.qrDataUrl;
     document.getElementById("enrol-secret").value = data.secret;
+    prepareEnrolPasskey(offerPasskey);
     showAuthOverlay("enrol");
   } catch (error) {
     setAuthMessage(error.message);
@@ -242,6 +244,54 @@ document.getElementById("enrol-confirm").addEventListener("click", async () => {
 
 document.getElementById("enrol-skip").addEventListener("click", async () => {
   await onSignedIn();
+});
+
+// --- passkey as part of first sign-in ------------------------------------------------
+//
+// The same step that offers the authenticator code also offers a passkey. Either, both
+// or neither can be set up; once a passkey is added the way out reads "Continue".
+
+/** Resets the passkey block each time the enrolment step is shown. */
+function prepareEnrolPasskey(offer = true) {
+  const block = document.getElementById("enrol-passkey");
+  const button = document.getElementById("enrol-add-passkey");
+  const note = document.getElementById("enrol-passkey-note");
+  const nameInput = document.getElementById("enrol-passkey-name");
+  const blocker = passkeyBlocker();
+  // Not offered when two-factor is switched on later from Account, where the Passkeys
+  // section sits right beside it.
+  block.hidden = !offer;
+  nameInput.value = "";
+  nameInput.disabled = Boolean(blocker);
+  button.disabled = Boolean(blocker);
+  button.textContent = "Add a passkey";
+  note.hidden = !blocker;
+  note.classList.remove("is-ok");
+  note.textContent = blocker ? `${blocker} You can add one later under Account.` : "";
+  document.getElementById("enrol-skip").textContent = "Skip for now";
+}
+
+document.getElementById("enrol-add-passkey").addEventListener("click", async () => {
+  const button = document.getElementById("enrol-add-passkey");
+  const note = document.getElementById("enrol-passkey-note");
+  const nameInput = document.getElementById("enrol-passkey-name");
+  button.disabled = true;
+  note.hidden = true;
+  try {
+    const data = await registerPasskey(nameInput.value.trim(), { refresh: false });
+    note.hidden = false;
+    note.classList.add("is-ok");
+    note.textContent = `Passkey "${data.passkey.name}" added. Next time, choose "Sign in with a passkey". You can still set up an authenticator code above, or continue.`;
+    nameInput.value = "";
+    button.textContent = "Add another passkey";
+    document.getElementById("enrol-skip").textContent = "Continue";
+  } catch (error) {
+    note.hidden = false;
+    note.classList.remove("is-ok");
+    note.textContent = error.name === "NotAllowedError" ? "Passkey prompt cancelled; nothing was added." : error.name === "InvalidStateError" ? "This device already holds a passkey for your account." : error.message;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 document.getElementById("recovery-copy").addEventListener("click", async () => {

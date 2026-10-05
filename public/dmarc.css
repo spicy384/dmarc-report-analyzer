@@ -1555,3 +1555,13 @@ body.scratch-mode #mailbox-label {
     display: none !important;
   }
 }
+
+/* Passkey offer inside the first sign-in step. */
+.enrol-passkey {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.enrol-passkey .auth-hint.is-ok {
+  color: var(--success);
+}

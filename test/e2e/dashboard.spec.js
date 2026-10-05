@@ -141,3 +141,54 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
 
   expect(errors, `console errors: ${errors.join(" | ")}`).toEqual([]);
 });
+
+// Runs after the tour above, which created the administrator. Uses the localhost name
+// (a secure context, and a host name rather than an IP, which passkeys require) and a
+// virtual authenticator, so a real WebAuthn registration and sign-in happen in the browser.
+test("first sign-in offers a passkey, and the passkey then signs in", async ({ page, baseURL }) => {
+  const origin = baseURL.replace("127.0.0.1", "localhost");
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true }
+  });
+
+  await page.goto(origin);
+  await page.fill("#auth-username", "admin");
+  await page.fill("#auth-password", "correct-horse-battery");
+  await page.locator("#auth-login-form button[type=submit]").click();
+
+  // No two-factor yet, so the set-up step appears, with the passkey offer beside the code.
+  await expect(page.locator("#auth-enrol")).toBeVisible();
+  await expect(page.locator("#enrol-qr")).toBeVisible();
+  await expect(page.locator("#enrol-passkey")).toBeVisible();
+  await expect(page.locator("#enrol-skip")).toHaveText("Skip for now");
+  await page.fill("#enrol-passkey-name", "CI laptop");
+  await page.locator("#enrol-add-passkey").click();
+  await expect(page.locator("#enrol-passkey-note")).toContainText('Passkey "CI laptop" added');
+  await expect(page.locator("#enrol-skip")).toHaveText("Continue");
+  await expect(page.locator("#enrol-add-passkey")).toHaveText("Add another passkey");
+  await page.locator("#enrol-skip").click();
+  await expect(page.locator("#view-nav")).toBeVisible();
+
+  // The passkey is listed under Account, and signs in without password or code.
+  await page.locator("#nav-settings").click();
+  await expect(page.locator("#acct-passkeys")).toContainText("CI laptop");
+  await page.locator("#logout-btn").click();
+  await expect(page.locator("#auth-login-form")).toBeVisible();
+  await page.locator("#auth-passkey-btn").click();
+  await expect(page.locator("#view-nav")).toBeVisible();
+  await expect(page.locator("#current-user")).toContainText("admin");
+});
+
+test("on an IP address the passkey offer explains why it is unavailable", async ({ page }) => {
+  await page.goto("/");
+  await page.fill("#auth-username", "admin");
+  await page.fill("#auth-password", "correct-horse-battery");
+  await page.locator("#auth-login-form button[type=submit]").click();
+  await expect(page.locator("#auth-enrol")).toBeVisible();
+  await expect(page.locator("#enrol-add-passkey")).toBeDisabled();
+  await expect(page.locator("#enrol-passkey-note")).toContainText("hostname, not an IP address");
+  await page.locator("#enrol-skip").click();
+  await expect(page.locator("#view-nav")).toBeVisible();
+});

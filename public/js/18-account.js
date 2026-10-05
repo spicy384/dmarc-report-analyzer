@@ -76,15 +76,22 @@ async function signInWithPasskey() {
 
 document.getElementById("auth-passkey-btn").addEventListener("click", signInWithPasskey);
 
+/** Creates a passkey on this device and registers it for the signed-in user. Throws on cancel or refusal. */
+async function registerPasskey(name, { refresh = true } = {}) {
+  const { options } = await api("/api/auth/passkeys/register/options", { method: "POST", body: "{}" });
+  const cred = await navigator.credentials.create({ publicKey: webauthnOptionsFromJson(options, "create") });
+  const data = await api("/api/auth/passkeys/register/verify", { method: "POST", body: JSON.stringify({ name, response: webauthnCredentialToJson(cred) }) });
+  renderPasskeys(data.passkeys);
+  // Re-reading the identity also closes the sign-in overlay, which the first-sign-in step must keep open.
+  if (refresh) await refreshIdentity();
+  return data;
+}
+
 async function addPasskey() {
   const name = prompt("Name this passkey (for example: work laptop, phone):", "");
   if (name === null) return;
   try {
-    const { options } = await api("/api/auth/passkeys/register/options", { method: "POST", body: "{}" });
-    const cred = await navigator.credentials.create({ publicKey: webauthnOptionsFromJson(options, "create") });
-    const data = await api("/api/auth/passkeys/register/verify", { method: "POST", body: JSON.stringify({ name, response: webauthnCredentialToJson(cred) }) });
-    renderPasskeys(data.passkeys);
-    await refreshIdentity();
+    const data = await registerPasskey(name);
     setStatus(`Passkey "${data.passkey.name}" added.`);
   } catch (error) {
     setStatus(error.name === "NotAllowedError" ? "Passkey prompt cancelled." : error.name === "InvalidStateError" ? "This device already holds a passkey for your account." : error.message, true);
@@ -289,7 +296,7 @@ function renderAccountPanel() {
   if (currentUser) loadPasskeys();
 }
 
-document.getElementById("acct-enable-mfa").addEventListener("click", beginEnrolment);
+document.getElementById("acct-enable-mfa").addEventListener("click", () => beginEnrolment({ offerPasskey: false }));
 
 document.getElementById("acct-disable-mfa").addEventListener("click", async () => {
   const password = prompt("Confirm your password to turn off two-factor authentication:");
