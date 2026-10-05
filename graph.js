@@ -7,6 +7,7 @@
  * Retry-After; permission problems are turned into messages that say what to fix.
  */
 
+const { describeFetchError } = require("./net-errors");
 const crypto = require("crypto");
 const fs = require("fs");
 
@@ -232,7 +233,7 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
         body: body.toString()
       });
     } catch (error) {
-      throw new GraphError(`Could not reach the Microsoft sign-in service: ${error.message}`, { code: "network" });
+      throw new GraphError(`Could not reach the Microsoft sign-in service: ${describeFetchError(error)}`, { code: "network" });
     }
 
     const data = await res.json().catch(() => ({}));
@@ -278,7 +279,7 @@ function createGraphClient(config, { fetchImpl = globalThis.fetch, logger = cons
           await sleep(1000 * (attempt + 1));
           continue;
         }
-        throw new GraphError(`Could not reach Microsoft Graph: ${error.message}`, { code: "network" });
+        throw new GraphError(`Could not reach Microsoft Graph: ${describeFetchError(error)}`, { code: "network" });
       }
 
       if (res.status === 429 || res.status === 503 || res.status === 504) {

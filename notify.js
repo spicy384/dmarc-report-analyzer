@@ -5,6 +5,7 @@
  * Settings live in the settings table under one key; nothing is sent unless a
  * URL is configured and the event is switched on.
  */
+const { describeFetchError } = require("./net-errors");
 const { describeAlert } = require("./alerts");
 
 const KEY = "notify";
@@ -118,7 +119,7 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
         ? { ok: true, status: res.status, detail: `Delivered (HTTP ${res.status}).` }
         : { ok: false, status: res.status, detail: `The webhook answered HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ""}` };
     } catch (error) {
-      result = { ok: false, status: null, detail: `Could not reach the webhook: ${error.message}` };
+      result = { ok: false, status: null, detail: `Could not reach the webhook: ${describeFetchError(error)}` };
     }
     remember({ lastResult: { at: Math.floor(now() / 1000), event, ...result } });
     if (!result.ok) logger.warn?.(`notify: ${event}: ${result.detail}`);

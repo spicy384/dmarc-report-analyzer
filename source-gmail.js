@@ -7,6 +7,7 @@
  *
  * Messages are fetched in raw form and handed to the shared MIME extractor.
  */
+const { describeFetchError } = require("./net-errors");
 const crypto = require("crypto");
 const { createRawSource, SourceError } = require("./source-raw");
 
@@ -72,7 +73,7 @@ function createGmailSource(cfg, { idPrefix = "gws:", fetchImpl = globalThis.fetc
         body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }).toString()
       });
     } catch (error) {
-      throw new SourceError(`Could not reach Google's token service: ${error.message}`, { code: "network", fatal: true, stage: "connection" });
+      throw new SourceError(`Could not reach Google's token service: ${describeFetchError(error)}`, { code: "network", fatal: true, stage: "connection" });
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.access_token) {
@@ -92,7 +93,7 @@ function createGmailSource(cfg, { idPrefix = "gws:", fetchImpl = globalThis.fetc
     try {
       res = await fetchImpl(`${config.apiBase}/gmail/v1/users/${encodeURIComponent(user)}${pathAndQuery}`, { headers: { Authorization: `Bearer ${bearer}` } });
     } catch (error) {
-      throw new SourceError(`Could not reach the Gmail API: ${error.message}`, { code: "network", fatal: true, stage: "connection" });
+      throw new SourceError(`Could not reach the Gmail API: ${describeFetchError(error)}`, { code: "network", fatal: true, stage: "connection" });
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

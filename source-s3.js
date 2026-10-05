@@ -7,6 +7,7 @@
  * No AWS SDK: requests are signed with Signature Version 4 using Node's crypto.
  * An `endpoint` override (path-style) makes S3-compatible stores and tests work.
  */
+const { describeFetchError } = require("./net-errors");
 const crypto = require("crypto");
 const { XMLParser } = require("fast-xml-parser");
 const { createRawSource, SourceError } = require("./source-raw");
@@ -89,7 +90,7 @@ function createS3Source(cfg, { idPrefix = "ses:", fetchImpl = globalThis.fetch, 
     try {
       res = await fetchImpl(url, { headers });
     } catch (error) {
-      throw new SourceError(`Could not reach S3 (${config.bucket} in ${config.region}): ${error.message}`, { code: "network", fatal: true, stage: "connection" });
+      throw new SourceError(`Could not reach S3 (${config.bucket} in ${config.region}): ${describeFetchError(error)}`, { code: "network", fatal: true, stage: "connection" });
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
