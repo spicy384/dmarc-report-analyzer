@@ -273,6 +273,23 @@ async function waitForServer(tries = 60) {
     check("scratch: delete, then gone", (await req(`/api/scratch/${scratchId}`, { method: "DELETE" })).status === 200 && (await req(`/api/scratch/${scratchId}/summary`)).status === 404);
     check("scratch: live TLS count unchanged by the scratch upload", (await req("/api/status")).body.tlsCount === 1);
 
+    // --- settings: sync retry and retention ---
+    const st0 = (await req("/api/settings")).body;
+    check("settings: defaults (2 retries, 10 s, doubling; retention off)", st0.syncRetry.attempts === 2 && st0.syncRetry.delaySeconds === 10 && st0.syncRetry.backoff === "exponential" && st0.retention.enabled === false && st0.retention.source === "default", JSON.stringify(st0));
+    const retrySaved = await req("/api/settings/sync-retry", { method: "PUT", body: { attempts: 4, delaySeconds: 30, backoff: "fixed" } });
+    check("settings: retry policy saved and read back", retrySaved.status === 200 && retrySaved.body.attempts === 4 && (await req("/api/settings")).body.syncRetry.delaySeconds === 30 && (await req("/api/settings")).body.syncRetry.backoff === "fixed");
+    check("settings: retry policy validated", (await req("/api/settings/sync-retry", { method: "PUT", body: { attempts: 9, delaySeconds: 30, backoff: "fixed" } })).status === 400 && (await req("/api/settings/sync-retry", { method: "PUT", body: { attempts: 1, delaySeconds: 0, backoff: "fixed" } })).status === 400 && (await req("/api/settings/sync-retry", { method: "PUT", body: { attempts: 1, delaySeconds: 5, backoff: "sometimes" } })).status === 400);
+    // Off again (0 is a valid choice), so the unreachable-tenant sync further down fails at once.
+    check("settings: retries can be switched off", (await req("/api/settings/sync-retry", { method: "PUT", body: { attempts: 0, delaySeconds: 10, backoff: "exponential" } })).body.attempts === 0);
+    const reportsBeforeRetention = (await req("/api/reports?range=all")).body.total;
+    const rt = await req("/api/settings/retention", { method: "PUT", body: { months: 120 } });
+    check("settings: retention saved, shown in status, nothing removed by saving", rt.status === 200 && rt.body.enabled === true && rt.body.months === 120 && rt.body.source === "setting" && (await req("/api/status")).body.retention.months === 120 && (await req("/api/reports?range=all")).body.total === reportsBeforeRetention);
+    const applied = await req("/api/settings/retention/apply", { method: "POST", body: {} });
+    check("settings: apply now runs a pass (nothing is 10 years old)", applied.status === 200 && applied.body.result.reports === 0 && applied.body.retention.enabled === true);
+    check("settings: retention validated", (await req("/api/settings/retention", { method: "PUT", body: { months: -1 } })).status === 400 && (await req("/api/settings/retention", { method: "PUT", body: { months: 1.5 } })).status === 400 && (await req("/api/settings/retention", { method: "PUT", body: { months: 500 } })).status === 400);
+    check("settings: retention off again", (await req("/api/settings/retention", { method: "PUT", body: { months: 0 } })).body.enabled === false);
+    check("settings: changes are audited", (await req("/api/audit?action=settings.retention")).body.entries.length === 2 && (await req("/api/audit?action=settings.sync-retry")).body.entries.length === 2);
+
     // --- header analysis endpoint ---
     const hdr = await req("/api/headers/analyze", { method: "POST", body: { raw: fs.readFileSync(path.join(EX, "sample-headers.txt"), "utf8") } });
     check("headers: sample analysed (verdicts, hops, source)", hdr.status === 200 && hdr.body.verdicts.dmarc.computed === "pass" && hdr.body.hops.length === 5 && hdr.body.source.ip === "167.89.12.34" && hdr.body.microsoft.scl === 1, JSON.stringify(hdr.body).slice(0, 300));

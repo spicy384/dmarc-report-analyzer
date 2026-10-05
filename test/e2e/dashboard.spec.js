@@ -102,6 +102,18 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
   await expect(page.locator("#notify-panel")).toBeVisible();
   await expect(page.locator("#users-panel")).toBeVisible();
   await expect(page.locator("#app-version")).toContainText(/\d+\.\d+\.\d+/);
+  // Retry and retention settings load their saved values and explain themselves.
+  await expect(page.locator("#sync-retry")).toBeVisible();
+  await expect(page.locator("#retry-attempts")).toHaveValue("2");
+  await expect(page.locator("#retry-preview")).toContainText("10 s, then 20 s");
+  await page.selectOption("#retry-attempts", "3");
+  await page.selectOption("#retry-backoff", "fixed");
+  await expect(page.locator("#retry-preview")).toContainText("10 s, then 10 s, then 10 s");
+  await page.locator("#retry-save").click();
+  await expect(page.locator("#status")).toContainText("3 retries");
+  await expect(page.locator("#retention-months")).toHaveValue("0");
+  await expect(page.locator("#retention-status")).toContainText("Keeping everything");
+  await expect(page.locator("#retention-apply")).toBeDisabled();
   // The test server runs with UPDATE_CHECK=false, so the switch is shown off and locked.
   await expect(page.locator("#version-panel")).toBeVisible();
   await expect(page.locator("#version-check-enabled")).not.toBeChecked();

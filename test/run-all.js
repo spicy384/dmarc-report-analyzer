@@ -21,6 +21,7 @@ const SUITES = [
   "version.test.js",
   "geoip.test.js",
   "retention.test.js",
+  "retry.test.js",
   "backup.test.js",
   "notify.test.js",
   "sync.test.js",

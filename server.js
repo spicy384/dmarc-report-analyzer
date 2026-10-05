@@ -12,7 +12,7 @@ const { createDnsRecords } = require("./dns-records");
 const { evaluateAfterSync } = require("./alerts");
 const { compileSenders, findSender } = require("./ipmatch");
 const { createGeoIp } = require("./geoip");
-const { createRetention } = require("./retention");
+const { createRetention, parseMonths, MAX_MONTHS } = require("./retention");
 const { createBackup, restoreBackup } = require("./backup");
 const { createNotifier } = require("./notify");
 const { createMonitor } = require("./monitor");
@@ -24,7 +24,7 @@ const pkg = require("./package.json");
 
 // Manually uploaded files are stored under this pseudo-mailbox id.
 const UPLOAD_MAILBOX = "upload";
-const { createSync, publicJob } = require("./sync");
+const { createSync, publicJob, normaliseRetryPolicy, RETRY_DEFAULTS, RETRY_LIMITS } = require("./sync");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -120,14 +120,38 @@ const sync = createSync({
   geoip,
   ingest,
   backfillDays: BACKFILL_DAYS,
+  // Read at the start of every run, so a change under Settings applies to the next sync.
+  retryPolicy: () => syncRetryPolicy(),
   onRunFinished: (job) => afterIngest(job.addedReportIds)
 });
+
+/** How a mailbox is retried after a connection failure: stored under Settings, defaults otherwise. */
+function syncRetryPolicy() {
+  let stored = null;
+  try {
+    stored = JSON.parse(db.getSetting("sync_retry") || "null");
+  } catch {
+    stored = null;
+  }
+  return normaliseRetryPolicy(stored || RETRY_DEFAULTS);
+}
+
+/** Months of full detail to keep: the value saved under Settings, else RETENTION_MONTHS, else everything (0). */
+function retentionMonths() {
+  const saved = parseMonths(db.getSetting("retention_months"));
+  return saved === null ? RETENTION_MONTHS : saved;
+}
+
+function retentionInfo() {
+  const saved = parseMonths(db.getSetting("retention_months"));
+  return { ...retention.describe(), source: saved !== null ? "setting" : RETENTION_MONTHS ? "environment" : "default", environmentMonths: RETENTION_MONTHS, maxMonths: MAX_MONTHS };
+}
 // Webhook notifications (Teams, Slack or generic JSON) for new alerts and the weekly summary.
 const notifier = createNotifier({ db, buildWeekly: (options) => buildWeekly(options), appUrl: process.env.APP_URL || "" });
 const dnsRecords = createDnsRecords();
 // Daily DNS snapshots (record drift) and the "nothing arrived" checks.
 const monitor = createMonitor({ db, dnsRecords, mailboxes });
-const retention = createRetention({ db, months: RETENTION_MONTHS });
+const retention = createRetention({ db, months: () => retentionMonths() });
 
 // The sign-in endpoints must be reachable while signed out; everything else under /api is gated.
 app.use(authGuard.router);
@@ -230,7 +254,7 @@ app.get("/api/status", route(async (req, res) => {
     mailboxes: list,
     mailboxCounts: db.mailboxCounts(),
     geoip: { ...geoip.describe(), stats: db.geoStats() },
-    retention: retention.describe(),
+    retention: retentionInfo(),
     forensicCount: db.forensicCount(),
     tlsCount: db.tlsCount(),
     version: versionInfo(),
@@ -600,6 +624,56 @@ app.post("/api/alerts/:id/ack", authGuard.requireWriter, route(async (req, res) 
     return res.status(404).json({ error: "No such open alert." });
   }
   res.json({ ok: true, openCount: db.openAlertCount() });
+}));
+
+// --- settings: sync retry and retention ------------------------------------------
+
+app.get("/api/settings", authGuard.requireAdmin, route(async (req, res) => {
+  res.json({ syncRetry: { ...syncRetryPolicy(), defaults: RETRY_DEFAULTS, limits: RETRY_LIMITS }, retention: retentionInfo() });
+}));
+
+/** How many times, how long apart and with what backoff a mailbox is retried after a connection failure. */
+app.put("/api/settings/sync-retry", authGuard.requireAdmin, route(async (req, res) => {
+  const body = req.body || {};
+  const attempts = Number(body.attempts);
+  const delaySeconds = Number(body.delaySeconds);
+  if (!Number.isInteger(attempts) || attempts < 0 || attempts > RETRY_LIMITS.maxAttempts) {
+    return res.status(400).json({ error: `Retries must be a whole number from 0 to ${RETRY_LIMITS.maxAttempts}.` });
+  }
+  if (!Number.isFinite(delaySeconds) || delaySeconds < RETRY_LIMITS.minDelay || delaySeconds > RETRY_LIMITS.maxDelay) {
+    return res.status(400).json({ error: `The wait must be between ${RETRY_LIMITS.minDelay} and ${RETRY_LIMITS.maxDelay} seconds.` });
+  }
+  if (!["fixed", "exponential"].includes(body.backoff)) {
+    return res.status(400).json({ error: "Backoff must be fixed or exponential." });
+  }
+  const policy = normaliseRetryPolicy({ attempts, delaySeconds, backoff: body.backoff });
+  db.setSetting("sync_retry", JSON.stringify(policy));
+  auditFrom(req, "settings.sync-retry", `${policy.attempts} retries`, `${policy.delaySeconds} s, ${policy.backoff}`);
+  res.json({ ...policy, defaults: RETRY_DEFAULTS, limits: RETRY_LIMITS });
+}));
+
+/**
+ * Months of full detail to keep (0 = everything). Saving only stores the choice;
+ * the roll-up happens at the next daily pass or with "apply now" below.
+ */
+app.put("/api/settings/retention", authGuard.requireAdmin, route(async (req, res) => {
+  const months = parseMonths(req.body && req.body.months);
+  if (months === null) {
+    return res.status(400).json({ error: `Retention must be a whole number of months from 0 (keep everything) to ${MAX_MONTHS}.` });
+  }
+  db.setSetting("retention_months", String(months));
+  auditFrom(req, "settings.retention", months ? `${months} months` : "keep everything", null);
+  res.json(retentionInfo());
+}));
+
+/** Rolls up everything older than the retention period now. Irreversible. */
+app.post("/api/settings/retention/apply", authGuard.requireAdmin, route(async (req, res) => {
+  if (syncRunning()) {
+    return res.status(409).json({ error: "A sync is running; wait for it to finish before applying retention." });
+  }
+  const result = retention.purge();
+  auditFrom(req, "retention.apply", retentionMonths() ? `${retentionMonths()} months` : "off", result.skipped ? "retention is off; nothing done" : `${result.reports} reports, ${result.records} records rolled up`);
+  res.json({ result, retention: retentionInfo() });
 }));
 
 // --- email header analysis ------------------------------------------------------
@@ -1077,12 +1151,14 @@ if (require.main === module) {
         + "GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and DMARC_MAILBOX.");
     }
 
-    if (retention.enabled) {
-      retention.start();
-      console.log(`Retention: reports older than ${RETENTION_MONTHS} month(s) are rolled up into daily totals; records and XML removed. First pass in 30 seconds, then daily.`);
+    // The timer always runs; a pass does nothing while retention is off, and picks up a change made under Settings.
+    if (retention.start()) {
+      console.log(`Retention: reports older than ${retentionMonths()} month(s) are rolled up into daily totals; records and XML removed (${retentionInfo().source === "setting" ? "set under Settings" : "RETENTION_MONTHS"}). First pass in 30 seconds, then daily.`);
     } else {
-      console.log("Retention: keeping everything (set RETENTION_MONTHS to roll up old reports).");
+      console.log("Retention: keeping everything (set it under Settings > Backup and maintenance, or RETENTION_MONTHS).");
     }
+    const rp = syncRetryPolicy();
+    console.log(`Sync retry: ${rp.attempts ? `${rp.attempts} retr${rp.attempts === 1 ? "y" : "ies"} after a connection failure, first after ${rp.delaySeconds} s, ${rp.backoff === "exponential" ? "doubling" : "same wait"} each time` : "off"}.`);
     notifier.start();
     scratches.start();
     updates.start();

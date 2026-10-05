@@ -688,6 +688,41 @@
         <button id="geoip-refresh-btn" type="button" class="secondary" hidden title="Look up country and network again for every source IP, for example after adding the GeoLite2 files">Re-run GeoIP lookups</button>
       </div>
 
+      <div id="sync-retry" class="mailbox-form" hidden>
+        <h3 class="account-heading">Retry after a connection failure</h3>
+        <p class="bulk-hint">
+          When a mailbox cannot be reached (DNS did not answer, the connection timed out or was
+          reset, or the service answered 502/503/504), the sync waits and tries that mailbox again
+          instead of failing at once. Messages already read are skipped, so a retry only picks up
+          where it broke off. A rejected sign-in, missing consent or a missing folder is not
+          retried: it would fail the same way. Changes apply from the next sync.
+        </p>
+        <div class="mailbox-form-grid">
+          <label>Retries
+            <select id="retry-attempts">
+              <option value="0">Off: fail at once</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+            </select>
+          </label>
+          <label>Wait before the first retry (seconds) <input id="retry-delay" type="number" min="1" max="600" step="1" class="mono" /></label>
+          <label>After that
+            <select id="retry-backoff">
+              <option value="exponential">Double the wait each time</option>
+              <option value="fixed">Wait the same each time</option>
+            </select>
+          </label>
+        </div>
+        <p id="retry-preview" class="bulk-hint"></p>
+        <div class="actions">
+          <button id="retry-save" type="button">Save</button>
+          <button id="retry-reset" type="button" class="secondary">Use the defaults</button>
+        </div>
+      </div>
+
       <div id="mailbox-form" class="mailbox-form" hidden>
         <h3 id="mailbox-form-title" class="account-heading">Add a mailbox</h3>
         <div class="mailbox-form-grid">
@@ -814,6 +849,21 @@
             <button id="reprocess-run" type="button" class="secondary">Re-process all reports</button>
           </div>
           <p id="reprocess-status" class="bulk-hint" hidden></p>
+        </div>
+        <div>
+          <h3 class="account-heading">Retention</h3>
+          <p class="bulk-hint">
+            How long to keep full detail. Reports older than this are rolled up into daily totals:
+            the overview tiles and the chart keep the history, but their records, sources, search
+            and XML downloads are removed for good and the database shrinks. TLS and forensic
+            reports are not affected. 0 keeps everything.
+          </p>
+          <label>Keep full detail for (months) <input id="retention-months" type="number" min="0" max="120" step="1" class="mono" /></label>
+          <p id="retention-status" class="bulk-hint"></p>
+          <div class="actions">
+            <button id="retention-save" type="button">Save</button>
+            <button id="retention-apply" type="button" class="ghost-danger">Apply now</button>
+          </div>
         </div>
       </div>
     </section>

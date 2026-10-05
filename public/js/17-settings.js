@@ -25,6 +25,8 @@ async function setView(name, { scrollTo = null } = {}) {
     document.getElementById("notify-panel").hidden = !isAdmin();
     document.getElementById("monitor-panel").hidden = !isAdmin();
     document.getElementById("version-panel").hidden = !isAdmin();
+    document.getElementById("sync-retry").hidden = !isAdmin();
+    if (isAdmin()) loadSettingsBlocks();
     if (isAdmin()) {
       try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
       loadMaintenance();
@@ -177,6 +179,120 @@ async function loadNotify() {
     setStatus(error.message, true);
   }
 }
+
+// --- sync retry and retention settings ---------------------------------------------
+
+const retryAttempts = document.getElementById("retry-attempts");
+const retryDelayInput = document.getElementById("retry-delay");
+const retryBackoff = document.getElementById("retry-backoff");
+const retentionMonthsInput = document.getElementById("retention-months");
+let savedRetention = null;
+let retryDefaults = { attempts: 2, delaySeconds: 10, backoff: "exponential" };
+
+/** Spells out what the chosen retry policy does, e.g. "waits 10 s, 20 s, then gives up". */
+function renderRetryPreview() {
+  const attempts = Number(retryAttempts.value);
+  const delay = Math.max(1, Number(retryDelayInput.value) || 1);
+  const preview = document.getElementById("retry-preview");
+  retryDelayInput.disabled = attempts === 0;
+  retryBackoff.disabled = attempts < 2;
+  if (!attempts) {
+    preview.textContent = "A mailbox that cannot be reached fails at once and waits for the next scheduled sync.";
+    return;
+  }
+  const waits = [];
+  for (let i = 1; i <= attempts; i += 1) waits.push(retryBackoff.value === "exponential" ? delay * 2 ** (i - 1) : delay);
+  const total = waits.reduce((n, w) => n + w, 0);
+  preview.textContent = `A mailbox that cannot be reached is tried again after ${waits.map((w) => `${w} s`).join(", then ")}; if it still fails, the sync reports the error (up to ${total >= 120 ? `${Math.round(total / 60)} min` : `${total} s`} of waiting per mailbox).`;
+}
+
+function renderRetentionStatus(r) {
+  savedRetention = r;
+  retentionMonthsInput.value = String(r.months);
+  retentionMonthsInput.max = String(r.maxMonths || 120);
+  const bits = [];
+  if (r.enabled) {
+    bits.push(`Keeping ${r.months} month${r.months === 1 ? "" : "s"} of detail: reports from before ${formatUtcDate(r.cutoff)} are rolled up at the daily pass.`);
+  } else {
+    bits.push("Keeping everything.");
+  }
+  if (r.purgedReports) bits.push(`${formatNumber(r.purgedReports)} reports rolled up so far into ${formatNumber(r.rolledUpDays)} daily totals.`);
+  bits.push(r.source === "setting" ? "Set here." : r.source === "environment" ? `From RETENTION_MONTHS=${r.environmentMonths} in the environment; saving here overrides it.` : "");
+  document.getElementById("retention-status").textContent = bits.filter(Boolean).join(" ");
+  document.getElementById("retention-apply").disabled = !r.enabled;
+}
+
+async function loadSettingsBlocks() {
+  if (!isAdmin()) return;
+  try {
+    const s = await api("/api/settings");
+    retryDefaults = s.syncRetry.defaults || retryDefaults;
+    retryAttempts.value = String(s.syncRetry.attempts);
+    retryDelayInput.value = String(s.syncRetry.delaySeconds);
+    retryBackoff.value = s.syncRetry.backoff;
+    renderRetryPreview();
+    renderRetentionStatus(s.retention);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+for (const el of [retryAttempts, retryDelayInput, retryBackoff]) el.addEventListener("input", renderRetryPreview);
+
+async function saveRetryPolicy(policy) {
+  try {
+    const saved = await api("/api/settings/sync-retry", { method: "PUT", body: JSON.stringify(policy) });
+    retryAttempts.value = String(saved.attempts);
+    retryDelayInput.value = String(saved.delaySeconds);
+    retryBackoff.value = saved.backoff;
+    renderRetryPreview();
+    setStatus(saved.attempts ? `Retry settings saved: ${saved.attempts} retr${saved.attempts === 1 ? "y" : "ies"} from the next sync.` : "Retries switched off.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+document.getElementById("retry-save").addEventListener("click", () => saveRetryPolicy({ attempts: Number(retryAttempts.value), delaySeconds: Number(retryDelayInput.value), backoff: retryBackoff.value }));
+document.getElementById("retry-reset").addEventListener("click", () => saveRetryPolicy(retryDefaults));
+
+document.getElementById("retention-save").addEventListener("click", async () => {
+  const months = Number(retentionMonthsInput.value);
+  if (!Number.isInteger(months) || months < 0) {
+    setStatus("Retention must be a whole number of months; 0 keeps everything.", true);
+    return;
+  }
+  // Shortening (or switching on) retention deletes detail at the next pass: make that explicit.
+  const before = savedRetention ? savedRetention.months : 0;
+  const tighter = months > 0 && (before === 0 || months < before);
+  if (tighter && !window.confirm(`Keep only ${months} month${months === 1 ? "" : "s"} of detail?\n\nAt the next daily pass (or with Apply now), the records, sources and stored XML of every older report are deleted for good. The totals and the chart keep the history. Take a backup first if you may want the detail back.`)) {
+    retentionMonthsInput.value = String(before);
+    return;
+  }
+  try {
+    renderRetentionStatus(await api("/api/settings/retention", { method: "PUT", body: JSON.stringify({ months }) }));
+    setStatus(months ? `Retention set to ${months} month${months === 1 ? "" : "s"}; it applies at the next daily pass, or use Apply now.` : "Retention switched off: everything is kept from now on.");
+    loadSyncStatus().catch(() => {});
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("retention-apply").addEventListener("click", async () => {
+  if (!savedRetention || !savedRetention.enabled) return;
+  if (!window.confirm(`Roll up every report from before ${formatUtcDate(savedRetention.cutoff)} now?\n\nTheir records, sources and stored XML are deleted for good; only the daily totals remain. This cannot be undone.`)) return;
+  const button = document.getElementById("retention-apply");
+  button.disabled = true;
+  try {
+    const out = await api("/api/settings/retention/apply", { method: "POST", body: "{}" });
+    renderRetentionStatus(out.retention);
+    setStatus(out.result.reports ? `Rolled up ${formatNumber(out.result.reports)} reports (${formatNumber(out.result.records)} records) into daily totals.` : "Nothing older than the retention period; nothing was removed.");
+    loadAll();
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = !(savedRetention && savedRetention.enabled);
+  }
+});
 
 // --- version footer and update check ---------------------------------------------
 

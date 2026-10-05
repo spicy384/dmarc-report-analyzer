@@ -532,6 +532,8 @@ function describeJob(job) {
   if (job.duplicates) bits.push(`${job.duplicates} duplicate${job.duplicates === 1 ? "" : "s"}`);
   if (job.noReport) bits.push(`${job.noReport} without a report`);
   if (job.errors) bits.push(`${job.errors} error${job.errors === 1 ? "" : "s"}`);
+  const retries = (job.mailboxes || []).reduce((n, b) => n + (b.retries || 0), 0);
+  if (retries) bits.push(`${retries} connection retr${retries === 1 ? "y" : "ies"}`);
   return bits.join(", ");
 }
 

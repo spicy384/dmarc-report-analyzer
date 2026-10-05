@@ -445,12 +445,29 @@ and domain) is stored once.
 
 ### Retention
 
-Everything is kept by default. Set `RETENTION_MONTHS` to roll reports older than that
+Everything is kept by default. Under **Settings → Backup and maintenance → Retention**
+(administrators) choose how many months of full detail to keep, or set `RETENTION_MONTHS`
+as the starting value; a value saved in Settings overrides the environment and applies
+without a restart. Saving only stores the choice: the roll-up happens at the next daily
+pass, or at once with **Apply now**, and both ask first when the change would delete
+detail. Reports older than the period are rolled
 into daily totals: their individual records and stored XML are removed, the report rows
 stay (marked as rolled up), and totals, the chart and the weekly view still cover the
 full history. Sources, records, search, the CSV export and XML downloads only cover
 retained data, and the overview says so when the selected period reaches further back.
 The pass runs 30 seconds after start and then daily.
+
+### Retrying after a connection failure
+
+A mailbox that cannot be reached (DNS did not answer, the connection timed out or was
+reset, or the service answered 502/503/504) is tried again after a wait instead of
+failing the sync at once: by default twice, after 10 and then 20 seconds. **Settings →
+Mailbox sync → Retry after a connection failure** sets the number of retries (0 to 5,
+0 switches it off), the first wait (1 to 600 seconds) and whether the wait doubles or
+stays the same, and shows what the choice amounts to. Messages already read are skipped,
+so a retry only picks up where it broke off. A rejected sign-in, missing consent or a
+missing folder is not retried. Network errors now say why they failed (the low-level
+code, the host, and what it usually means) instead of "fetch failed".
 
 ### Country and network of source IPs
 
@@ -634,7 +651,7 @@ npm test
 npm run lint
 ```
 
-Twenty-three plain-Node suites, no test framework: the parser (containers and XML shapes
+Twenty-four plain-Node suites, no test framework: the parser (containers and XML shapes
 from the samples in `examples/`), TLS reports and the shared ingest path, one-time
 analyses (isolation, enrichment, expiry), storage,
 verdicts, DNS (including MTA-STS against a fake policy host), Graph with certificates, the

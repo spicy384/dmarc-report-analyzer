@@ -39,13 +39,48 @@ function isFatal(error) {
 
 const COUNTERS = ["seen", "skipped", "added", "duplicates", "noReport", "errors", "warnings", "forensic", "tls"];
 
+// --- retrying a mailbox after a connection failure -------------------------------------
+
+const RETRY_DEFAULTS = { attempts: 2, delaySeconds: 10, backoff: "exponential" };
+const RETRY_LIMITS = { maxAttempts: 5, minDelay: 1, maxDelay: 600 };
+const TRANSIENT_CODES = new Set(["network", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "EPIPE", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
+
+/**
+ * Errors worth another try in a moment: the request never reached the service
+ * (DNS, timeout, reset) or the service answered 502/503/504. A rejected sign-in,
+ * a missing folder or missing consent will fail the same way again, so they are not.
+ */
+function isTransient(error) {
+  if (!error) return false;
+  if (TRANSIENT_CODES.has(error.code)) return true;
+  const status = Number(error.status);
+  return status === 502 || status === 503 || status === 504;
+}
+
+/** Clamps whatever was stored into a usable policy. */
+function normaliseRetryPolicy(policy) {
+  const p = policy && typeof policy === "object" ? policy : {};
+  const attempts = Number.isInteger(Number(p.attempts)) ? Math.min(RETRY_LIMITS.maxAttempts, Math.max(0, Number(p.attempts))) : RETRY_DEFAULTS.attempts;
+  const delay = Number.isFinite(Number(p.delaySeconds)) ? Math.min(RETRY_LIMITS.maxDelay, Math.max(RETRY_LIMITS.minDelay, Math.round(Number(p.delaySeconds)))) : RETRY_DEFAULTS.delaySeconds;
+  return { attempts, delaySeconds: delay, backoff: p.backoff === "fixed" ? "fixed" : "exponential" };
+}
+
+/** Seconds to wait before retry number `attempt` (1-based). */
+function retryDelay(policy, attempt) {
+  const wait = policy.backoff === "exponential" ? policy.delaySeconds * 2 ** (attempt - 1) : policy.delaySeconds;
+  return Math.min(wait, 3600);
+}
+
 /**
  * `mailboxes` is a mailbox store (enabledWithClients()). `graph` alone is still
  * accepted for a single client, which the older tests use. `ingest` (ingest.js)
  * turns attachments into stored reports and is shared with the manual upload.
  */
-function createSync({ db, mailboxes, graph, geoip = null, logger = console, backfillDays = 90, resolver, onRunFinished, ingest = null } = {}) {
+function createSync({ db, mailboxes, graph, geoip = null, logger = console, backfillDays = 90, resolver, onRunFinished, ingest = null, retryPolicy = null, sleep = null } = {}) {
   const jobs = new Map();
+  // `retryPolicy` is read at the start of every run, so a change under Settings applies to the next sync.
+  const currentRetryPolicy = () => normaliseRetryPolicy(typeof retryPolicy === "function" ? retryPolicy() : retryPolicy || { attempts: 0 });
+  const pause = sleep || ((ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.(); }));
   const ingester = ingest || createIngest({ db });
   let running = null;
   let nextJobId = 1;
@@ -197,6 +232,7 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
     } catch (error) {
       box.status = "failed";
       box.error = error.message;
+      box.transient = isTransient(error);
       logger.error?.(`sync: ${box.name}: ${error.message}`);
     } finally {
       box.finishedAt = nowSeconds();
@@ -215,11 +251,33 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
       if (!job.mailboxes.length) {
         throw new GraphError("No mailboxes are configured. Add one under Mailbox sync, or set GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and DMARC_MAILBOX.", { code: "not_configured" });
       }
+      const policy = currentRetryPolicy();
       for (const box of job.mailboxes) {
         if (job.cancelled) {
           break;
         }
         await runMailbox(job, box);
+        // A connection failure is retried after a wait; messages already read are skipped,
+        // so running the mailbox again only picks up where it broke off.
+        for (let attempt = 1; attempt <= policy.attempts && box.status === "failed" && box.transient && !job.cancelled; attempt += 1) {
+          const wait = retryDelay(policy, attempt);
+          box.retries = attempt;
+          box.status = "retrying";
+          job.current = `${box.name}: connection failed, retry ${attempt} of ${policy.attempts} in ${wait} s`;
+          logger.warn?.(`sync: ${box.name}: retry ${attempt} of ${policy.attempts} in ${wait} s after: ${box.error}`);
+          await pause(wait * 1000);
+          if (job.cancelled) {
+            box.status = "cancelled";
+            break;
+          }
+          box.firstError = box.firstError || box.error;
+          box.error = null;
+          box.transient = false;
+          await runMailbox(job, box);
+        }
+        if (box.retries && box.status === "done") {
+          logger.log?.(`sync: ${box.name}: succeeded after ${box.retries} retr${box.retries === 1 ? "y" : "ies"}`);
+        }
       }
       const failed = job.mailboxes.filter((b) => b.status === "failed");
       if (failed.length === job.mailboxes.length) {
@@ -286,6 +344,7 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
         runId: null,
         lastError: null,
         error: null,
+        retries: 0,
         ...Object.fromEntries(COUNTERS.map((c) => [c, 0]))
       }));
 
@@ -427,4 +486,4 @@ function publicJob(job) {
   };
 }
 
-module.exports = { createSync, publicJob };
+module.exports = { createSync, publicJob, isTransient, normaliseRetryPolicy, retryDelay, RETRY_DEFAULTS, RETRY_LIMITS };
