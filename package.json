@@ -9,6 +9,7 @@
     "dev": "node server.js",
     "test": "node test/run-all.js",
     "e2e": "playwright test",
+    "screenshots": "node test/e2e/screenshots.js",
     "lint": "eslint ."
   },
   "dependencies": {

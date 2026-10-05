@@ -6,6 +6,24 @@ server), stores them in SQLite, and shows what they say: how much mail failed DM
 sent it, when, who reported it, and which domains were involved. Runs as a container on a
 management server.
 
+![The dashboard: an alert for a new spike, the overview tiles with change against the previous period, and messages per day by DMARC result](docs/screenshots/dashboard.png)
+
+## Screenshots
+
+All taken from a demo dataset (`example.com`, documentation addresses); nothing here is
+real mail.
+
+| | |
+|---|---|
+| **Sending sources**: every address that sent as your domain, with reverse DNS, network, your label or a catalogue guess, why it fails and a 30-day trend.<br>![Sending sources table](docs/screenshots/sources.png) | **Policy readiness**: your DMARC, SPF, DKIM and MTA-STS records checked live, and what `p=reject` would have done to the period's mail.<br>![Policy readiness, the "If p=reject" tab](docs/screenshots/policy.png) |
+| **This week** against last week, ready to copy into an email or print.<br>![This week panel](docs/screenshots/weekly.png) | **Domains**: one row per domain with its policy, pass rate and what needs attention.<br>![Domains scorecard](docs/screenshots/domains.png) |
+| **Analyze headers**: paste a message's headers to see why it passed or failed, with alignment recomputed against the From domain.<br>![Header analysis: verdicts, findings and the authentication tab](docs/screenshots/header-analysis.png) | The same message's **path**, hop by hop with the wait before each. The report exports as PDF, HTML, text or JSON.<br>![Header analysis: the path tab](docs/screenshots/header-path.png) |
+| **TLS reports** (RFC 8460): sessions that succeeded and failed over TLS, by reason, receiving MX and sending MTA.<br>![TLS reports panel](docs/screenshots/tls-reports.png) | **Settings**: mailboxes in Microsoft 365, Google Workspace, Amazon SES, IMAP or POP3, with retry options for connection failures.<br>![Mailbox sync settings](docs/screenshots/settings-sync.png) |
+
+Dark theme:
+
+![The dashboard in the dark theme](docs/screenshots/dashboard-dark.png)
+
 ## What it shows
 
 **Overview** for any period and domain: messages seen, DMARC pass and fail percentages,
@@ -673,6 +691,11 @@ data directory (`test/e2e/serve.js`), creates the first administrator, tours the
 clicks through the Policy tabs, opens a report, uploads a file on the Analyze page and
 checks the Settings page, failing on any console error. It is the one place the browser
 scripts are exercised for real, so a broken panel fails CI instead of the next refresh.
+
+The screenshots above are generated, not hand-made: `npm run screenshots` starts the app
+on a throwaway data directory filled with a synthetic demo dataset
+(`test/e2e/demo-seed.js`), drives it with Chromium and rewrites `docs/screenshots/`. Run
+it after a visible change to keep the README current.
 
 The GitHub workflow runs lint, the suite and the browser test on every push and pull
 request, and only builds and publishes the image when they pass.
