@@ -20,6 +20,7 @@ const SUITES = [
   "rate-limit.test.js",
   "version.test.js",
   "geoip.test.js",
+  "geoip-update.test.js",
   "retention.test.js",
   "retry.test.js",
   "backup.test.js",

@@ -59,6 +59,8 @@ function createGeoIp({
   let opened = Boolean(readers);
   let lastOnlineAt = 0;
   const problems = [];
+  // `online` may be a function, so the choice made under Settings applies at once.
+  const isOnline = () => Boolean(typeof online === "function" ? online() : online);
 
   async function open() {
     if (opened) {
@@ -82,16 +84,36 @@ function createGeoIp({
     return describe();
   }
 
+  /** Size, date and build of one database file, or null when it is not there. */
+  function fileInfo(file, reader) {
+    if (!file || !fs.existsSync(file)) return null;
+    const stat = fs.statSync(file);
+    const meta = reader && reader.metadata ? reader.metadata : null;
+    const built = meta && meta.buildEpoch ? Math.floor(new Date(meta.buildEpoch).getTime() / 1000) : null;
+    return { path: file, bytes: stat.size, modifiedAt: Math.floor(stat.mtimeMs / 1000), builtAt: Number.isFinite(built) ? built : null, type: meta ? meta.databaseType || null : null, loaded: Boolean(reader) };
+  }
+
   function describe() {
     return {
       cityDb: city ? cityPath || "injected" : null,
       asnDb: asn ? asnPath || "injected" : null,
       cityPath,
       asnPath,
-      online: Boolean(online),
-      onlineProvider: online ? new URL(onlineBase).host : null,
+      cityFile: fileInfo(cityPath, city),
+      asnFile: fileInfo(asnPath, asn),
+      online: isOnline(),
+      onlineProvider: isOnline() ? new URL(onlineBase).host : null,
       problems
     };
+  }
+
+  /** Drops the open readers and opens the files again, after they were replaced or removed. */
+  async function reload() {
+    city = null;
+    asn = null;
+    opened = false;
+    problems.length = 0;
+    return open();
   }
 
   function fromFiles(ip) {
@@ -181,7 +203,7 @@ function createGeoIp({
       const hit = fromFiles(ip);
       if (hit && (hit.countryCode || !city) && (hit.asn || !asn)) {
         out.set(ip, hit);
-      } else if (online) {
+      } else if (isOnline()) {
         pending.push(ip);
         if (hit) out.set(ip, hit); // partial answer from files, may be improved online
       } else {
@@ -204,10 +226,10 @@ function createGeoIp({
   }
 
   function isEnabled() {
-    return Boolean(city || asn || online);
+    return Boolean(city || asn || isOnline());
   }
 
-  return { open, describe, lookup, isEnabled, isPrivate, parseAsField };
+  return { open, reload, describe, lookup, isEnabled, isPrivate, parseAsField };
 }
 
 /** Flag emoji for a two-letter country code. */

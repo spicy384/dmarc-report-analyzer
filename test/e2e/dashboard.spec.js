@@ -133,6 +133,18 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
   await expect(page.locator("#retention-months")).toHaveValue("0");
   await expect(page.locator("#retention-status")).toContainText("Keeping everything");
   await expect(page.locator("#retention-apply")).toBeDisabled();
+  // GeoIP set-up: no files yet, the test server starts with the online lookup off.
+  await expect(page.locator("#geoip-panel")).toBeVisible();
+  await expect(page.locator("#geoip-files")).toContainText("City database: not installed");
+  await expect(page.locator("#geoip-download")).toBeDisabled();
+  await expect(page.locator("#geoip-online")).not.toBeChecked();
+  await expect(page.locator("#geoip-online-note")).toContainText("GEOIP_ONLINE");
+  await page.fill("#geoip-account", "123456");
+  await page.fill("#geoip-key", "abcdEFGH1234");
+  await page.locator("#geoip-save").click();
+  await expect(page.locator("#geoip-download")).toBeEnabled();
+  await expect(page.locator("#geoip-key")).toHaveValue("");
+  await expect(page.locator("#geoip-key")).toHaveAttribute("placeholder", /configured/);
   // The test server runs with UPDATE_CHECK=false, so the switch is shown off and locked.
   await expect(page.locator("#version-panel")).toBeVisible();
   await expect(page.locator("#version-check-enabled")).not.toBeChecked();

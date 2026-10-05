@@ -950,6 +950,65 @@
       <p id="monitor-status" class="bulk-hint" hidden></p>
     </section>
 
+    <section class="panel" id="geoip-panel" hidden>
+      <div class="panel-head">
+        <h2>GeoIP: country and network of sources</h2>
+        <span id="geoip-badge" class="badge"></span>
+      </div>
+      <p class="bulk-hint">
+        Every source address is looked up for its country, city and network (ASN). The MaxMind
+        GeoLite2 databases answer that on this server, so no address leaves it. They are free:
+        create an account at <a href="https://www.maxmind.com/en/geolite2/signup" target="_blank" rel="noopener noreferrer">maxmind.com</a>,
+        then under <strong>Manage license keys</strong> generate a key. The account ID is shown
+        on the same page.
+      </p>
+      <ul id="geoip-files" class="policy-facts"></ul>
+
+      <div class="account-grid">
+        <div>
+          <h3 class="account-heading">Download from MaxMind</h3>
+          <label>Account ID <input id="geoip-account" class="mono" inputmode="numeric" autocomplete="off" placeholder="123456" /></label>
+          <label>License key <input id="geoip-key" type="password" class="mono" autocomplete="off" placeholder="license key" /></label>
+          <label class="check-inline"><input type="checkbox" id="geoip-auto" checked /> Check for newer files every week</label>
+          <div class="actions">
+            <button id="geoip-save" type="button">Save</button>
+            <button id="geoip-download" type="button" class="secondary">Download now</button>
+            <button id="geoip-forget" type="button" class="ghost-danger" hidden>Forget the key</button>
+          </div>
+          <p id="geoip-update-status" class="bulk-hint" hidden></p>
+        </div>
+        <div>
+          <h3 class="account-heading">Or upload the files</h3>
+          <p class="bulk-hint">
+            For a server that cannot reach MaxMind: download <span class="mono">GeoLite2-City</span>
+            and <span class="mono">GeoLite2-ASN</span> elsewhere and upload them here, as
+            <span class="mono">.mmdb</span> or the <span class="mono">.tar.gz</span> MaxMind
+            provides. Which one a file is gets read from the file itself.
+          </p>
+          <input id="geoip-file" type="file" multiple accept=".mmdb,.gz,.tgz,.tar" />
+          <div class="actions">
+            <button id="geoip-upload" type="button" class="secondary">Upload</button>
+            <button id="geoip-remove" type="button" class="ghost-danger">Remove the files</button>
+          </div>
+          <p id="geoip-upload-status" class="bulk-hint" hidden></p>
+        </div>
+        <div>
+          <h3 class="account-heading">Online lookup</h3>
+          <p class="bulk-hint">
+            For addresses the files cannot answer, or for all of them while there are no files,
+            <span class="mono">ip-api.com</span> can be asked. Those addresses are sent to it over
+            plain HTTP, and its free tier is for non-commercial use. Switch it off to keep every
+            address on this server.
+          </p>
+          <label class="check-inline"><input type="checkbox" id="geoip-online" /> Use ip-api.com when the files have no answer</label>
+          <p id="geoip-online-note" class="bulk-hint"></p>
+          <div class="actions">
+            <button id="geoip-rerun" type="button" class="secondary" title="Look up country and network again for every source address">Re-run lookups for every address</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="panel" id="version-panel" hidden>
       <div class="panel-head">
         <h2>Version and updates</h2>

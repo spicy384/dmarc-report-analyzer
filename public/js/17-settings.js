@@ -26,7 +26,11 @@ async function setView(name, { scrollTo = null } = {}) {
     document.getElementById("monitor-panel").hidden = !isAdmin();
     document.getElementById("version-panel").hidden = !isAdmin();
     document.getElementById("sync-retry").hidden = !isAdmin();
-    if (isAdmin()) loadSettingsBlocks();
+    document.getElementById("geoip-panel").hidden = !isAdmin();
+    if (isAdmin()) {
+      loadSettingsBlocks();
+      loadGeoip();
+    }
     if (isAdmin()) {
       try { await refreshUsers(); } catch (error) { setStatus(error.message, true); }
       loadMaintenance();
@@ -291,6 +295,160 @@ document.getElementById("retention-apply").addEventListener("click", async () =>
     setStatus(error.message, true);
   } finally {
     button.disabled = !(savedRetention && savedRetention.enabled);
+  }
+});
+
+// --- GeoIP set-up: MaxMind files and the online fallback -----------------------------
+
+function describeGeoFile(label, f) {
+  if (!f) return `${label}: not installed.`;
+  const size = f.bytes >= 1024 * 1024 ? `${Math.round(f.bytes / 1024 / 1024)} MB` : `${Math.max(1, Math.round(f.bytes / 1024))} KB`;
+  return `${label}: installed${f.type ? ` (${f.type})` : ""}, ${f.builtAt ? `built ${formatUtcDate(f.builtAt)}` : `file dated ${formatUtcDate(f.modifiedAt)}`}, ${size}${f.loaded ? "" : " - could not be opened"}.`;
+}
+
+function renderGeoip(g) {
+  const lines = [describeGeoFile("City database", g.files.city), describeGeoFile("ASN database", g.files.asn)];
+  if (g.stats && g.stats.resolved) lines.push(`${formatNumber(g.stats.resolved)} source addresses resolved so far: ${formatNumber(g.stats.fromFiles || 0)} from the files, ${formatNumber(g.stats.fromOnline || 0)} online, ${formatNumber(g.stats.unknown || 0)} unknown.`);
+  for (const p of g.problems || []) lines.push(`Problem: ${p}`);
+  document.getElementById("geoip-files").replaceChildren(...lines.map((text) => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    return li;
+  }));
+  const both = Boolean(g.files.city && g.files.asn);
+  const any = Boolean(g.files.city || g.files.asn);
+  document.getElementById("geoip-badge").textContent = both ? "MaxMind files" : any ? "one file missing" : g.online ? "online lookup only" : "off";
+  document.getElementById("geoip-account").value = g.accountId || "";
+  const key = document.getElementById("geoip-key");
+  key.value = "";
+  key.placeholder = g.hasLicenseKey ? "configured; leave blank to keep" : "license key";
+  document.getElementById("geoip-auto").checked = Boolean(g.autoUpdate);
+  document.getElementById("geoip-download").disabled = !g.hasLicenseKey || !g.accountId || g.running;
+  document.getElementById("geoip-forget").hidden = !g.hasLicenseKey;
+  document.getElementById("geoip-remove").disabled = !any;
+  document.getElementById("geoip-online").checked = Boolean(g.online);
+  document.getElementById("geoip-online-note").textContent = g.onlineSource === "environment" ? `Currently ${g.online ? "on" : "off"} from GEOIP_ONLINE in the environment; changing it here overrides that.` : "";
+  const status = document.getElementById("geoip-update-status");
+  const bits = [];
+  if (g.lastUpdate) bits.push(`${g.lastUpdate.ok ? "Last update" : "Last attempt"} ${formatTimestamp(g.lastUpdate.at)}: ${g.lastUpdate.detail}`);
+  if (g.nextUpdateAt && g.autoUpdate) bits.push(`Next check around ${formatTimestamp(g.nextUpdateAt)}.`);
+  status.textContent = bits.join(" ");
+  status.hidden = !bits.length;
+}
+
+async function loadGeoip() {
+  if (!isAdmin()) return;
+  try {
+    renderGeoip(await api("/api/geoip"));
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+async function saveGeoipSettings(extra = {}) {
+  const body = { accountId: document.getElementById("geoip-account").value.trim(), autoUpdate: document.getElementById("geoip-auto").checked, ...extra };
+  const key = document.getElementById("geoip-key").value.trim();
+  if (key) body.licenseKey = key;
+  const saved = await api("/api/geoip/settings", { method: "PUT", body: JSON.stringify(body) });
+  renderGeoip(saved);
+  return saved;
+}
+
+document.getElementById("geoip-save").addEventListener("click", async () => {
+  try {
+    await saveGeoipSettings();
+    setStatus("GeoIP settings saved.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("geoip-download").addEventListener("click", async () => {
+  const button = document.getElementById("geoip-download");
+  const status = document.getElementById("geoip-update-status");
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "Downloading from MaxMind; the City database is tens of megabytes...";
+  try {
+    // Anything typed but not yet saved is saved first, so "Download now" uses what is on screen.
+    await saveGeoipSettings();
+    const out = await api("/api/geoip/download", { method: "POST", body: JSON.stringify({ force: false }) });
+    renderGeoip(out);
+    setStatus(out.changed ? `${out.detail} Unresolved addresses are being looked up with the new files.` : out.detail);
+    loadSyncStatus().catch(() => {});
+  } catch (error) {
+    status.textContent = error.message;
+    setStatus(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.getElementById("geoip-forget").addEventListener("click", async () => {
+  if (!window.confirm("Forget the MaxMind account ID and license key? The installed files stay; they just stop being updated.")) return;
+  try {
+    document.getElementById("geoip-account").value = "";
+    renderGeoip(await api("/api/geoip/settings", { method: "PUT", body: JSON.stringify({ clearCredentials: true }) }));
+    setStatus("MaxMind credentials removed.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("geoip-upload").addEventListener("click", async () => {
+  const input = document.getElementById("geoip-file");
+  const status = document.getElementById("geoip-upload-status");
+  const files = [...input.files];
+  status.hidden = false;
+  if (!files.length) {
+    status.textContent = "Choose the .mmdb or .tar.gz files first.";
+    return;
+  }
+  const results = [];
+  for (const file of files) {
+    status.textContent = `Uploading ${file.name}...`;
+    try {
+      const res = await fetch("/api/geoip/upload", { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-CSRF-Token": csrfToken || "" }, body: file, credentials: "same-origin" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      results.push(`${file.name}: installed as the ${body.installed.kind === "city" ? "City" : "ASN"} database`);
+      renderGeoip(body);
+    } catch (error) {
+      results.push(`${file.name}: ${error.message}`);
+    }
+  }
+  status.textContent = results.join(" ");
+  input.value = "";
+  loadSyncStatus().catch(() => {});
+});
+
+document.getElementById("geoip-remove").addEventListener("click", async () => {
+  if (!window.confirm("Remove the GeoLite2 files from this server? Lookups fall back to the online service if it is switched on. Addresses already resolved keep their answers.")) return;
+  try {
+    renderGeoip(await api("/api/geoip/files", { method: "DELETE" }));
+    setStatus("GeoLite2 files removed.");
+    loadSyncStatus().catch(() => {});
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("geoip-online").addEventListener("change", async (e) => {
+  try {
+    renderGeoip(await api("/api/geoip/settings", { method: "PUT", body: JSON.stringify({ online: e.currentTarget.checked }) }));
+    setStatus(e.currentTarget.checked ? "Online lookup switched on." : "Online lookup switched off: no source address leaves this server.");
+  } catch (error) {
+    setStatus(error.message, true);
+    loadGeoip();
+  }
+});
+
+document.getElementById("geoip-rerun").addEventListener("click", async () => {
+  try {
+    await api("/api/geoip/refresh", { method: "POST", body: JSON.stringify({ all: true }) });
+    setStatus("Looking up every source address again in the background.");
+  } catch (error) {
+    setStatus(error.message, true);
   }
 });
 

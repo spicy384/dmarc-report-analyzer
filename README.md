@@ -499,15 +499,23 @@ code, the host, and what it usually means) instead of "fetch failed".
 Every source IP is looked up for country, city and network (ASN) after each sync, shown
 in the **Network** column and searchable. Two sources, files preferred:
 
-- **MaxMind GeoLite2 files**, read locally so no IP leaves your network. Create a free
-  MaxMind account, download `GeoLite2-City.mmdb` and `GeoLite2-ASN.mmdb`, and put them in
-  `geoip/` inside the data directory (`/data/geoip` in the container, or point
-  `GEOIP_CITY_DB` and `GEOIP_ASN_DB` at them). Restart, or use **Re-run GeoIP lookups**
-  under Mailbox sync to resolve everything again with the files.
+- **MaxMind GeoLite2 files**, read locally so no IP leaves your network. Set them up under
+  **Settings → GeoIP** (administrators): create a free MaxMind account, generate a license
+  key, enter the account ID and key, and **Download now** fetches `GeoLite2-City` and
+  `GeoLite2-ASN`, checks each is a readable database of the right kind, and starts using
+  them without a restart. With **Check for newer files every week** on, the app asks
+  MaxMind weekly whether the files changed and downloads only when they did. The key is
+  stored in the database (so it is in backups) and never shown again. A server that cannot
+  reach MaxMind can **upload** the files instead (`.mmdb`, or the `.tar.gz` MaxMind
+  provides); copying them into `geoip/` inside the data directory (`/data/geoip`, or
+  wherever `GEOIP_CITY_DB` and `GEOIP_ASN_DB` point) still works too. The panel shows
+  each file's build date and size, and **Re-run lookups for every address** resolves
+  everything again.
 - **ip-api.com**, used for whatever the files cannot answer, or for everything when there
   are no files. It is queried over plain HTTP in batches of 100, at most 15 requests a
   minute, and its free tier is for non-commercial use; every unknown source IP is sent to
-  it. Set `GEOIP_ONLINE=false` to never use it.
+  it. Switch it off with the checkbox on the same Settings panel (or `GEOIP_ONLINE=false`
+  as the default) to keep every address on the server.
 
 ### What gets ingested
 
@@ -676,7 +684,7 @@ npm test
 npm run lint
 ```
 
-Twenty-four plain-Node suites, no test framework: the parser (containers and XML shapes
+Twenty-five plain-Node suites, no test framework: the parser (containers and XML shapes
 from the samples in `examples/`), TLS reports and the shared ingest path, one-time
 analyses (isolation, enrichment, expiry), storage,
 verdicts, DNS (including MTA-STS against a fake policy host), Graph with certificates, the

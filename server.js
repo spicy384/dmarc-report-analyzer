@@ -12,6 +12,7 @@ const { createDnsRecords } = require("./dns-records");
 const { evaluateAfterSync } = require("./alerts");
 const { compileSenders, findSender } = require("./ipmatch");
 const { createGeoIp } = require("./geoip");
+const { createGeoIpUpdater } = require("./geoip-update");
 const { createRetention, parseMonths, MAX_MONTHS } = require("./retention");
 const { createBackup, restoreBackup } = require("./backup");
 const { createNotifier } = require("./notify");
@@ -78,7 +79,18 @@ const geoip = createGeoIp({
   dataDir: DATA_DIR,
   cityDb: process.env.GEOIP_CITY_DB || undefined,
   asnDb: process.env.GEOIP_ASN_DB || undefined,
-  online: String(process.env.GEOIP_ONLINE || "true").toLowerCase() !== "false"
+  // The online fallback follows the choice under Settings; GEOIP_ONLINE is the default until one is made.
+  online: () => geoUpdater.onlineEnabled()
+});
+// MaxMind files from the Settings page: download with a license key (and weekly after), or upload.
+const geoUpdater = createGeoIpUpdater({
+  db,
+  geoip,
+  onlineDefault: String(process.env.GEOIP_ONLINE || "true").toLowerCase() !== "false",
+  // New files can answer what the online lookup could not: resolve what is still missing.
+  onUpdated: () => {
+    sync.lookupGeo({ all: false }).then((n) => console.log(`geoip: resolved ${n} address(es) with the new files`)).catch((error) => console.warn(`geoip: ${error.message}`));
+  }
 });
 /** After reports were stored (by a sync or an upload): evaluate alerts, then notify. */
 function afterIngest(addedReportIds = []) {
@@ -480,11 +492,52 @@ function buildWeekly({ db: store = db, end = null, domain = null, mailbox = null
 /** Re-resolves every source IP, e.g. after the GeoLite2 files were added. Runs in the background. */
 app.post("/api/geoip/refresh", authGuard.requireAdmin, route(async (req, res) => {
   if (!geoip.isEnabled()) {
-    return res.status(400).json({ error: "GeoIP is off: no GeoLite2 files were found and GEOIP_ONLINE is false." });
+    return res.status(400).json({ error: "GeoIP is off: there are no GeoLite2 files and the online lookup is switched off. Set it up under Settings > GeoIP." });
   }
   const all = Boolean(req.body && req.body.all);
   sync.lookupGeo({ all }).then((n) => console.log(`geoip: resolved ${n} address(es)`)).catch((error) => console.warn(`geoip: ${error.message}`));
   res.json({ ok: true, started: true, all });
+}));
+
+/** GeoIP set-up for the Settings page: files, MaxMind account (never the key itself), online fallback. */
+app.get("/api/geoip", authGuard.requireAdmin, route(async (req, res) => {
+  res.json({ ...geoUpdater.describe(), stats: db.geoStats() });
+}));
+
+app.put("/api/geoip/settings", authGuard.requireAdmin, route(async (req, res) => {
+  const body = req.body || {};
+  const saved = geoUpdater.save({ accountId: body.accountId, licenseKey: body.licenseKey, autoUpdate: body.autoUpdate, online: body.online, clearCredentials: body.clearCredentials });
+  auditFrom(req, "geoip.settings", saved.accountId ? `account ${saved.accountId}` : "no account", `auto-update ${saved.autoUpdate ? "on" : "off"}; online lookup ${saved.online ? "on" : "off"}${body.licenseKey ? "; license key changed" : ""}`);
+  res.json({ ...saved, stats: db.geoStats() });
+}));
+
+/** Downloads GeoLite2-City and GeoLite2-ASN from MaxMind now. */
+app.post("/api/geoip/download", authGuard.requireAdmin, route(async (req, res) => {
+  try {
+    const out = await geoUpdater.download({ force: Boolean(req.body && req.body.force) });
+    auditFrom(req, "geoip.download", "MaxMind", out.detail);
+    res.json({ ok: true, detail: out.detail, changed: out.changed, ...out.status, stats: db.geoStats() });
+  } catch (error) {
+    auditFrom(req, "geoip.download", "MaxMind", `failed: ${error.message}`);
+    throw error;
+  }
+}));
+
+/** A database file uploaded by hand: .mmdb, .mmdb.gz or the .tar.gz MaxMind offers. */
+app.post("/api/geoip/upload", authGuard.requireAdmin, express.raw({ type: () => true, limit: "300mb" }), route(async (req, res) => {
+  const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (!bytes.length) {
+    return res.status(400).json({ error: "No file was uploaded." });
+  }
+  const out = await geoUpdater.upload(bytes);
+  auditFrom(req, "geoip.upload", out.installed.databaseType, `${Math.round(out.installed.bytes / 1024 / 1024)} MB`);
+  res.json({ ok: true, installed: out.installed, ...out.status, stats: db.geoStats() });
+}));
+
+app.delete("/api/geoip/files", authGuard.requireAdmin, route(async (req, res) => {
+  const out = await geoUpdater.removeFiles();
+  auditFrom(req, "geoip.remove", "GeoLite2 files", `${out.removed} removed`);
+  res.json({ ok: true, removed: out.removed, ...out.status, stats: db.geoStats() });
 }));
 
 // --- policy readiness ----------------------------------------------------------
@@ -1176,9 +1229,10 @@ if (require.main === module) {
       if (g.online) parts.push(`online via ${g.onlineProvider}`);
       console.log(`GeoIP: ${parts.length ? parts.join(", ") : "off"}${g.problems.length ? ` (problems: ${g.problems.join("; ")})` : ""}`);
       if (!g.cityDb || !g.asnDb) {
-        console.log(`        Put GeoLite2-City.mmdb and GeoLite2-ASN.mmdb in ${path.join(DATA_DIR, "geoip")} for offline lookups.`);
+        console.log("        Add the MaxMind GeoLite2 files under Settings > GeoIP (download with a license key, or upload) for offline lookups.");
       }
     });
+    geoUpdater.start();
 
     if (!authGuard.hasUsers()) {
       console.log("Accounts: none yet - open the app to create the first administrator.");

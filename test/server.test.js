@@ -290,6 +290,17 @@ async function waitForServer(tries = 60) {
     check("settings: retention off again", (await req("/api/settings/retention", { method: "PUT", body: { months: 0 } })).body.enabled === false);
     check("settings: changes are audited", (await req("/api/audit?action=settings.retention")).body.entries.length === 2 && (await req("/api/audit?action=settings.sync-retry")).body.entries.length === 2);
 
+    // --- GeoIP set-up (no real MaxMind call: nothing is downloaded here) ---
+    const geo0 = (await req("/api/geoip")).body;
+    check("geoip: status shows no files, no key, online from the environment", geo0.files.city === null && geo0.files.asn === null && geo0.hasLicenseKey === false && geo0.online === true && geo0.onlineSource === "environment", JSON.stringify(geo0).slice(0, 300));
+    const geoSaved = await req("/api/geoip/settings", { method: "PUT", body: { accountId: "123456", licenseKey: "abcdEFGH1234", autoUpdate: false, online: false } });
+    check("geoip: settings saved; the key is never returned, by this route or status", geoSaved.status === 200 && geoSaved.body.accountId === "123456" && geoSaved.body.hasLicenseKey === true && geoSaved.body.autoUpdate === false && geoSaved.body.online === false && !JSON.stringify(geoSaved.body).includes("abcdEFGH1234") && !JSON.stringify((await req("/api/status")).body).includes("abcdEFGH1234") && (await req("/api/status")).body.geoip.online === false);
+    check("geoip: bad account ID is a 400", (await req("/api/geoip/settings", { method: "PUT", body: { accountId: "not-a-number" } })).status === 400);
+    const geoJunk = await fetch(`http://127.0.0.1:${APP_PORT}/api/geoip/upload`, { method: "POST", headers: { Cookie: cookie, "X-CSRF-Token": csrf, "Content-Type": "application/octet-stream" }, body: Buffer.from("definitely not an mmdb file") });
+    check("geoip: uploading something that is not a database is refused", geoJunk.status === 400 && /not a readable MaxMind database/.test((await geoJunk.json()).error));
+    check("geoip: forgetting the credentials and switching online back on", (await req("/api/geoip/settings", { method: "PUT", body: { clearCredentials: true, online: true } })).body.hasLicenseKey === false && (await req("/api/geoip")).body.online === true);
+    check("geoip: changes are audited without the key", (await req("/api/audit?action=geoip.settings")).body.entries.length >= 2 && !JSON.stringify((await req("/api/audit?action=geoip.settings")).body).includes("abcdEFGH1234"));
+
     // --- header analysis endpoint ---
     const hdr = await req("/api/headers/analyze", { method: "POST", body: { raw: fs.readFileSync(path.join(EX, "sample-headers.txt"), "utf8") } });
     check("headers: sample analysed (verdicts, hops, source)", hdr.status === 200 && hdr.body.verdicts.dmarc.computed === "pass" && hdr.body.hops.length === 5 && hdr.body.source.ip === "167.89.12.34" && hdr.body.microsoft.scl === 1, JSON.stringify(hdr.body).slice(0, 300));
