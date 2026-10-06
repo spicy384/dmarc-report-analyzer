@@ -441,6 +441,9 @@ GRAPH_TENANT_ID=... GRAPH_CLIENT_ID=... GRAPH_CLIENT_SECRET=... DMARC_MAILBOX=..
 ```
 
 Data lives in `./data` unless `DATA_DIR` says otherwise.
+`npm install` uses the SQLite binary that better-sqlite3 ships for your platform; if you use
+`npm ci` instead, add `--ignore-scripts`, because `npm ci` would otherwise try to compile it
+and fail without Python and a C++ toolchain.
 
 ## Configuration
 

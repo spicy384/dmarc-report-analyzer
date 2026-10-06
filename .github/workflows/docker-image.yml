@@ -36,7 +36,9 @@ jobs:
           cache: npm
 
       - name: Install
-        run: npm ci
+        # --ignore-scripts for the same reason as the Dockerfile: better-sqlite3 13 ships its
+        # binaries and `npm ci` would otherwise compile it from source.
+        run: npm ci --ignore-scripts
 
       - name: Lint
         run: npm run lint -- --max-warnings 0

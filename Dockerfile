@@ -21,11 +21,12 @@ WORKDIR /app
 
 # Copy manifests first so `npm ci` is cached until dependencies actually change.
 # better-sqlite3 13+ ships its N-API binaries inside the npm package, including
-# Alpine (musl) for amd64 and arm64, so nothing is compiled here. If a future
-# version ever has to build from source, add `apk add --no-cache python3 make g++`
-# before this step (and remove it afterwards to keep the image small).
+# Alpine (musl) for amd64 and arm64, so nothing needs compiling. The package still
+# carries a binding.gyp, and `npm ci` (unlike `npm install`) ignores its
+# "gypfile": false and tries node-gyp anyway; --ignore-scripts stops that. No
+# dependency of this app has an install script, so nothing else is lost.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 # Every top-level module, so a new file cannot be left out of the image by mistake
 # (test/ is a directory and does not match the glob).
