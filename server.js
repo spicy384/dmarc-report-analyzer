@@ -139,7 +139,7 @@ const sync = createSync({
 
 /** How a mailbox is retried after a connection failure: stored under Settings, defaults otherwise. */
 function syncRetryPolicy() {
-  let stored = null;
+  let stored;
   try {
     stored = JSON.parse(db.getSetting("sync_retry") || "null");
   } catch {

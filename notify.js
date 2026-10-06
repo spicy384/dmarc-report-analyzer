@@ -49,7 +49,7 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
   let timer = null;
 
   function settings() {
-    let stored = {};
+    let stored;
     try {
       stored = JSON.parse(db.getSetting(KEY) || "{}") || {};
     } catch {
@@ -97,7 +97,7 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
   /** What the API shows: the URL is reduced to its host, since a webhook URL is a credential. */
   function publicSettings() {
     const s = settings();
-    let host = null;
+    let host;
     try {
       host = s.url ? new URL(s.url).host : null;
     } catch {

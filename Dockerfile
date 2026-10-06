@@ -20,8 +20,9 @@ ENV APP_COMMIT=$GIT_SHA \
 WORKDIR /app
 
 # Copy manifests first so `npm ci` is cached until dependencies actually change.
-# better-sqlite3 ships prebuilt binaries for Alpine (musl); if a future version
-# ever has to compile from source, add `apk add --no-cache python3 make g++`
+# better-sqlite3 13+ ships its N-API binaries inside the npm package, including
+# Alpine (musl) for amd64 and arm64, so nothing is compiled here. If a future
+# version ever has to build from source, add `apk add --no-cache python3 make g++`
 # before this step (and remove it afterwards to keep the image small).
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

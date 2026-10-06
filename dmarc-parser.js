@@ -141,7 +141,7 @@ function parseAggregateReport(xml) {
   try {
     doc = parser.parse(xml);
   } catch (error) {
-    throw new Error(`XML could not be parsed: ${error.message}`);
+    throw new Error(`XML could not be parsed: ${error.message}`, { cause: error });
   }
 
   const feedback = doc && doc.feedback;

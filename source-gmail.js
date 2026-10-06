@@ -158,7 +158,7 @@ function createGmailSource(cfg, { idPrefix = "gws:", fetchImpl = globalThis.fetc
     isConfigured,
     missing,
     describe: () => {
-      let email = null;
+      let email;
       try {
         email = account().client_email;
       } catch {

@@ -106,7 +106,7 @@ async function copyToClipboard(text) {
   document.body.appendChild(area);
   area.focus();
   area.select();
-  let ok = false;
+  let ok;
   try {
     ok = document.execCommand("copy");
   } catch {

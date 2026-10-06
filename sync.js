@@ -390,7 +390,7 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
       const worker = async () => {
         while (index < pending.length) {
           const ip = pending[index++];
-          let ptr = null;
+          let ptr;
           try {
             const names = await reverse(ip);
             ptr = Array.isArray(names) && names.length ? names[0] : null;

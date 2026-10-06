@@ -99,7 +99,7 @@ function parseTlsReport(json) {
   try {
     doc = typeof json === "string" ? JSON.parse(json) : json;
   } catch (error) {
-    throw new Error(`not valid JSON: ${error.message}`);
+    throw new Error(`not valid JSON: ${error.message}`, { cause: error });
   }
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
     throw new NotATlsReportError("JSON is not an object");

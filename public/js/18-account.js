@@ -446,7 +446,7 @@ document.getElementById("add-user-btn").addEventListener("click", async () => {
 
 (function setupTimeZonePicker() {
   const select = document.getElementById("acct-timezone");
-  let zones = [];
+  let zones;
   try {
     zones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
   } catch {

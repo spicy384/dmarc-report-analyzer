@@ -163,7 +163,7 @@ function createGeoIpUpdater({ db, geoip, fetchImpl = globalThis.fetch, validate 
     const url = `${downloadBase}/${edition}/download?suffix=tar.gz`;
     const headers = { Authorization: `Basic ${Buffer.from(`${accountId}:${licenseKey}`).toString("base64")}` };
     const explain = (status) => (status === 401 ? "MaxMind rejected the account ID or license key." : status === 403 ? "This MaxMind account may not download GeoLite2; accept the GeoLite2 licence in the account portal." : status === 429 ? "MaxMind's daily download limit for this account is used up; try again tomorrow." : `MaxMind answered HTTP ${status}.`);
-    let lastModified = null;
+    let lastModified;
     try {
       // A HEAD request does not count against the daily download limit and tells us whether anything changed.
       const head = await fetchImpl(url, { method: "HEAD", headers });

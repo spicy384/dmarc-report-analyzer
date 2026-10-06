@@ -48,7 +48,7 @@ function createIngest({ db }) {
   function ingestBytes({ bytes, name = "", messageId, mailboxId }) {
     const out = emptyResult();
     const label = name || "attachment";
-    let xmlDocs = [];
+    let xmlDocs;
     try {
       xmlDocs = extractXmlDocuments(bytes, name);
     } catch (error) {
