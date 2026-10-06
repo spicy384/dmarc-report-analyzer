@@ -118,6 +118,14 @@ tab title.
 **Reporting services**: which receivers (Google, Microsoft, Yahoo, ...) sent reports, how
 many, and the failure rate each of them saw.
 
+**Searching within a panel**: Domains, Domains and subdomains, Sending sources, Known
+senders, Reporting services and Reports each have a search box in their heading. Type
+one or more words and only rows containing all of them stay (an IP, a host, a network
+name, a label, a verdict); a count shows how many of the loaded rows match, and Escape
+clears it. The Reports box searches the server, since that table is paginated, and
+matches reporter, domain, report ID and the addresses and hosts in the records. These
+boxes narrow one panel; the Search field at the top of the dashboard narrows everything.
+
 **TLS reports**: SMTP TLS reports (RFC 8460) arrive in the same mailbox when the domain
 publishes a TLS-RPT record, and are parsed from their JSON (plain or gzipped). The panel,
 shown once any exist, gives sessions succeeded and failed, the policy mode senders saw

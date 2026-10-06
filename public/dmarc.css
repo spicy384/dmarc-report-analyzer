@@ -1565,3 +1565,35 @@ body.scratch-mode #mailbox-label {
 .enrol-passkey .auth-hint.is-ok {
   color: var(--success);
 }
+
+/* Per-panel search boxes in panel heads. */
+.panel-head .panel-filter {
+  margin-left: auto;
+  min-width: 180px;
+  max-width: 320px;
+  font-size: 13px;
+}
+.panel-head .head-toggle .panel-filter {
+  margin-left: 0;
+}
+.panel-filter.is-active {
+  border-color: var(--primary);
+}
+.filter-count {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+@media print {
+  .panel-filter,
+  .filter-count {
+    display: none !important;
+  }
+}
+
+/* A search box followed by a toggle: keep them together on the right. */
+.panel-head .panel-filter + .head-toggle,
+.panel-head .filter-count + .head-toggle {
+  margin-left: 0;
+}

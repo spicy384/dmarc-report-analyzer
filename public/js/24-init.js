@@ -2,6 +2,11 @@
 // One of the classic scripts index.html loads in order; they share one global scope,
 // so a function or const defined here is visible to the files that follow.
 
+// Search boxes on the table panels whose rows are all in the page.
+for (const [inputId, containerId] of [["scorecard-filter", "scorecard-results"], ["subdomains-filter", "subdomains-results"], ["ips-filter", "ips-results"], ["senders-filter", "senders-results"], ["reporters-filter", "reporters-results"]]) {
+  attachTableFilter(inputId, containerId);
+}
+
 (async function init() {
   applyTheme(localStorage.getItem("dmarc-theme") || "light");
   hideForwards.checked = localStorage.getItem("dmarc-hide-forwards") === "1";

@@ -189,6 +189,48 @@ async function api(path, options = {}) {
 
 const pad = (n) => String(n).padStart(2, "0");
 
+// --- filtering a panel's table -------------------------------------------------------
+//
+// Each table panel has a search box in its head. The rows are already in the page, so
+// filtering is a matter of hiding the ones whose text lacks any of the typed words;
+// a re-render (new period, sort, refresh) re-applies the current text. The Reports
+// panel is paginated on the server and uses the API instead (see 13-reports.js).
+
+function attachTableFilter(inputId, containerId) {
+  const input = document.getElementById(inputId);
+  const container = document.getElementById(containerId);
+  if (!input || !container) return;
+  const count = document.createElement("span");
+  count.className = "filter-count";
+  count.hidden = true;
+  input.insertAdjacentElement("afterend", count);
+  const apply = () => {
+    const words = input.value.trim().toLowerCase().split(/s+/).filter(Boolean);
+    const rows = [...container.querySelectorAll("tbody > tr")].filter((tr) => !tr.classList.contains("expansion-row"));
+    let shown = 0;
+    for (const tr of rows) {
+      const text = tr.textContent.toLowerCase();
+      const hit = words.every((w) => text.includes(w));
+      tr.hidden = !hit;
+      if (hit) shown += 1;
+      // A row's expanded detail follows it and should go wherever the row goes.
+      const next = tr.nextElementSibling;
+      if (next && next.classList.contains("expansion-row")) next.hidden = !hit;
+    }
+    input.classList.toggle("is-active", words.length > 0);
+    count.hidden = !words.length;
+    count.textContent = words.length ? `${shown} of ${rows.length}` : "";
+  };
+  input.addEventListener("input", apply);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      input.value = "";
+      apply();
+    }
+  });
+  new MutationObserver(() => { if (input.value.trim()) apply(); }).observe(container, { childList: true });
+}
+
 // --- printing one panel -----------------------------------------------------------
 //
 // "Print" on a panel marks it as the print target; the print stylesheet (dmarc.css)

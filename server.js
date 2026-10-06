@@ -201,9 +201,11 @@ function parseFilter(query = {}) {
   }
   const domain = query.domain ? String(query.domain).trim().toLowerCase() : null;
   const q = query.q ? String(query.q).trim().slice(0, 200) : null;
+  // A panel's own search box, applied on top of the dashboard-wide one.
+  const q2 = query.q2 ? String(query.q2).trim().slice(0, 200) : null;
   const excludeForwards = String(query.hideForwards || "") === "1";
   const mailbox = query.mailbox ? String(query.mailbox).trim().slice(0, 40) : null;
-  return { from, to, domain, q: q || null, excludeForwards, mailbox: mailbox || null };
+  return { from, to, domain, q: q || null, excludeForwards, mailbox: mailbox || null, ...(q2 ? { q2 } : {}) };
 }
 
 function positiveInt(value, fallback) {

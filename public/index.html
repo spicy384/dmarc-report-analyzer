@@ -354,6 +354,7 @@
         <h2>Domains</h2>
         <span id="scorecard-count" class="badge">0 domains</span>
         <div class="head-toggle">
+          <input type="search" id="scorecard-filter" class="panel-filter small" placeholder="Filter domains" autocomplete="off" spellcheck="false" aria-label="Filter domains" />
           <button type="button" class="secondary small print-btn" data-print="scorecard-panel" title="Print this panel, or save it as a PDF">Print</button>
         </div>
       </div>
@@ -428,6 +429,9 @@
       <div class="panel-head">
         <h2>Domains and subdomains</h2>
         <span id="subdomains-count" class="badge">0 domains</span>
+        <div class="head-toggle">
+          <input type="search" id="subdomains-filter" class="panel-filter small" placeholder="Filter domains" autocomplete="off" spellcheck="false" aria-label="Filter domains" />
+        </div>
       </div>
       <p class="bulk-hint">
         Mail grouped by the domain actually in the From header, not just the domain the report was
@@ -442,6 +446,7 @@
       <div class="panel-head">
         <h2>Sending sources</h2>
         <span id="ips-count" class="badge">0 sources</span>
+        <input type="search" id="ips-filter" class="panel-filter small" placeholder="Filter: IP, host, network, label, verdict" autocomplete="off" spellcheck="false" aria-label="Filter: IP, host, network, label, verdict" />
         <label class="check-inline head-toggle">
           <input type="checkbox" id="failing-only" checked /> Only sources with failures
         </label>
@@ -468,7 +473,10 @@
       <div class="panel-head">
         <h2>Known senders</h2>
         <span id="senders-count" class="badge">0 entries</span>
-        <button id="import-spf-btn" type="button" class="secondary small head-toggle writer-only">Import from SPF</button>
+        <div class="head-toggle">
+          <input type="search" id="senders-filter" class="panel-filter small" placeholder="Filter: pattern, label, kind" autocomplete="off" spellcheck="false" aria-label="Filter: pattern, label, kind" />
+          <button id="import-spf-btn" type="button" class="secondary small writer-only">Import from SPF</button>
+        </div>
       </div>
       <p class="bulk-hint">
         Tell the analyzer which sources are yours (your Microsoft 365 tenant, your on-premises
@@ -517,6 +525,9 @@
       <div class="panel-head">
         <h2>Reporting services</h2>
         <span id="reporters-count" class="badge">0 reporters</span>
+        <div class="head-toggle">
+          <input type="search" id="reporters-filter" class="panel-filter small" placeholder="Filter reporters" autocomplete="off" spellcheck="false" aria-label="Filter reporters" />
+        </div>
       </div>
       <p class="bulk-hint">
         Who sent the reports: the receiving mail systems that evaluated your domain's DMARC policy.
@@ -528,6 +539,7 @@
       <div class="panel-head">
         <h2>Reports</h2>
         <span id="reports-count" class="badge">0 reports</span>
+        <input type="search" id="reports-filter" class="panel-filter small" placeholder="Search: reporter, domain, report ID, IP, host" autocomplete="off" spellcheck="false" aria-label="Search: reporter, domain, report ID, IP, host" />
         <label class="head-toggle">Reporter
           <select id="reporter-filter" class="small">
             <option value="">All</option>

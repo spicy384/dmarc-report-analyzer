@@ -4,8 +4,30 @@
 
 // --- reports ---------------------------------------------------------------
 
+// The Reports table is paginated on the server, so its search box is a query parameter
+// (q2) rather than a filter over the rows on screen; it matches reporter, domain, report
+// id and the records' addresses, hosts and domains, on top of the dashboard-wide search.
+const reportsFilterInput = document.getElementById("reports-filter");
+let reportsFilterTimer = null;
+reportsFilterInput.addEventListener("input", () => {
+  clearTimeout(reportsFilterTimer);
+  reportsFilterTimer = setTimeout(() => {
+    reportsPage = 1;
+    loadReports().catch((error) => setStatus(error.message, true));
+  }, 250);
+});
+reportsFilterInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && reportsFilterInput.value) {
+    reportsFilterInput.value = "";
+    reportsPage = 1;
+    loadReports().catch((error) => setStatus(error.message, true));
+  }
+});
+
 async function loadReports() {
-  const data = await api(`/api/reports${filterQuery({ org: reporterFilter.value, page: reportsPage, pageSize: reportsPageSize })}`);
+  const q2 = reportsFilterInput.value.trim();
+  reportsFilterInput.classList.toggle("is-active", Boolean(q2));
+  const data = await api(`/api/reports${filterQuery({ org: reporterFilter.value, page: reportsPage, pageSize: reportsPageSize, q2: q2 || undefined })}`);
   const rows = data.rows || [];
   reportsCount.textContent = `${formatNumber(data.total)} report${data.total === 1 ? "" : "s"}`;
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));

@@ -299,8 +299,10 @@ function buildFilter(filter = {}, { r = "r", x = null } = {}) {
     params.push(String(filter.mailbox));
   }
 
-  const q = filter.q && String(filter.q).trim();
-  if (q) {
+  // Two independent search terms: the dashboard-wide one (q) and a panel's own (q2); both must match.
+  for (const term of [filter.q, filter.q2]) {
+    const q = term && String(term).trim();
+    if (!q) continue;
     const like = likePattern(q);
     const reportCols = [`${r}.org_name`, `${r}.domain`, `${r}.report_id`];
     const recordMatch = (alias) => [

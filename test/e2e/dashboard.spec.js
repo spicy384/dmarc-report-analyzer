@@ -37,6 +37,25 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
   await expect(page.locator("#ips-results tbody tr").first()).toBeVisible();
   await expect(page.locator("#ips-results")).toContainText("mail.spammer.test");
 
+  // Per-panel search boxes: client-side on the loaded rows, server-side for the paginated reports.
+  await expect(page.locator("#reporters-results tbody tr")).toHaveCount(2);
+  await page.fill("#reporters-filter", "google");
+  await expect(page.locator("#reporters-results tbody tr:visible")).toHaveCount(1);
+  await expect(page.locator("#reporters-filter + .filter-count")).toHaveText("1 of 2");
+  await page.locator("#reporters-filter").press("Escape");
+  await expect(page.locator("#reporters-results tbody tr:visible")).toHaveCount(2);
+  await page.fill("#ips-filter", "spammer.test");
+  await expect(page.locator("#ips-results tbody tr:visible")).toHaveCount(1);
+  await expect(page.locator("#ips-results tbody tr:visible").first()).toContainText("198.51.100.7");
+  await page.fill("#ips-filter", "");
+  await page.fill("#reports-filter", "Enterprise Outlook");
+  await expect(page.locator("#reports-count")).toContainText("5 reports");
+  await expect(page.locator("#reports-results tbody tr")).toHaveCount(5);
+  await page.fill("#reports-filter", "no-such-thing-anywhere");
+  await expect(page.locator("#reports-count")).toContainText("0 reports");
+  await page.locator("#reports-filter").press("Escape");
+  await expect(page.locator("#reports-count")).toContainText("10 reports");
+
   // Filtering by domain narrows every panel and lands in the page link.
   await page.selectOption("#domain-select", "example.com");
   await expect(page).toHaveURL(/domain=example\.com/);
