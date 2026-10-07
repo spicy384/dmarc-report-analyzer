@@ -17,8 +17,36 @@ const KEY = "geoip";
 const EDITIONS = { city: "GeoLite2-City", asn: "GeoLite2-ASN" };
 const DOWNLOAD_BASE = "https://download.maxmind.com/geoip/databases";
 const UPDATE_EVERY_MS = 7 * 24 * 60 * 60 * 1000;
+const RETRY_AFTER_FAILURE_MS = 24 * 60 * 60 * 1000;
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
 const MAX_DB_BYTES = 400 * 1024 * 1024;
+const HEAD_TIMEOUT_MS = 15 * 1000;
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Reads a response body with a byte cap, so a bad answer cannot grow without bound in memory. */
+async function readBody(res, max) {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > max) throw fail(502, `MaxMind sent ${Math.round(declared / 1024 / 1024)} MB; more than a database should be`);
+  if (!res.body || typeof res.body.getReader !== "function") {
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > max) throw fail(502, "the download is larger than a database should be");
+    return buf;
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > max) {
+      reader.cancel().catch(() => {});
+      throw fail(502, "the download is larger than a database should be");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
 
 function fail(status, message) {
   const error = new Error(message);
@@ -60,6 +88,7 @@ function extractDatabase(bytes) {
 
 function createGeoIpUpdater({ db, geoip, fetchImpl = globalThis.fetch, validate = defaultValidate, now = Date.now, logger = console, onUpdated = null, onlineDefault = true, downloadBase = DOWNLOAD_BASE } = {}) {
   let timer = null;
+  let first = null;
   let running = null;
 
   function stored() {
@@ -92,7 +121,9 @@ function createGeoIpUpdater({ db, geoip, fetchImpl = globalThis.fetch, validate 
       onlineSource: typeof s.online === "boolean" ? "setting" : "environment",
       onlineProvider: g.onlineProvider || "ip-api.com",
       lastUpdate: s.lastUpdate || null,
-      nextUpdateAt: s.accountId && s.licenseKey && s.autoUpdate !== false ? Math.floor(((s.lastUpdate && s.lastUpdate.ok ? s.lastUpdate.at * 1000 : now()) + (s.lastUpdate && s.lastUpdate.ok ? UPDATE_EVERY_MS : 0)) / 1000) : null,
+      nextUpdateAt: s.accountId && s.licenseKey && s.autoUpdate !== false
+        ? (s.lastUpdate ? Math.floor((s.lastUpdate.at * 1000 + (s.lastUpdate.ok ? UPDATE_EVERY_MS : RETRY_AFTER_FAILURE_MS)) / 1000) : Math.floor(now() / 1000))
+        : null,
       files: { city: g.cityFile || null, asn: g.asnFile || null },
       paths: { city: g.cityPath, asn: g.asnPath },
       problems: g.problems || [],
@@ -166,16 +197,16 @@ function createGeoIpUpdater({ db, geoip, fetchImpl = globalThis.fetch, validate 
     let lastModified;
     try {
       // A HEAD request does not count against the daily download limit and tells us whether anything changed.
-      const head = await fetchImpl(url, { method: "HEAD", headers });
+      const head = await fetchImpl(url, { method: "HEAD", headers, signal: AbortSignal.timeout(HEAD_TIMEOUT_MS) });
       if (!head.ok) throw fail(502, explain(head.status));
       lastModified = head.headers.get("last-modified") || null;
       const have = kind === "city" ? geoip.describe().cityFile : geoip.describe().asnFile;
       if (!force && have && lastModified && previous && previous.lastModified === lastModified) {
         return { kind, edition, skipped: true, lastModified };
       }
-      const res = await fetchImpl(url, { headers });
+      const res = await fetchImpl(url, { headers, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
       if (!res.ok) throw fail(502, explain(res.status));
-      const bytes = Buffer.from(await res.arrayBuffer());
+      const bytes = await readBody(res, MAX_DB_BYTES);
       const installed = install(bytes, { expect: kind });
       return { ...installed, edition, skipped: false, lastModified: res.headers.get("last-modified") || lastModified };
     } catch (error) {
@@ -239,7 +270,7 @@ function createGeoIpUpdater({ db, geoip, fetchImpl = globalThis.fetch, validate 
   function due() {
     const s = stored();
     if (!s.accountId || !s.licenseKey || s.autoUpdate === false) return false;
-    return !s.lastUpdate || now() - s.lastUpdate.at * 1000 >= (s.lastUpdate.ok ? UPDATE_EVERY_MS : 24 * 60 * 60 * 1000);
+    return !s.lastUpdate || now() - s.lastUpdate.at * 1000 >= (s.lastUpdate.ok ? UPDATE_EVERY_MS : RETRY_AFTER_FAILURE_MS);
   }
 
   function start() {
@@ -248,14 +279,16 @@ function createGeoIpUpdater({ db, geoip, fetchImpl = globalThis.fetch, validate 
       if (!due()) return;
       download().then((r) => logger.log?.(`geoip: ${r.detail}`)).catch((error) => logger.warn?.(`geoip: update failed: ${error.message}`));
     };
-    const first = setTimeout(tick, 2 * 60 * 1000);
+    first = setTimeout(tick, 2 * 60 * 1000);
     first.unref?.();
     timer = setInterval(tick, CHECK_EVERY_MS);
     timer.unref?.();
   }
 
   function stop() {
+    if (first) clearTimeout(first);
     if (timer) clearInterval(timer);
+    first = null;
     timer = null;
   }
 

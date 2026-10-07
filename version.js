@@ -35,6 +35,7 @@ function splitImage(image) {
 function createUpdateChecker({ version, commit = null, buildDate = null, image = "ghcr.io/spicy384/dmarc-report-analyzer", enabled = true, fetchImpl = globalThis.fetch, now = Date.now, logger = console, timeoutMs = 10000 } = {}) {
   const current = parseSemver(version);
   let timer = null;
+  let first = null;
   const EMPTY = { checkedAt: null, latest: null, updateAvailable: false, error: null, tags: 0 };
   let last = { ...EMPTY };
   // `enabled` may be a function, so a setting changed at runtime takes effect at once.
@@ -46,15 +47,22 @@ function createUpdateChecker({ version, commit = null, buildDate = null, image =
     try {
       const res = await fetchImpl(url, { headers: { Accept: "application/json", ...headers }, signal: controller.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`);
-      return res.json();
+      return await res.json();
     } finally {
       clearTimeout(t);
     }
   }
 
   /** Lists the image's tags and remembers the highest release. Never throws. */
+  let inFlight = null;
   async function check() {
     if (!isEnabled()) return describe();
+    if (inFlight) return inFlight;
+    inFlight = checkOnce().finally(() => { inFlight = null; });
+    return inFlight;
+  }
+
+  async function checkOnce() {
     const { host, repository } = splitImage(image);
     try {
       const token = await fetchJson(`https://${host}/token?scope=repository:${repository}:pull`);
@@ -88,14 +96,16 @@ function createUpdateChecker({ version, commit = null, buildDate = null, image =
   // The timers always run; each tick does nothing while the check is switched off.
   function start() {
     if (timer) return;
-    const first = setTimeout(() => { check(); }, FIRST_CHECK_MS);
+    first = setTimeout(() => { check(); }, FIRST_CHECK_MS);
     if (typeof first.unref === "function") first.unref();
     timer = setInterval(() => { check(); }, CHECK_EVERY_MS);
     if (typeof timer.unref === "function") timer.unref();
   }
 
   function stop() {
+    if (first) clearTimeout(first);
     if (timer) clearInterval(timer);
+    first = null;
     timer = null;
   }
 

@@ -154,7 +154,8 @@ function createGeoIp({
         res = await fetchImpl(`${onlineBase}/batch?fields=status,message,query,countryCode,country,city,as`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(batch)
+          body: JSON.stringify(batch),
+          signal: AbortSignal.timeout(15000)
         });
       } catch (error) {
         logger.warn?.(`geoip: online lookup failed: ${error.message}`);

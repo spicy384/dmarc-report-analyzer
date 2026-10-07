@@ -10,14 +10,11 @@
 const { splitHeaders, decodeHeaderWords } = require("./arf-parser");
 const { parseIp } = require("./ipmatch");
 const { matchCatalogue } = require("./sender-catalogue");
+const { organizationalDomain: orgDomain } = require("./domains");
 
 const MAX_INPUT_BYTES = 512 * 1024;
 const MAX_DKIM_LOOKUPS = 6;
-
-function orgDomain(domain) {
-  const labels = String(domain || "").toLowerCase().replace(/\.$/, "").split(".").filter(Boolean);
-  return labels.length <= 2 ? labels.join(".") : labels.slice(-2).join(".");
-}
+const MAX_ADDRESS_HEADER = 2048; // an address header longer than this is not an address
 
 function fail(status, message) {
   const error = new Error(message);
@@ -49,7 +46,7 @@ function first(headers, name) {
 /** Display name, address and domain out of a From-like header value. */
 function parseAddress(value) {
   if (!value) return null;
-  const decoded = decodeHeaderWords(String(value)).trim();
+  const decoded = decodeHeaderWords(String(value).slice(0, MAX_ADDRESS_HEADER)).trim();
   const angle = decoded.match(/<([^<>]*)>\s*$/) || decoded.match(/<([^<>]*)>/);
   const address = (angle ? angle[1] : (decoded.match(/[^\s<>"(),;:]+@[^\s<>"(),;:]+/) || [""])[0]).trim().toLowerCase();
   const name = angle ? decoded.slice(0, angle.index).trim().replace(/^"(.*)"$/, "$1").trim() : "";
@@ -256,7 +253,7 @@ function bclMeaning(bcl) {
 function compauthMeaning(result, reason) {
   const code = String(reason || "");
   const byClass = {
-    0: code === "000" ? "explicit failure: the From domain's DMARC policy is reject or quarantine and the message failed" : code === "001" ? "implicit failure: no DMARC record to go by, and SPF and DKIM did not vouch for the From domain" : code === "002" ? "the organisation has a policy that forbids this sender/domain pair from spoofing" : code === "010" ? "DMARC failed and the domain's policy is reject or quarantine" : "failed",
+    0: code === "000" ? "explicit failure: the From domain's DMARC policy is reject or quarantine and the message failed" : code === "001" ? "implicit failure: no DMARC record to go by, and SPF and DKIM did not vouch for the From domain" : code === "002" ? "the organisation has a policy that forbids this sender/domain pair from spoofing" : code === "010" ? "DMARC failed, the domain's policy is reject or quarantine, and the sending domain is one of the organisation's own accepted domains" : "failed",
     1: "passed explicit authentication (SPF or DKIM aligned with the From domain)",
     2: "soft pass: implicit authentication",
     3: "not checked",
@@ -295,7 +292,8 @@ function parseMicrosoft(headers, topAuth) {
     cip: fields.CIP ? fields.CIP.toLowerCase() : null,
     country: fields.CTRY || null,
     language: fields.LANG || null,
-    ptr: fields.PTR && !/^InfoDomainNonexistent$/i.test(fields.PTR) ? fields.PTR.toLowerCase() : null,
+    // "InfoDomainNonexistent" / "InfoNoRecords" are Microsoft's placeholders for no PTR.
+    ptr: fields.PTR && !/^Info/i.test(fields.PTR) ? fields.PTR.toLowerCase() : null,
     helo: fields.H ? fields.H.toLowerCase() : null,
     direction: fields.DIR || null,
     ipVerdict: fields.IPV || null,

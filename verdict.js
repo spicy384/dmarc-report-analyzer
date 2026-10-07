@@ -9,11 +9,7 @@
  * is nothing to do).
  */
 
-/** The registrable domain, naively: the last two labels. Enough for relaxed alignment. */
-function orgDomain(domain) {
-  const labels = String(domain || "").toLowerCase().split(".").filter(Boolean);
-  return labels.length <= 2 ? labels.join(".") : labels.slice(-2).join(".");
-}
+const { organizationalDomain: orgDomain } = require("./domains");
 
 function aligned(domain, headerFroms) {
   const org = orgDomain(domain);

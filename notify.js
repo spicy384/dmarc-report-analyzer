@@ -12,6 +12,7 @@ const KEY = "notify";
 const KINDS = ["teams", "slack", "generic"];
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const CHECK_EVERY_MS = 15 * 60 * 1000;
+const WEBHOOK_TIMEOUT_MS = 15 * 1000;
 
 const DEFAULTS = { url: "", kind: "teams", alerts: true, weekly: true, weeklyDay: 1, weeklyHour: 8, appUrl: "", lastWeeklyAt: null, lastResult: null };
 
@@ -48,14 +49,18 @@ function formatMessage(kind, { event, title, lines = [], link = null }) {
 function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, now = Date.now, buildWeekly = null, appUrl = "" } = {}) {
   let timer = null;
 
-  function settings() {
-    let stored;
+  function storedSettings() {
     try {
-      stored = JSON.parse(db.getSetting(KEY) || "{}") || {};
+      return JSON.parse(db.getSetting(KEY) || "{}") || {};
     } catch {
-      stored = {};
+      return {};
     }
-    return { ...DEFAULTS, appUrl, ...stored };
+  }
+
+  /** The effective settings: what was saved, with APP_URL from the environment filling an unset link. */
+  function settings() {
+    const stored = storedSettings();
+    return { ...DEFAULTS, ...stored, appUrl: stored.appUrl || appUrl };
   }
 
   /** Validates and stores a change; the URL is kept as given, the rest normalised. */
@@ -89,9 +94,9 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
     return publicSettings();
   }
 
+  // Only what was saved is written back, so an environment value never gets frozen into the row.
   function remember(patch) {
-    const current = settings();
-    db.setSetting(KEY, JSON.stringify({ ...current, ...patch }));
+    db.setSetting(KEY, JSON.stringify({ ...storedSettings(), ...patch }));
   }
 
   /** What the API shows: the URL is reduced to its host, since a webhook URL is a credential. */
@@ -113,7 +118,7 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
     const body = formatMessage(s.kind, { event, title, lines, link: link === undefined ? (s.appUrl || null) : link });
     let result;
     try {
-      const res = await fetchImpl(s.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const res = await fetchImpl(s.url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS) });
       const text = await res.text().catch(() => "");
       result = res.ok
         ? { ok: true, status: res.status, detail: `Delivered (HTTP ${res.status}).` }
@@ -141,7 +146,9 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
   }
 
   /** The weekly summary, when it is due: once per week on the chosen day and hour (server local time). */
+  let weeklyInFlight = null;
   async function maybeSendWeekly({ force = false } = {}) {
+    if (weeklyInFlight) return weeklyInFlight; // a slow webhook must not get the summary twice
     const s = settings();
     if (!s.url || (!s.weekly && !force) || !buildWeekly) return null;
     const at = new Date(now());
@@ -150,11 +157,14 @@ function createNotifier({ db, fetchImpl = globalThis.fetch, logger = console, no
       const startOfDay = Math.floor(new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime() / 1000);
       if (s.lastWeeklyAt && s.lastWeeklyAt >= startOfDay) return null;
     }
-    const w = buildWeekly({});
-    const lines = String(w.text || "").split("\n").filter((l) => l.trim()).slice(1);
-    const result = await send({ event: "weekly", title: String(w.text || "").split("\n")[0] || "DMARC weekly summary", lines });
-    if (result.ok) remember({ lastWeeklyAt: Math.floor(now() / 1000) });
-    return result;
+    weeklyInFlight = (async () => {
+      const w = buildWeekly({});
+      const lines = String(w.text || "").split("\n").filter((l) => l.trim()).slice(1);
+      const result = await send({ event: "weekly", title: String(w.text || "").split("\n")[0] || "DMARC weekly summary", lines });
+      if (result.ok) remember({ lastWeeklyAt: Math.floor(now() / 1000) });
+      return result;
+    })().finally(() => { weeklyInFlight = null; });
+    return weeklyInFlight;
   }
 
   async function test() {

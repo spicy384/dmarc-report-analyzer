@@ -7,6 +7,7 @@
 const dns = require("dns");
 const crypto = require("crypto");
 const { parseIp } = require("./ipmatch");
+const { organizationalDomain } = require("./domains");
 
 const SPF_LOOKUP_LIMIT = 10;
 const MAX_DEPTH = 10;
@@ -48,7 +49,8 @@ function defaultResolvers({ timeoutMs }) {
 }
 
 function isNotFound(error) {
-  return error && (error.code === "ENOTFOUND" || error.code === "ENODATA" || error.code === "ESERVFAIL" && false);
+  // ESERVFAIL is deliberately not here: a failing resolver is an error, not "no record".
+  return error && (error.code === "ENOTFOUND" || error.code === "ENODATA");
 }
 
 /** Joins the chunks of each TXT record and returns plain strings. */
@@ -62,12 +64,6 @@ async function txtRecords(resolvers, name) {
     }
     throw error;
   }
-}
-
-/** The registrable domain, naively: the last two labels (good enough for the common cases). */
-function organizationalDomain(domain) {
-  const labels = String(domain).toLowerCase().split(".").filter(Boolean);
-  return labels.length <= 2 ? labels.join(".") : labels.slice(-2).join(".");
 }
 
 function parseDmarcTags(record) {
@@ -126,18 +122,48 @@ function mxMatches(pattern, host) {
   return p === h;
 }
 
+/** Reads a response body up to `max` bytes and stops pulling after that, so a huge body never lands in memory. */
+async function readCapped(res, max, controller = null) {
+  if (!res.body || typeof res.body.getReader !== "function") {
+    return String(await res.text()).slice(0, max);
+  }
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (total < max) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.length;
+  }
+  if (total >= max) {
+    reader.cancel().catch(() => {});
+    if (controller) controller.abort();
+  }
+  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8").slice(0, max);
+}
+
 function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 1000, now = Date.now, fetchImpl = globalThis.fetch } = {}) {
   const r = resolvers || defaultResolvers({ timeoutMs });
   const cache = new Map();
 
+  // The cache holds the promise, so two callers asking at once (lookup() asks for MX
+  // directly and again through MTA-STS) share one resolution. An answer that carries a
+  // lookup error is not kept: a transient SERVFAIL must not read as "no record" for an hour.
   async function cached(key, refresh, produce) {
     const hit = cache.get(key);
     if (hit && !refresh && now() - hit.at < cacheTtlMs) {
-      return hit.value;
+      return hit.promise;
     }
-    const value = await produce();
-    cache.set(key, { value, at: now() });
-    return value;
+    const promise = produce().then((value) => {
+      if (value && value.error) cache.delete(key);
+      return value;
+    }, (error) => {
+      cache.delete(key);
+      throw error;
+    });
+    cache.set(key, { promise, at: now() });
+    return promise;
   }
 
   /** The DMARC record for a domain, falling back to the organizational domain like receivers do. */
@@ -357,7 +383,11 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
         return { url, ok: false, status: res.status, error: `HTTP ${res.status}` };
       }
       const type = String(res.headers.get("content-type") || "");
-      const text = (await res.text()).slice(0, MTA_STS_MAX_POLICY_BYTES);
+      const declared = Number(res.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > MTA_STS_MAX_POLICY_BYTES) {
+        return { url, ok: false, status: res.status, error: `the policy file is ${Math.round(declared / 1024)} KB; a policy is a few lines` };
+      }
+      const text = await readCapped(res, MTA_STS_MAX_POLICY_BYTES, controller);
       return { url, ok: true, status: res.status, text, contentType: type };
     } catch (error) {
       return { url, ok: false, error: error.name === "AbortError" ? `timed out after ${timeoutMs} ms` : (error.cause && error.cause.code) || error.message };
@@ -556,4 +586,4 @@ function createDnsRecords({ resolvers, timeoutMs = 5000, cacheTtlMs = 60 * 60 * 
   return { getDmarc, getSpf, checkDkim, getMx, getPtr, getAddresses, getMtaSts, getTlsRpt, lookup, clearCache, organizationalDomain, parseDmarcTags };
 }
 
-module.exports = { createDnsRecords, organizationalDomain, parseDmarcTags, parseMtaStsPolicy, mxMatches, dkimKeyBits, SPF_LOOKUP_LIMIT, DKIM_MIN_BITS };
+module.exports = { createDnsRecords, organizationalDomain, parseDmarcTags, parseMtaStsPolicy, mxMatches, dkimKeyBits, readCapped, SPF_LOOKUP_LIMIT, DKIM_MIN_BITS };

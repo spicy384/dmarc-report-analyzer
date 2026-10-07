@@ -40,7 +40,7 @@ const CATALOGUE = [
   { name: "Intercom", patterns: ["*.intercom-mail.com"], spfInclude: "include:_spf.intercom.io", dkimHint: "Add a custom sender domain in Intercom and publish its DKIM CNAME." },
   { name: "Proofpoint", patterns: ["*.pphosted.com", "*.ppe-hosted.com"], spfInclude: null, dkimHint: "Proofpoint relays your own mail: sign with DKIM at the origin or configure DKIM signing in the Proofpoint console." },
   { name: "Mimecast", patterns: ["*.mimecast.com", "*.mimecast.co.za", "*.mimecast-offshore.com"], spfInclude: "include:_netblocks.mimecast.com", dkimHint: "Configure a DKIM signing definition for the domain in the Mimecast console." },
-  { name: "Barracuda", patterns: ["*.barracudanetworks.com", "*.ess.barracudanetworks.com"], spfInclude: "include:spf.ess.barracuda.com", dkimHint: "Enable DKIM signing for the domain in Barracuda Email Gateway Defense." },
+  { name: "Barracuda", patterns: ["*.barracudanetworks.com"], spfInclude: "include:spf.ess.barracuda.com", dkimHint: "Enable DKIM signing for the domain in Barracuda Email Gateway Defense." },
   { name: "GoDaddy", patterns: ["*.secureserver.net"], spfInclude: "include:secureserver.net", dkimHint: "GoDaddy shared hosting cannot sign with your domain; move the mail to a service that supports DKIM." },
   { name: "Rackspace", patterns: ["*.emailsrvr.com"], spfInclude: "include:emailsrvr.com", dkimHint: "Enable DKIM for the domain in the Rackspace Cloud Office control panel and publish its record." },
   { name: "iCloud Mail", patterns: ["*.icloud.com", "*.apple.com"], spfInclude: "include:icloud.com", dkimHint: "Custom-domain iCloud Mail signs automatically once the domain is verified in iCloud settings." },

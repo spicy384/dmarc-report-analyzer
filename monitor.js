@@ -46,7 +46,7 @@ function dmarcChangeSummary(previousValue, currentValue, parseDmarcTags) {
     const b = cur[tag];
     if (a === b || (a === undefined && b === undefined)) continue;
     bits.push(`${tag}=${a === undefined ? "(unset)" : a} → ${b === undefined ? "(unset)" : b}`);
-    if (tag === "p" && (POLICY_RANK[b] ?? -1) < (POLICY_RANK[a] ?? -1)) weakened = true;
+    if ((tag === "p" || tag === "sp") && (POLICY_RANK[b] ?? -1) < (POLICY_RANK[a] ?? -1)) weakened = true;
     if (tag === "pct" && Number(b) < Number(a ?? 100)) weakened = true;
   }
   const ruaA = (prev.rua || []).join(",");
@@ -69,6 +69,7 @@ function mtaStsChangeSummary(previousValue, currentValue) {
 
 function createMonitor({ db, dnsRecords, mailboxes = null, logger = console, now = nowSeconds, parseDmarcTags = null } = {}) {
   let timer = null;
+  let first = null;
   let running = null;
   const tags = parseDmarcTags || (dnsRecords && dnsRecords.parseDmarcTags) || null;
 
@@ -279,8 +280,10 @@ function createMonitor({ db, dnsRecords, mailboxes = null, logger = console, now
     return out;
   }
 
+  // A caller that joins a pass already in progress gets its outcome but not its alerts:
+  // those belong to whoever started it, and are notified once.
   function runAll({ at = now(), force = false } = {}) {
-    if (running) return running;
+    if (running) return running.then((out) => ({ ...out, created: [], joined: true }));
     const p = runOnce({ at, force }).finally(() => {
       if (running === p) running = null;
     });
@@ -307,14 +310,16 @@ function createMonitor({ db, dnsRecords, mailboxes = null, logger = console, now
         if (out.created.length && onAlerts) onAlerts(out.created);
       }).catch((error) => logger.warn?.(`monitor: ${error.message}`));
     };
-    const first = setTimeout(tick, FIRST_CHECK_MS);
+    first = setTimeout(tick, FIRST_CHECK_MS);
     if (typeof first.unref === "function") first.unref();
     timer = setInterval(tick, CHECK_EVERY_MS);
     if (typeof timer.unref === "function") timer.unref();
   }
 
   function stop() {
+    if (first) clearTimeout(first);
     if (timer) clearInterval(timer);
+    first = null;
     timer = null;
   }
 
