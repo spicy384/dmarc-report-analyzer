@@ -1,5 +1,9 @@
 # DMARC Report Analyzer
 
+[![Latest release](https://img.shields.io/github/v/tag/spicy384/dmarc-report-analyzer?label=version&sort=semver)](https://github.com/spicy384/dmarc-report-analyzer/tags)
+[![Image build](https://github.com/spicy384/dmarc-report-analyzer/actions/workflows/docker-image.yml/badge.svg)](https://github.com/spicy384/dmarc-report-analyzer/actions/workflows/docker-image.yml)
+[![Container image](https://img.shields.io/badge/ghcr.io-spicy384%2Fdmarc--report--analyzer-blue)](https://github.com/spicy384/dmarc-report-analyzer/pkgs/container/dmarc-report-analyzer)
+
 Small web app that reads DMARC aggregate and forensic reports out of the mailbox they are
 sent to (Microsoft 365, Google Workspace, an Amazon SES bucket, or any IMAP or POP3
 server), stores them in SQLite, and shows what they say: how much mail failed DMARC, which IP addresses
