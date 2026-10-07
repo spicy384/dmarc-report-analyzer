@@ -20,7 +20,8 @@
     "fflate": "^0.8.2",
     "imapflow": "^2.2.6",
     "maxmind": "^5.0.7",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "tldts": "^7.4.16"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

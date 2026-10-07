@@ -1,0 +1,13 @@
+# What `docker build` sends to the daemon: the app only. Everything here is either
+# regenerated in the image (node_modules), private (data, certs, .env) or irrelevant.
+node_modules
+data
+certs
+.env
+.git
+.github
+docs
+test
+test-results
+playwright-report
+*.md
