@@ -92,7 +92,8 @@ function renderAlerts(alerts) {
 
     const sev = document.createElement("span");
     sev.className = `pill pill-sev-${a.severity}`;
-    sev.textContent = ALERT_LABELS[a.type] || a.type;
+    sev.textContent = `${a.severity === "high" ? "high: " : ""}${ALERT_LABELS[a.type] || a.type}`;
+    sev.setAttribute("aria-label", `${a.severity} severity, ${ALERT_LABELS[a.type] || a.type}`);
     li.appendChild(sev);
 
     const body = document.createElement("div");

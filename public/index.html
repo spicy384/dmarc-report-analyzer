@@ -49,7 +49,7 @@
 
   <!-- Covers the app until the user is signed in. -->
   <!-- First-run walkthrough: shown to an administrator while no mailbox is configured. -->
-  <div id="setup-wizard" class="auth-overlay wizard-overlay" hidden>
+  <div id="setup-wizard" class="auth-overlay wizard-overlay" role="dialog" aria-modal="true" hidden>
     <div class="auth-card wizard-card">
       <div class="auth-brand">
         <span class="brand-mark" aria-hidden="true">
@@ -148,7 +148,7 @@
     </div>
   </div>
 
-  <div id="auth-overlay" class="auth-overlay" hidden>
+  <div id="auth-overlay" class="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
     <div class="auth-card">
       <div class="auth-brand">
         <span class="brand-mark" aria-hidden="true">
@@ -370,9 +370,9 @@
         <h2>This week</h2>
         <span id="weekly-badge" class="badge"></span>
         <div class="head-toggle">
-          <button id="weekly-prev" type="button" class="secondary small" title="Previous week">&larr;</button>
+          <button id="weekly-prev" type="button" class="secondary small" title="Previous week" aria-label="Previous week">&larr;</button>
           <label class="inline-label">Week ending <input type="date" id="weekly-end" /></label>
-          <button id="weekly-next" type="button" class="secondary small" title="Next week">&rarr;</button>
+          <button id="weekly-next" type="button" class="secondary small" title="Next week" aria-label="Next week">&rarr;</button>
           <button id="weekly-copy" type="button" class="secondary small">Copy as text</button>
           <button type="button" class="secondary small print-btn" data-print="weekly-panel" title="Print this panel, or save it as a PDF">Print</button>
         </div>

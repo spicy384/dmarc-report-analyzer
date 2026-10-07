@@ -55,8 +55,8 @@ async function loadReports() {
   ));
 }
 
-reportsPrev.addEventListener("click", () => { reportsPage = Math.max(1, reportsPage - 1); loadReports(); });
-reportsNext.addEventListener("click", () => { reportsPage += 1; loadReports(); });
+reportsPrev.addEventListener("click", () => { reportsPage = Math.max(1, reportsPage - 1); run(loadReports); });
+reportsNext.addEventListener("click", () => { reportsPage += 1; run(loadReports); });
 
 async function openReportDetail(id) {
   try {

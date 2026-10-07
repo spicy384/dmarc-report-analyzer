@@ -13,12 +13,12 @@ let weeklyData = null;
 function shiftWeek(days) {
   const base = weeklyEnd.value ? Date.parse(`${weeklyEnd.value}T00:00:00Z`) / 1000 : todayUtcStart();
   weeklyEnd.value = formatUtcDate(base + days * DAY);
-  loadWeekly();
+  run(loadWeekly);
 }
 
 document.getElementById("weekly-prev").addEventListener("click", () => shiftWeek(-7));
 document.getElementById("weekly-next").addEventListener("click", () => shiftWeek(7));
-weeklyEnd.addEventListener("change", () => loadWeekly());
+weeklyEnd.addEventListener("change", () => run(loadWeekly));
 
 document.getElementById("weekly-copy").addEventListener("click", async () => {
   if (!weeklyData) return;

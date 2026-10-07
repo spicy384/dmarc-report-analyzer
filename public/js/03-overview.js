@@ -81,7 +81,7 @@ function renderStats(t) {
     statTile("Failing sources", formatNumber(t.failingIps), { sub: `of ${formatNumber(t.sourceIps)} source IPs`, delta: delta(t.failingIps, p.failingIps, { upIsGood: false }) }),
     senderTile(t),
     statTile("Reporters", formatNumber(t.reporters), { sub: t.domains > 1 ? `${t.domains} domains` : "", delta: delta(t.reporters, p.reporters) }),
-    statTile("SPF / DKIM aligned", `${t.messages ? Math.round((t.spfPassed / t.messages) * 100) : 0}% / ${t.messages ? Math.round((t.dkimPassed / t.messages) * 100) : 0}%`, { tone: "small" })
+    statTile("SPF / DKIM aligned", `${t.messages ? Math.round((t.spfPassed / t.messages) * 100) : 0}% / ${t.messages ? Math.round((t.dkimPassed / t.messages) * 100) : 0}%`, { small: true })
   );
 }
 
@@ -89,9 +89,6 @@ function cssVar(name) {
   return getComputedStyle(document.body).getPropertyValue(name).trim();
 }
 
-function dayKey(seconds) {
-  return formatUtcDate(seconds);
-}
 
 /** Fills in the days with no reports so the bars line up with the calendar. */
 function completeDays(days) {
@@ -111,7 +108,7 @@ function completeDays(days) {
   }
   const out = [];
   for (let t = start; t < end; t += DAY) {
-    const key = dayKey(t);
+    const key = formatUtcDate(t);
     out.push(byDay.get(key) || { day: key, total: 0, pass: 0, failForward: 0, failNone: 0, failQuarantine: 0, failReject: 0, fail: 0 });
   }
   return out;

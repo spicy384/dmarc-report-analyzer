@@ -12,7 +12,14 @@ let openIp = null;
 let openReport = null;
 
 /** Reads filter state from the URL fragment (#range=30&domain=...&q=...&hide=1&ip=...&report=...). */
-function readHash() {
+let loadGeneration = 0;
+let activeLoadController = null;
+
+/**
+ * Restores filter state from the page link. With `sideEffects` off (before sign-in)
+ * it only fills the controls; lookups, analyses and the view switch wait for onSignedIn.
+ */
+function readHash({ sideEffects = true } = {}) {
   const raw = location.hash.replace(/^#/, "");
   if (!raw) return false;
   const p = new URLSearchParams(raw);
@@ -25,18 +32,22 @@ function readHash() {
   hideForwards.checked = p.get("hide") === "1";
   if (p.has("failing")) failingOnly.checked = p.get("failing") !== "0";
   pendingOpen = p.has("ip") ? { ip: p.get("ip") } : p.has("report") ? { report: p.get("report") } : null;
-  const view = VIEWS[p.get("view") || ""] ? p.get("view") : "dashboard";
-  if (view !== currentView) setView(view);
-  // A one-time analysis survives a reload while the server still has it.
-  const scratch = p.get("scratch") || null;
-  if (scratch !== scratchId) {
-    if (scratch) enterScratch(scratch, { verify: true });
-    else exitScratch({ reload: false });
-  }
-  const wanted = p.get("lookup") || "";
-  if (wanted && wanted !== lookupQuery) {
-    lookupInput.value = wanted;
-    runLookup();
+  const view = Object.hasOwn(VIEWS, p.get("view") || "") ? p.get("view") : "dashboard";
+  // The view switch must not rewrite the link: the domain and mailbox in it are only
+  // applied once their dropdowns are filled, after sign-in.
+  if (view !== currentView) setView(view, { keepHash: true });
+  if (sideEffects) {
+    // A one-time analysis survives a reload while the server still has it.
+    const scratch = p.get("scratch") || null;
+    if (scratch !== scratchId) {
+      if (scratch) run(() => enterScratch(scratch, { verify: true }));
+      else exitScratch({ reload: false });
+    }
+    const wanted = p.get("lookup") || "";
+    if (wanted && wanted !== lookupQuery) {
+      lookupInput.value = wanted;
+      run(runLookup);
+    }
   }
   const custom = rangeSelect.value === "custom";
   fromLabel.hidden = !custom;
@@ -76,6 +87,11 @@ window.addEventListener("hashchange", () => {
 });
 
 async function loadAll() {
+  // A newer load supersedes this one: its requests are aborted and its results ignored.
+  if (activeLoadController) activeLoadController.abort();
+  activeLoadController = new AbortController();
+  activeLoadSignal = activeLoadController.signal;
+  const generation = ++loadGeneration;
   const range = currentRange();
   rangeLabel.textContent = range.label + (domainSelect.value ? ` - ${domainSelect.value}` : "");
   if (domainSelect.value && policyDomain.value !== domainSelect.value) policyDomain.value = domainSelect.value;
@@ -101,9 +117,10 @@ async function loadAll() {
     try {
       await fn();
     } catch (error) {
-      problems.push(`${name}: ${error.message}`);
+      if (error && error.name !== "AbortError") problems.push(`${name}: ${error.message}`);
     }
   }));
+  if (generation !== loadGeneration) return;
   if (problems.length) {
     setStatus(problems.join(" | "), true);
   } else {

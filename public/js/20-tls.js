@@ -14,8 +14,8 @@ const tlsNext = document.getElementById("tls-next");
 const tlsPageLabel = document.getElementById("tls-page-label");
 let tlsPage = 1;
 
-tlsPrev.addEventListener("click", () => { tlsPage = Math.max(1, tlsPage - 1); loadTls(); });
-tlsNext.addEventListener("click", () => { tlsPage += 1; loadTls(); });
+tlsPrev.addEventListener("click", () => { tlsPage = Math.max(1, tlsPage - 1); run(loadTls); });
+tlsNext.addEventListener("click", () => { tlsPage += 1; run(loadTls); });
 
 const TLS_RESULT_MEANING = {
   "starttls-not-supported": "the receiving server did not offer STARTTLS",
@@ -98,7 +98,7 @@ function renderTlsSummary(s) {
     statTile("TLS sessions", formatNumber(total), { sub: `${formatNumber(s.reports)} report${s.reports === 1 ? "" : "s"} from ${formatNumber(s.reporters)} sender${s.reporters === 1 ? "" : "s"}` }),
     statTile("Succeeded", formatNumber(s.successful), { tone: "good" }),
     statTile("Failed", formatNumber(s.failed), { sub: total ? `${failPct.toFixed(failPct && failPct < 10 ? 1 : 0)}% of sessions` : "", tone: s.failed ? "bad" : "good" }),
-    statTile("Policy mode seen", s.enforceReports && !s.testingReports ? "enforce" : s.testingReports ? `testing${s.enforceReports ? " + enforce" : ""}` : s.noPolicyReports ? "none found" : "-", { tone: "small", sub: s.noPolicyReports ? `${formatNumber(s.noPolicyReports)} report${s.noPolicyReports === 1 ? "" : "s"} saw no policy` : "" })
+    statTile("Policy mode seen", s.enforceReports && !s.testingReports ? "enforce" : s.testingReports ? `testing${s.enforceReports ? " + enforce" : ""}` : s.noPolicyReports ? "none found" : "-", { small: true, sub: s.noPolicyReports ? `${formatNumber(s.noPolicyReports)} report${s.noPolicyReports === 1 ? "" : "s"} saw no policy` : "" })
   );
 
   tlsBreakdown.replaceChildren();

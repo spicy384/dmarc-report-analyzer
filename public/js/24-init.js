@@ -1,4 +1,4 @@
-// 20-init.js: Boot.
+// 24-init.js: Boot.
 // One of the classic scripts index.html loads in order; they share one global scope,
 // so a function or const defined here is visible to the files that follow.
 
@@ -8,9 +8,16 @@ for (const [inputId, containerId] of [["scorecard-filter", "scorecard-results"],
 }
 
 (async function init() {
-  applyTheme(localStorage.getItem("dmarc-theme") || "light");
-  hideForwards.checked = localStorage.getItem("dmarc-hide-forwards") === "1";
-  const savedRange = localStorage.getItem("dmarc-range");
+  const stored = (key) => {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  };
+  applyTheme(stored("dmarc-theme") || "light");
+  hideForwards.checked = stored("dmarc-hide-forwards") === "1";
+  const savedRange = stored("dmarc-range");
   if (savedRange && [...rangeSelect.options].some((o) => o.value === savedRange)) {
     rangeSelect.value = savedRange;
   }
@@ -21,11 +28,16 @@ for (const [inputId, containerId] of [["scorecard-filter", "scorecard-results"],
     fromDate.value = formatUtcDate(todayUtcStart() - 30 * DAY);
     toDate.value = formatUtcDate(todayUtcStart());
   }
-  readHash();
+  readHash({ sideEffects: false });
 
   // Nothing loads until we know who (if anyone) is signed in.
-  const signedIn = await refreshIdentity();
-  if (signedIn) {
-    await onSignedIn();
+  try {
+    const signedIn = await refreshIdentity();
+    if (signedIn) {
+      await onSignedIn();
+    }
+  } catch (error) {
+    showAuthOverlay("login");
+    setAuthMessage(`Could not reach the server: ${error.message}`);
   }
 })();

@@ -183,7 +183,8 @@ function renderLookupIp(d) {
     open.textContent = "Open in sources";
     open.addEventListener("click", () => {
       searchInput.value = d.query;
-      loadAll();
+      reportsPage = 1;
+      run(loadAll);
       document.getElementById("sources-panel").scrollIntoView({ behavior: "smooth", block: "start" });
     });
     seenBox.appendChild(open);
@@ -215,6 +216,7 @@ async function runLookup({ refresh = false } = {}) {
     lookupRefresh.hidden = false;
     writeHash();
   } catch (error) {
+    lookupQuery = ""; // so the same query is tried again from the page link after sign-in
     lookupEmpty(error.message);
     lookupBadge.textContent = "";
     lookupRefresh.hidden = true;

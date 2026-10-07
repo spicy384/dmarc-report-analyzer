@@ -12,8 +12,8 @@ const viewNav = document.getElementById("view-nav");
 const VIEWS = { dashboard: document.getElementById("view-dashboard"), analyze: document.getElementById("view-analyze"), headers: document.getElementById("view-headers"), settings: document.getElementById("view-settings") };
 let currentView = "dashboard";
 
-async function setView(name, { scrollTo = null } = {}) {
-  currentView = VIEWS[name] ? name : "dashboard";
+async function setView(name, { scrollTo = null, keepHash = false } = {}) {
+  currentView = Object.hasOwn(VIEWS, name) ? name : "dashboard";
   for (const [key, el] of Object.entries(VIEWS)) el.hidden = key !== currentView;
   for (const key of Object.keys(VIEWS)) document.getElementById(`nav-${key}`).classList.toggle("is-active", currentView === key);
   if (currentView === "settings" && currentUser) {
@@ -39,7 +39,7 @@ async function setView(name, { scrollTo = null } = {}) {
       loadMonitor();
     }
   }
-  writeHash();
+  if (!keepHash) writeHash();
   const target = scrollTo ? document.getElementById(scrollTo) : null;
   if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
   else window.scrollTo({ top: 0 });

@@ -44,15 +44,24 @@ const AUTH_TITLES = {
   codes: "Save your recovery codes"
 };
 
+/** The page behind a sign-in overlay is not reachable by keyboard or screen reader. */
+function setPageInert(on) {
+  for (const el of [document.querySelector("main"), document.querySelector("header .header-actions")]) {
+    if (el) el.inert = on;
+  }
+}
+
 function showAuthOverlay(step) {
   authOverlay.hidden = false;
   document.body.classList.add("auth-locked");
+  setPageInert(true);
   setAuthStep(step);
 }
 
 function hideAuthOverlay() {
   authOverlay.hidden = true;
   document.body.classList.remove("auth-locked");
+  setPageInert(false);
   setAuthMessage("");
 }
 
@@ -325,10 +334,17 @@ logoutBtn.addEventListener("click", async () => {
   applyIdentity(null, null);
   clearTimeout(syncPollTimer);
   syncPollTimer = null;
+  // Nothing of this user's data stays on the page for the next person at the keyboard.
+  for (const el of document.querySelectorAll("#view-dashboard .table-scroll, #view-settings .table-scroll, .stat-grid, #alerts-list, #policy-body, #lookup-body, #hdr-body, #hdr-findings, #hdr-summary, #analyze-results, #weekly-body, #tls-breakdown")) {
+    el.replaceChildren();
+  }
   for (const el of [statGrid, ipsResults, reportersResults, reportsResults, runsResults, errorsResults, graphConfig]) {
     el.replaceChildren();
   }
   chartSvg.replaceChildren();
+  lastDays = [];
+  hdrInput.value = "";
+  document.getElementById("headers-results-panel").hidden = true;
   ipDetail.hidden = true;
   reportDetail.hidden = true;
   alertsBanner.hidden = true;

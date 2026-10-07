@@ -12,8 +12,8 @@ const forensicNext = document.getElementById("forensic-next");
 const forensicPageLabel = document.getElementById("forensic-page-label");
 let forensicPage = 1;
 
-forensicPrev.addEventListener("click", () => { forensicPage = Math.max(1, forensicPage - 1); loadForensic(); });
-forensicNext.addEventListener("click", () => { forensicPage += 1; loadForensic(); });
+forensicPrev.addEventListener("click", () => { forensicPage = Math.max(1, forensicPage - 1); run(loadForensic); });
+forensicNext.addEventListener("click", () => { forensicPage += 1; run(loadForensic); });
 
 function forensicDetail(f) {
   const wrap = document.createElement("div");

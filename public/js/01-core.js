@@ -157,13 +157,26 @@ function apiPath(path) {
   return m && SCRATCH_ROUTES.includes(m[1]) ? `/api/scratch/${encodeURIComponent(scratchId)}${path.slice(4)}` : path;
 }
 
+// Requests started by one dashboard load are cancelled when the next one starts (a
+// quick second filter change), so a slow answer to the old filter cannot land after
+// the new one and leave a panel showing the wrong period.
+let activeLoadSignal = null;
+
+/** Runs an async handler and shows its error on the status line instead of leaving a rejection. */
+function run(fn) {
+  return Promise.resolve().then(fn).catch((error) => {
+    if (error && error.name === "AbortError") return;
+    setStatus(error.message, true);
+  });
+}
+
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (csrfToken) {
     headers["X-CSRF-Token"] = csrfToken;
   }
 
-  const res = await fetch(apiPath(path), { ...options, headers });
+  const res = await fetch(apiPath(path), { ...options, headers, signal: options.signal || activeLoadSignal || undefined });
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
@@ -205,7 +218,7 @@ function attachTableFilter(inputId, containerId) {
   count.hidden = true;
   input.insertAdjacentElement("afterend", count);
   const apply = () => {
-    const words = input.value.trim().toLowerCase().split(/s+/).filter(Boolean);
+    const words = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const rows = [...container.querySelectorAll("tbody > tr")].filter((tr) => !tr.classList.contains("expansion-row"));
     let shown = 0;
     for (const tr of rows) {
@@ -260,8 +273,9 @@ function printPanel(panelId, { title: customTitle = null, meta: customMeta = nul
   };
   window.addEventListener("afterprint", cleanup);
   window.print();
-  // Browsers without afterprint (or a cancelled dialog) still get cleaned up.
-  setTimeout(cleanup, 1500);
+  // Browsers without afterprint (or a cancelled dialog) still get cleaned up, late
+  // enough not to interfere with a print preview that is still being rendered.
+  setTimeout(cleanup, 60000);
 }
 
 document.addEventListener("click", (e) => {
@@ -415,7 +429,11 @@ function buildTable(headers, rows, { emptyText = "Nothing to show.", onRowClick,
       tr.tabIndex = 0;
       tr.addEventListener("click", activate);
       tr.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") activate();
+        // Only for the row itself: Enter on a button inside the row is that button's.
+        if ((e.key === "Enter" || e.key === " ") && e.target === tr) {
+          e.preventDefault();
+          activate();
+        }
       });
     }
     tbody.appendChild(tr);

@@ -15,7 +15,6 @@ function describeRun(run) {
   return `${when} (${parts.join(", ")})`;
 }
 
-let mailboxList = [];
 const mailboxNames = new Map();
 
 function mailboxName(id) {
@@ -217,7 +216,6 @@ function describeMailboxAuth(m) {
 }
 
 function renderMailboxes(list) {
-  mailboxList = list;
   const admin = isAdmin();
   mailboxesResults.replaceChildren(buildTable(
     ["Name", "Type", "Mailbox", "Folder", "Account", "Auth", "Last sync", { label: "Reports", className: "num" }, "State", ""],
@@ -355,7 +353,7 @@ function renderSyncStatus(st) {
     ["Received", "From", "Subject", "Problem"],
     errors.map((m) => ({
       data: m,
-      cells: [textCell(formatTimestamp(m.received_at), "nowrap"), textCell(m.from_addr || "", "mono"), textCell(m.subject || "", "trunc"), textCell(m.error || "", "muted trunc-wide")]
+      cells: [textCell(formatTimestamp(m.received_at), "nowrap"), textCell(m.from_addr || "", "mono"), textCell(m.subject || "", "trunc"), textCell(m.status === "fetch_failed" ? `Download failed, tried again on the next sync: ${m.error || ""}` : m.error || "", "muted trunc-wide")]
     })),
     { emptyText: "None." }
   ));

@@ -222,12 +222,24 @@ function renderIps() {
     const col = IPS_COLUMNS[i];
     if (!col || !col.key) return;
     th.title = "Sort by this column";
-    th.addEventListener("click", () => {
+    th.tabIndex = 0;
+    th.setAttribute("role", "button");
+    th.setAttribute("aria-sort", col.key === ipsSort.key ? (ipsSort.dir === "asc" ? "ascending" : "descending") : "none");
+    const sortBy = () => {
       ipsSort = ipsSort.key === col.key
         ? { key: col.key, dir: ipsSort.dir === "asc" ? "desc" : "asc" }
         : { key: col.key, dir: IPS_DESC_FIRST.includes(col.key) ? "desc" : "asc" };
-      localStorage.setItem("dmarc-ips-sort", JSON.stringify(ipsSort));
+      try {
+        localStorage.setItem("dmarc-ips-sort", JSON.stringify(ipsSort));
+      } catch { /* private mode */ }
       renderIps();
+    };
+    th.addEventListener("click", sortBy);
+    th.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        sortBy();
+      }
     });
   });
   ipsResults.replaceChildren(table);
