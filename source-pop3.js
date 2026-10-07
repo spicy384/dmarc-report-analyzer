@@ -14,15 +14,17 @@ const { createRawSource, SourceError } = require("./source-raw");
 /** A line-oriented reader over a socket, with a timeout on every wait. */
 function createConnection({ host, port, security, tlsVerify, timeoutMs }) {
   let socket = null;
-  let buffer = Buffer.alloc(0);
+  let chunks = [];      // received and not yet consumed, joined only when a reader looks
+  let buffered = 0;
   let waiter = null;
   let failure = null;
 
   function attach(sock) {
     socket = sock;
     socket.on("data", (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      if (waiter) waiter.check();
+      chunks.push(chunk);
+      buffered += chunk.length;
+      if (waiter) waiter.check(chunk);
     });
     socket.on("error", (error) => {
       failure = error;
@@ -46,8 +48,8 @@ function createConnection({ host, port, security, tlsVerify, timeoutMs }) {
         fn(value);
       };
       waiter = {
-        check: () => {
-          const hit = extract();
+        check: (chunk = null) => {
+          const hit = extract(chunk);
           if (hit !== null) finish(resolve, hit);
         },
         fail: (error) => finish(reject, error)
@@ -57,24 +59,55 @@ function createConnection({ host, port, security, tlsVerify, timeoutMs }) {
     });
   }
 
+  /** Everything buffered, as one Buffer. */
+  function joined() {
+    if (chunks.length > 1) chunks = [Buffer.concat(chunks, buffered)];
+    return chunks[0] || Buffer.alloc(0);
+  }
+
+  /** Drops the first `upTo` bytes of `buf` (the joined buffer) from what is buffered. */
+  function consume(buf, upTo) {
+    const rest = buf.subarray(upTo);
+    chunks = rest.length ? [rest] : [];
+    buffered = rest.length;
+  }
+
   function readLine() {
     return wait(() => {
-      const end = buffer.indexOf("\r\n");
+      const buf = joined();
+      const end = buf.indexOf("\r\n");
       if (end < 0) return null;
-      const line = buffer.subarray(0, end).toString("latin1");
-      buffer = buffer.subarray(end + 2);
+      const line = buf.subarray(0, end).toString("latin1");
+      consume(buf, end + 2);
       return line;
     });
   }
 
+  const END = Buffer.from("\r\n.\r\n", "latin1");
+
+  /** Could the terminator end inside this chunk? If not, a large body need not be joined and searched yet. */
+  function mayComplete(chunk) {
+    if (chunk.indexOf(END) >= 0) return true;
+    for (let k = 1; k < END.length; k += 1) {
+      if (chunk.length >= k && chunk.subarray(0, k).equals(END.subarray(END.length - k))) return true;
+    }
+    return false;
+  }
+
   /** A multi-line response body: everything up to a line holding a single dot, dot-unstuffed. */
   function readMultiline() {
-    return wait(() => {
-      const startsWithEnd = buffer.length >= 3 && buffer.subarray(0, 3).toString("latin1") === ".\r\n";
-      const end = startsWithEnd ? -2 : buffer.indexOf("\r\n.\r\n");
-      if (!startsWithEnd && end < 0) return null;
-      const body = startsWithEnd ? Buffer.alloc(0) : buffer.subarray(0, end + 2);
-      buffer = buffer.subarray(startsWithEnd ? 3 : end + 5);
+    let scanned = 0; // bytes already searched for the terminator
+    return wait((chunk) => {
+      if (chunk && chunks.length > 1 && !mayComplete(chunk)) return null;
+      const buf = joined();
+      const startsWithEnd = buf.length >= 3 && buf[0] === 0x2e && buf[1] === 0x0d && buf[2] === 0x0a;
+      const end = startsWithEnd ? -2 : buf.indexOf(END, Math.max(0, scanned - END.length));
+      if (!startsWithEnd && end < 0) {
+        scanned = buf.length;
+        return null;
+      }
+      const body = startsWithEnd ? Buffer.alloc(0) : buf.subarray(0, end + 2);
+      consume(buf, startsWithEnd ? 3 : end + 5);
       // Lines that began with a dot were sent with it doubled.
       return Buffer.from(body.toString("latin1").replace(/(^|\r\n)\.\./g, "$1."), "latin1");
     });
@@ -106,7 +139,8 @@ function createConnection({ host, port, security, tlsVerify, timeoutMs }) {
       secure.once("error", reject);
       secure.once("secureConnect", () => {
         secure.removeListener("error", reject);
-        buffer = Buffer.alloc(0);
+        chunks = [];
+        buffered = 0;
         attach(secure);
         resolve();
       });

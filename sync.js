@@ -14,6 +14,8 @@ const DAY = 86400;
 const MAX_JOBS_KEPT = 20;
 const PTR_CONCURRENCY = 8;
 const PTR_BATCH = 500;
+const PTR_MAX_BATCHES = 20;   // per run; whatever is left waits for the next one
+const RETRY_WINDOW_DAYS = 7;  // how far back a message whose download failed is listed again
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000);
@@ -43,18 +45,18 @@ const COUNTERS = ["seen", "skipped", "added", "duplicates", "noReport", "errors"
 
 const RETRY_DEFAULTS = { attempts: 2, delaySeconds: 10, backoff: "exponential" };
 const RETRY_LIMITS = { maxAttempts: 5, minDelay: 1, maxDelay: 600 };
-const TRANSIENT_CODES = new Set(["network", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "EPIPE", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
+const TRANSIENT_CODES = new Set(["network", "throttled", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "EPIPE", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
 
 /**
  * Errors worth another try in a moment: the request never reached the service
- * (DNS, timeout, reset) or the service answered 502/503/504. A rejected sign-in,
+ * (DNS, timeout, reset) or the service answered 429/502/503/504. A rejected sign-in,
  * a missing folder or missing consent will fail the same way again, so they are not.
  */
 function isTransient(error) {
   if (!error) return false;
   if (TRANSIENT_CODES.has(error.code)) return true;
   const status = Number(error.status);
-  return status === 502 || status === 503 || status === 504;
+  return status === 429 || status === 502 || status === 503 || status === 504;
 }
 
 /** Clamps whatever was stored into a usable policy. */
@@ -113,13 +115,19 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
     }
   }
 
-  /** Where a mailbox's next sync should start: a day before its newest message, or the backfill window. */
+  /**
+   * Where a mailbox's next sync should start: a day before its newest message, or the
+   * backfill window. A recent message whose download failed pulls the start back to it,
+   * so it is listed and tried again.
+   */
   function defaultSince(mailboxId) {
     const latest = db.latestMessageReceivedAt(mailboxId);
-    if (latest) {
-      return latest - DAY;
+    if (!latest) {
+      return nowSeconds() - backfillDays * DAY;
     }
-    return nowSeconds() - backfillDays * DAY;
+    const since = latest - DAY;
+    const failedAt = db.oldestFailedMessageAt(mailboxId, nowSeconds() - RETRY_WINDOW_DAYS * DAY);
+    return failedAt && failedAt < since ? failedAt - 1 : since;
   }
 
   function bump(job, box, counter, by = 1) {
@@ -154,7 +162,7 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
     }
 
     // No aggregate report: maybe a forensic (ARF) one, whose parts are not ordinary attachments.
-    if (reportsFound === 0 && looksLikeArf({ subject: message.subject, from: message.from, attachments })) {
+    if (reportsFound === 0 && looksLikeArf({ subject: message.subject, from: message.from, attachments, hasMessagePart: message.hasMessagePart })) {
       try {
         const mime = await box.client.getMime(message.id);
         if (mime.length > MAX_MIME_BYTES) {
@@ -226,6 +234,17 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
           box.lastError = `${message.subject || message.id}: ${error.message}`;
           job.lastError = `${box.name}: ${box.lastError}`;
           logger.warn?.(`sync: ${box.name}: message ${message.id} failed: ${error.message}`);
+          // Remembered as a failed download (not as seen), so the next run lists and tries it again.
+          db.recordMessage({
+            graphId: message.id,
+            mailboxId: box.id,
+            internetMessageId: message.internetMessageId,
+            receivedAt: isoToSeconds(message.receivedAt),
+            subject: message.subject,
+            fromAddr: message.from,
+            status: "fetch_failed",
+            error: error.message
+          });
         }
       }
       box.status = job.cancelled ? "cancelled" : "done";
@@ -251,6 +270,7 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
       if (!job.mailboxes.length) {
         throw new GraphError("No mailboxes are configured. Add one under Mailbox sync, or set GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET and DMARC_MAILBOX.", { code: "not_configured" });
       }
+      db.pruneRuns();
       const policy = currentRetryPolicy();
       for (const box of job.mailboxes) {
         if (job.cancelled) {
@@ -385,23 +405,31 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
     ptrInFlight = true;
     let done = 0;
     try {
-      const pending = db.ipsMissingPtr(PTR_BATCH);
-      let index = 0;
-      const worker = async () => {
-        while (index < pending.length) {
-          const ip = pending[index++];
-          let ptr;
-          try {
-            const names = await reverse(ip);
-            ptr = Array.isArray(names) && names.length ? names[0] : null;
-          } catch {
-            ptr = null;
-          }
-          db.setPtr(ip, ptr);
-          done += 1;
+      for (let batch = 0; batch < PTR_MAX_BATCHES; batch += 1) {
+        const pending = db.ipsMissingPtr(PTR_BATCH);
+        if (!pending.length) {
+          break;
         }
-      };
-      await Promise.all(Array.from({ length: Math.min(PTR_CONCURRENCY, pending.length) }, worker));
+        let index = 0;
+        const worker = async () => {
+          while (index < pending.length) {
+            const ip = pending[index++];
+            let ptr;
+            try {
+              const names = await reverse(ip);
+              ptr = Array.isArray(names) && names.length ? names[0] : null;
+            } catch {
+              ptr = null;
+            }
+            db.setPtr(ip, ptr);
+            done += 1;
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(PTR_CONCURRENCY, pending.length) }, worker));
+        if (pending.length < PTR_BATCH) {
+          break;
+        }
+      }
     } finally {
       ptrInFlight = false;
     }
@@ -441,9 +469,14 @@ function createSync({ db, mailboxes, graph, geoip = null, logger = console, back
       return false;
     }
     const kick = () => {
-      const { alreadyRunning } = runSync({ trigger: "scheduled" });
-      if (alreadyRunning) {
-        logger.log?.("sync: scheduled run skipped, one is already running");
+      try {
+        const { alreadyRunning } = runSync({ trigger: "scheduled" });
+        if (alreadyRunning) {
+          logger.log?.("sync: scheduled run skipped, one is already running");
+        }
+      } catch (error) {
+        // A timer callback that throws would end the process; the next tick tries again.
+        logger.error?.(`sync: scheduled run could not start: ${error.message}`);
       }
     };
     timer = setInterval(kick, minutes * 60 * 1000);

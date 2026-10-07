@@ -101,7 +101,7 @@ const messages = [
     !mock.state.requests.some((r) => /\/messages\/m7\//.test(r.path)) && !db.hasMessage("m7"));
   check("public job hides internals", !("promise" in j1) && !("ptrPromise" in j1));
 
-  check("m3 was not recorded so it is retried", !db.hasMessage("m3"));
+  check("m3 recorded as a failed download, not as seen, so it is retried", !db.hasMessage("m3") && db.db.prepare("SELECT status, error FROM messages WHERE graph_id = 'm3'").get().status === "fetch_failed");
   check("m4 recorded as error", db.messagesWithErrors().some((m) => m.graph_id === "m4" && /report_metadata/.test(m.error)));
   check("m5 recorded as ingested despite being a duplicate", db.db.prepare("SELECT status FROM messages WHERE graph_id = 'm5'").get().status === "ingested");
   check("reports table has 3 rows", db.stats().reports.reports === 3);

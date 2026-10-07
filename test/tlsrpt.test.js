@@ -42,7 +42,8 @@ check("plain JSON", extractJsonDocuments(plain, "r.json").length === 1);
 check("gzip, name unwrapped", extractJsonDocuments(gz, "r.json.gz")[0].name === "r.json" && JSON.parse(extractJsonDocuments(gz, "r.json.gz")[0].json)["report-id"] === r.reportId);
 check("zip picks the JSON entries", extractJsonDocuments(zipped, "r.zip").length === 1);
 check("XML is not JSON", extractJsonDocuments(Buffer.from("<feedback/>"), "r.xml").length === 0);
-check("BOM tolerated", extractJsonDocuments(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), plain]), "r.json").length === 1);
+const withBom = extractJsonDocuments(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), plain]), "r.json");
+check("BOM tolerated and stripped", withBom.length === 1 && JSON.parse(withBom[0].json)["report-id"] === r.reportId);
 
 // --- shared ingest: TLS, aggregate, email, junk ----------------------------------
 const db = openDatabase({ file: ":memory:" });

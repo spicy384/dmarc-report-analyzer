@@ -22,7 +22,11 @@ const { sourceVerdict } = require("./verdict");
 // 6: ip_info country/city/ASN columns
 // 7: daily_totals (retention rollups) and reports.purged_at
 // 8: forensic_reports (created by the schema; version bump only)
-const SCHEMA_VERSION = 11;
+// 9: audit_log (created by the schema; version bump only)
+// 10: dns_history (created by the schema; version bump only)
+// 11: tls_reports (created by the schema; version bump only)
+// 12: ip_info.ptr_at, so a row created by a geo lookup still gets its reverse DNS looked up
+const SCHEMA_VERSION = 12;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -32,7 +36,7 @@ CREATE TABLE IF NOT EXISTS messages (
   received_at         INTEGER NOT NULL,
   subject             TEXT,
   from_addr           TEXT,
-  status              TEXT NOT NULL,   -- ingested | no_report | error
+  status              TEXT NOT NULL,   -- ingested | no_report | error | fetch_failed (download failed; tried again)
   error               TEXT,
   processed_at        INTEGER NOT NULL
 );
@@ -93,6 +97,7 @@ CREATE TABLE IF NOT EXISTS ip_info (
   ip           TEXT PRIMARY KEY,
   ptr          TEXT,
   looked_up_at INTEGER NOT NULL,
+  ptr_at       INTEGER,            -- when the reverse lookup ran (NULL: not yet, even if a geo lookup made the row)
   country_code TEXT,
   country      TEXT,
   city         TEXT,
@@ -332,11 +337,28 @@ function buildFilter(filter = {}, { r = "r", x = null } = {}) {
   return { sql: clauses.length ? clauses.join(" AND ") : "1=1", params };
 }
 
+// Internal roll-ups over sources (sender split, scorecard) read far more rows than a table shows.
+const INTERNAL_IP_LIMIT = 20000;
+
+// The report with the newest window per domain carries the policy that domain publishes now.
+// (Not the highest id: reports arrive out of order, and an old one can be ingested last.)
+const LATEST_REPORT_PER_DOMAIN = "r.id = (SELECT id FROM reports WHERE domain = r.domain ORDER BY range_end DESC, id DESC LIMIT 1)";
+
+/** A json_group_array() column (or, from older code paths, a comma-separated one) as trimmed, non-empty strings. */
 function splitList(value) {
   if (!value) {
     return [];
   }
-  return String(value).split(",").map((s) => s.trim()).filter(Boolean);
+  let items;
+  try {
+    items = JSON.parse(value);
+  } catch {
+    items = String(value).split(",");
+  }
+  if (!Array.isArray(items)) {
+    items = [items];
+  }
+  return items.map((s) => (s === null || s === undefined ? "" : String(s).trim())).filter(Boolean);
 }
 
 function parseJson(value, fallback) {
@@ -467,6 +489,15 @@ function migrate(db) {
     }
   }
 
+  if (version < 12) {
+    const cols = db.pragma("table_info(ip_info)").map((c) => c.name);
+    if (!cols.includes("ptr_at")) {
+      db.exec("ALTER TABLE ip_info ADD COLUMN ptr_at INTEGER");
+    }
+    // Rows holding a name were certainly looked up; the rest get one (more) attempt.
+    db.exec("UPDATE ip_info SET ptr_at = looked_up_at WHERE ptr IS NOT NULL");
+  }
+
   db.pragma(`user_version = ${SCHEMA_VERSION}`);
 }
 
@@ -486,9 +517,16 @@ function openDatabase({ dataDir, file } = {}) {
   db.exec(SCHEMA);
   db.exec(ALERTS_SCHEMA);
   migrate(db);
+  // Indexes on columns that older databases only gain in migrate().
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sync_runs_mailbox ON sync_runs(mailbox_id, id);
+    CREATE INDEX IF NOT EXISTS idx_reports_unpurged ON reports(range_begin) WHERE purged_at IS NULL;
+  `);
 
   const stmts = {
-    hasMessage: db.prepare("SELECT 1 FROM messages WHERE graph_id = ?"),
+    // A message whose download failed does not count as seen: it is listed and tried again.
+    hasMessage: db.prepare("SELECT 1 FROM messages WHERE graph_id = ? AND status <> 'fetch_failed'"),
+    oldestFailed: db.prepare("SELECT MIN(received_at) AS v FROM messages WHERE status = 'fetch_failed' AND received_at > @since AND (@mailboxId IS NULL OR mailbox_id = @mailboxId)"),
     upsertMessage: db.prepare(`
       INSERT INTO messages (graph_id, mailbox_id, internet_message_id, received_at, subject, from_addr, status, error, processed_at)
       VALUES (@graphId, @mailboxId, @internetMessageId, @receivedAt, @subject, @fromAddr, @status, @error, @processedAt)
@@ -510,6 +548,8 @@ function openDatabase({ dataDir, file } = {}) {
     setSetting: db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
     startRun: db.prepare("INSERT INTO sync_runs (started_at, trigger, since, mailbox_id) VALUES (?, ?, ?, ?)"),
     lastRunsByMailbox: db.prepare(`SELECT * FROM sync_runs s WHERE s.id = (SELECT MAX(id) FROM sync_runs WHERE mailbox_id IS s.mailbox_id)`),
+    pruneRuns: db.prepare(`DELETE FROM sync_runs WHERE id IN (
+        SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY mailbox_id ORDER BY id DESC) AS rn FROM sync_runs) WHERE rn > ?)`),
     // Every kind of report counts towards a mailbox, so one that only ever received TLS
     // or forensic reports (or the "upload" pseudo-mailbox) still shows in the filter.
     mailboxCounts: db.prepare(`SELECT id, SUM(reports) AS reports, SUM(messages) AS messages, MAX(lastWindow) AS lastWindow FROM (
@@ -522,8 +562,9 @@ function openDatabase({ dataDir, file } = {}) {
     runs: db.prepare("SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?"),
     lastRun: db.prepare("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1"),
     ipsMissingPtr: db.prepare(`SELECT DISTINCT x.source_ip AS ip FROM records x
-      LEFT JOIN ip_info i ON i.ip = x.source_ip WHERE i.ip IS NULL LIMIT ?`),
-    setPtr: db.prepare("INSERT INTO ip_info (ip, ptr, looked_up_at) VALUES (?, ?, ?) ON CONFLICT(ip) DO UPDATE SET ptr = excluded.ptr, looked_up_at = excluded.looked_up_at"),
+      LEFT JOIN ip_info i ON i.ip = x.source_ip WHERE i.ptr_at IS NULL LIMIT ?`),
+    setPtr: db.prepare(`INSERT INTO ip_info (ip, ptr, looked_up_at, ptr_at) VALUES (@ip, @ptr, @at, @at)
+      ON CONFLICT(ip) DO UPDATE SET ptr = excluded.ptr, looked_up_at = excluded.looked_up_at, ptr_at = excluded.ptr_at`),
     reportXml: db.prepare("SELECT xml_gz, attachment_name, org_name, report_id FROM reports WHERE id = ?"),
     reportById: db.prepare("SELECT r.*, m.received_at, m.subject FROM reports r LEFT JOIN messages m ON m.graph_id = r.message_id WHERE r.id = ?"),
     // Joins the report so each record carries its window, domain and policy: the
@@ -623,6 +664,11 @@ function openDatabase({ dataDir, file } = {}) {
     return row.v || null;
   }
 
+  /** When the oldest message whose download failed after `since` was received, or null. */
+  function oldestFailedMessageAt(mailboxId, since) {
+    return stmts.oldestFailed.get({ mailboxId: mailboxId || null, since: toInt(since, 0) }).v || null;
+  }
+
   // --- analysis ---------------------------------------------------------------
 
   function summary(filter = {}) {
@@ -660,7 +706,7 @@ function openDatabase({ dataDir, file } = {}) {
       GROUP BY day ORDER BY day`).all(...f.params);
 
     // Purged reports live on as daily totals; fold them in unless a search narrows to records.
-    const rolled = filter.q ? [] : dailyTotals(filter);
+    const rolled = filter.q || filter.q2 ? [] : dailyTotals(filter);
     const dayMap = new Map(days.map((d) => [d.day, { ...d }]));
     for (const r of rolled) {
       const fwd = filter.excludeForwards ? 0 : r.fail_forward;
@@ -721,12 +767,12 @@ function openDatabase({ dataDir, file } = {}) {
              MAX(r.range_end) AS lastSeen,
              COUNT(DISTINCT r.id) AS reports,
              COUNT(DISTINCT r.org_name) AS reporters,
-             GROUP_CONCAT(DISTINCT r.org_name) AS reporterNames,
-             GROUP_CONCAT(DISTINCT r.domain) AS domains,
-             GROUP_CONCAT(DISTINCT x.header_from) AS headerFroms,
-             GROUP_CONCAT(DISTINCT x.envelope_from) AS envelopeFroms,
-             GROUP_CONCAT(DISTINCT x.spf_domain) AS spfDomains,
-             GROUP_CONCAT(DISTINCT x.dkim_domain) AS dkimDomains,
+             json_group_array(DISTINCT r.org_name) AS reporterNames,
+             json_group_array(DISTINCT r.domain) AS domains,
+             json_group_array(DISTINCT x.header_from) AS headerFroms,
+             json_group_array(DISTINCT x.envelope_from) AS envelopeFroms,
+             json_group_array(DISTINCT x.spf_domain) AS spfDomains,
+             json_group_array(DISTINCT x.dkim_domain) AS dkimDomains,
              MAX(i.ptr) AS ptr,
              MAX(i.country_code) AS countryCode,
              MAX(i.country) AS country,
@@ -901,8 +947,7 @@ function openDatabase({ dataDir, file } = {}) {
       ORDER BY total DESC`).all(...f.params);
 
     // The policy each report domain published most recently, for the "covered by" note.
-    const policies = new Map(db.prepare(`
-      SELECT domain, p, sp FROM reports WHERE id IN (SELECT MAX(id) FROM reports GROUP BY domain)`).all().map((r) => [r.domain, r]));
+    const policies = new Map(db.prepare(`SELECT domain, p, sp FROM reports r WHERE ${LATEST_REPORT_PER_DOMAIN}`).all().map((r) => [r.domain, r]));
 
     return rows.map(({ passedTotal, ...row }) => {
       const domain = row.domain.toLowerCase();
@@ -974,14 +1019,14 @@ function openDatabase({ dataDir, file } = {}) {
       FROM records x JOIN reports r ON r.id = x.report_id
       WHERE ${f.sql}
       GROUP BY r.domain ORDER BY total DESC`).all(...f.params);
-    const policies = new Map(db.prepare("SELECT domain, p, sp, pct, adkim, aspf FROM reports WHERE id IN (SELECT MAX(id) FROM reports GROUP BY domain)").all().map((r) => [r.domain, r]));
+    const policies = new Map(db.prepare(`SELECT domain, p, sp, pct, adkim, aspf FROM reports r WHERE ${LATEST_REPORT_PER_DOMAIN}`).all().map((r) => [r.domain, r]));
     const latestAny = new Map(db.prepare("SELECT domain, MAX(range_end) AS lastSeen FROM reports GROUP BY domain").all().map((r) => [r.domain, r.lastSeen]));
     const unusedByDomain = new Map();
     for (const s of subdomains(filter)) {
       if (s.unused) unusedByDomain.set(s.policyDomain, (unusedByDomain.get(s.policyDomain) || 0) + 1);
     }
     const unlabelledByDomain = new Map();
-    for (const ip of ips(filter, { failingOnly: true, limit: 5000 })) {
+    for (const ip of ips(filter, { failingOnly: true, limit: INTERNAL_IP_LIMIT })) {
       if (ip.sender || ip.failed - (ip.likelyForwards || 0) <= 0) continue;
       for (const d of ip.domains) unlabelledByDomain.set(d, (unlabelledByDomain.get(d) || 0) + 1);
     }
@@ -1036,7 +1081,7 @@ function openDatabase({ dataDir, file } = {}) {
   }
 
   function messagesWithErrors(limit = 50) {
-    return db.prepare("SELECT * FROM messages WHERE status = 'error' ORDER BY received_at DESC LIMIT ?").all(limit);
+    return db.prepare("SELECT * FROM messages WHERE status IN ('error', 'fetch_failed') ORDER BY received_at DESC LIMIT ?").all(limit);
   }
 
   // --- known senders ----------------------------------------------------------
@@ -1152,7 +1197,7 @@ function openDatabase({ dataDir, file } = {}) {
     for (const kind of [...SENDER_KINDS, "unknown"]) {
       out[kind] = { sources: 0, total: 0, passed: 0, failed: 0, likelyForwards: 0 };
     }
-    for (const row of ips(filter, { limit: 5000 })) {
+    for (const row of ips(filter, { limit: INTERNAL_IP_LIMIT })) {
       const kind = row.sender ? row.sender.kind : "unknown";
       out[kind].sources += 1;
       out[kind].total += row.total;
@@ -1681,8 +1726,8 @@ function openDatabase({ dataDir, file } = {}) {
              SUM(x.count) AS total,
              SUM(CASE WHEN x.passed = 0 THEN x.count ELSE 0 END) AS failed,
              MIN(r.range_begin) AS firstSeen,
-             GROUP_CONCAT(DISTINCT r.org_name) AS reporters,
-             GROUP_CONCAT(DISTINCT x.header_from) AS headerFroms,
+             json_group_array(DISTINCT r.org_name) AS reporters,
+             json_group_array(DISTINCT x.header_from) AS headerFroms,
              MAX(i.ptr) AS ptr
       FROM records x
       JOIN reports r ON r.id = x.report_id
@@ -1731,7 +1776,7 @@ function openDatabase({ dataDir, file } = {}) {
   }
 
   function setPtr(ip, ptr) {
-    stmts.setPtr.run(ip, ptr || null, now());
+    stmts.setPtr.run({ ip, ptr: ptr || null, at: now() });
   }
 
   /** Source IPs with no geo lookup yet (ip_info row missing or never geo-resolved). */
@@ -1795,6 +1840,11 @@ function openDatabase({ dataDir, file } = {}) {
     return stmts.lastRunsByMailbox.all();
   }
 
+  /** Keeps the newest `keepPerMailbox` runs of each mailbox and drops the rest. Returns how many went. */
+  function pruneRuns({ keepPerMailbox = 200 } = {}) {
+    return stmts.pruneRuns.run(Math.max(1, toInt(keepPerMailbox, 200))).changes;
+  }
+
   /** Reports and messages stored per mailbox, for the filter dropdown. */
   function mailboxCounts() {
     return stmts.mailboxCounts.all();
@@ -1835,8 +1885,7 @@ function openDatabase({ dataDir, file } = {}) {
    * current schema (see upgradeFile). Returns row counts per table.
    */
   function importFrom(file) {
-    const escaped = String(file).replace(/'/g, "''");
-    db.exec(`ATTACH DATABASE '${escaped}' AS src`);
+    db.prepare("ATTACH DATABASE ? AS src").run(String(file));
     try {
       // The audit log is this instance's history and stays; everything else is replaced.
       const tables = db.prepare("SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'audit_log'").all().map((r) => r.name);
@@ -1979,6 +2028,8 @@ function openDatabase({ dataDir, file } = {}) {
     runs,
     lastRun,
     lastRunsByMailbox,
+    pruneRuns,
+    oldestFailedMessageAt,
     mailboxCounts,
     knownSenders,
     addKnownSender,

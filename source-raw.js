@@ -17,12 +17,13 @@ class SourceError extends Error {
    * @param fatal stop syncing this mailbox (bad credentials, host unreachable), as opposed to one bad message
    * @param stage where it failed, for the connection test: connection | login | folder | list | fetch
    */
-  constructor(message, { code = "source", fatal = false, stage = "connection" } = {}) {
+  constructor(message, { code = "source", fatal = false, stage = "connection", status = null } = {}) {
     super(message);
     this.name = "SourceError";
     this.code = code;
     this.fatal = fatal;
     this.stage = stage;
+    this.status = status;
   }
 }
 
@@ -56,6 +57,7 @@ function createRawSource({ type, idPrefix, config = {}, isConfigured, missing = 
         message.subject = message.subject || parsed.subject;
         message.from = message.from || parsed.from;
         message.internetMessageId = parsed.messageId;
+        message.hasMessagePart = parsed.hasMessagePart === true;
         if (!message.receivedAt) {
           const seconds = receivedAt || parsed.date || Math.floor(Date.now() / 1000);
           message.receivedAt = new Date(seconds * 1000).toISOString();
@@ -99,8 +101,9 @@ function createRawSource({ type, idPrefix, config = {}, isConfigured, missing = 
     return (await load(id)).parsed.attachments;
   }
 
+  /** The whole message as received, for the ARF parser. */
   async function getMime(id) {
-    return (await load(id)).raw.toString("latin1");
+    return (await load(id)).raw;
   }
 
   async function testConnection() {

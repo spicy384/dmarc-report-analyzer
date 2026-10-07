@@ -472,6 +472,7 @@ and fail without Python and a C++ toolchain.
 | `TLS_ENABLED` | `false` | Serve HTTPS with a generated self-signed certificate |
 | `TLS_HOSTS` | | Extra names/IPs for that certificate, comma separated |
 | `TLS_CERT`, `TLS_KEY` | | Use your own certificate instead |
+| `TRUST_PROXY` | `loopback, uniquelocal` | Which proxies may set `X-Forwarded-For` (so what the client address is for the sign-in throttle, sessions and audit log): `false`, a hop count, or addresses/CIDRs, as Express takes them |
 | `TRUST_PROXY_AUTH` | `false` | Accept the user from a reverse-proxy header (see below) |
 | `PROXY_USER_HEADER` | `remote-user` | Which header carries the username |
 
@@ -496,7 +497,7 @@ The pass runs 30 seconds after start and then daily.
 ### Retrying after a connection failure
 
 A mailbox that cannot be reached (DNS did not answer, the connection timed out or was
-reset, or the service answered 502/503/504) is tried again after a wait instead of
+reset, or the service answered 429 or 502/503/504) is tried again after a wait instead of
 failing the sync at once: by default twice, after 10 and then 20 seconds. **Settings →
 Mailbox sync → Retry after a connection failure** sets the number of retries (0 to 5,
 0 switches it off), the first wait (1 to 600 seconds) and whether the wait doubles or
@@ -504,6 +505,10 @@ stays the same, and shows what the choice amounts to. Messages already read are 
 so a retry only picks up where it broke off. A rejected sign-in, missing consent or a
 missing folder is not retried. Network errors now say why they failed (the low-level
 code, the host, and what it usually means) instead of "fetch failed".
+
+A single message whose download fails (one bad fetch among many) does not stop the
+run: it is recorded as a failed download, shown under **Messages that could not be read**, and listed
+again on the next sync, for up to a week after it arrived.
 
 ### Country and network of source IPs
 
@@ -647,7 +652,8 @@ minutes), every endpoint that takes a credential while signed out (`/api/auth/se
 `/api/auth/login`, its MFA and recovery steps, passkey sign-in) is throttled per client
 address: twenty failed attempts in 15 minutes answer `429` with `Retry-After` until the
 window passes. Successes never count, so a shared office address only pays for its own
-mistakes. Behind a reverse proxy the first `X-Forwarded-For` hop is the address.
+mistakes. Behind a reverse proxy the client address comes from `X-Forwarded-For`, trusted
+only from the proxies `TRUST_PROXY` names (by default this host and private networks).
 `LOGIN_RATE_LIMIT` changes the number; `0` switches it off.
 
 Every response carries a Content-Security-Policy (`default-src 'self'`; scripts only from

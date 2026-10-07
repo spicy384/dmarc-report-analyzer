@@ -74,6 +74,18 @@ function closeServer(server) {
 
   const single = extractMessage(Buffer.from(["From: a@b.test", "Subject: single", "Content-Type: application/gzip", "Content-Transfer-Encoding: base64", "", gzGoogle.toString("base64"), ""].join("\r\n"), "latin1"));
   check("mime: a message that is itself the attachment", single.attachments.length === 1 && single.attachments[0].bytes.equals(gzGoogle) && /gzip/.test(single.attachments[0].name));
+  check("mime: an ordinary report message has no attached message", ex.hasMessagePart === false);
+
+  const withMsg = extractMessage(Buffer.from(["From: a@b.test", "Subject: DMARC failure report", "Content-Type: multipart/report; report-type=feedback-report; boundary=x", "", "--x", "Content-Type: text/plain", "", "report", "--x", "Content-Type: message/feedback-report", "", "Feedback-Type: auth-failure", "--x", "Content-Type: message/rfc822", "", "From: c@d.test", "Subject: hi", "", "body", "--x--"].join("\r\n"), "latin1"));
+  check("mime: attached messages are flagged for the ARF parser, not listed as attachments", withMsg.hasMessagePart === true && withMsg.attachments.length === 0);
+
+  const forensicEml = fs.readFileSync(path.join(__dirname, "..", "examples", "forensic-report.eml"));
+  const rawForensic = createRawSource({ type: "imap", idPrefix: "t:", isConfigured: () => true, open: async () => ({ async *list() { yield { key: "f1" }; }, fetchRaw: async () => forensicEml, close: async () => {} }), test: async () => "x" });
+  for await (const m of rawForensic.listMessages({})) {
+    const atts = await rawForensic.getAttachments(m.id);
+    const mime = await rawForensic.getMime(m.id);
+    check("raw source: a forensic report is flagged and its MIME handed over whole", m.hasMessagePart === true && atts.length === 0 && Buffer.isBuffer(mime) && mime.equals(forensicEml));
+  }
 
   const rfc2231 = extractMessage(Buffer.from(["From: a@b.test", "Content-Type: multipart/mixed; boundary=x", "", "--x", "Content-Type: application/zip", "Content-Disposition: attachment; filename*=UTF-8''r%C3%A9port%20one.zip", "Content-Transfer-Encoding: base64", "", Buffer.from("PK\u0003\u0004data").toString("base64"), "--x--"].join("\r\n"), "latin1"));
   check("mime: RFC 2231 file name", rfc2231.attachments[0].name === "réport one.zip" && rfc2231.attachments[0].bytes.subarray(0, 2).toString() === "PK");
@@ -125,7 +137,9 @@ function closeServer(server) {
 
   // === POP3 against a mock server ===
   const popLog = [];
-  const popMessages = [["uid-a", msgGoogle], ["uid-b", Buffer.from("From: x@y.test\r\nSubject: dots\r\n\r\n.leading dot line\r\nnormal\r\n", "latin1")]];
+  // The third message is large enough to arrive in many TCP chunks, with dot-stuffed lines throughout.
+  const bigPop = Buffer.from(`From: big@y.test\r\nSubject: big\r\n\r\n${".x\r\nline\r\n".repeat(150000)}`, "latin1");
+  const popMessages = [["uid-a", msgGoogle], ["uid-b", Buffer.from("From: x@y.test\r\nSubject: dots\r\n\r\n.leading dot line\r\nnormal\r\n", "latin1")], ["uid-c", bigPop]];
   const popServer = net.createServer((sock) => {
     let user = null;
     let buf = "";
@@ -153,18 +167,21 @@ function closeServer(server) {
   const popPort = await listen(popServer);
   const pop = createPop3Source({ host: "127.0.0.1", port: popPort, security: "none", username: "reports", password: "secret" }, { idPrefix: "pop3:bx:", timeoutMs: 5000 });
   const popTest = await pop.testConnection();
-  check("pop3: connection test signs in and counts messages", popTest.ok && /holds 2 messages/.test(popTest.detail), JSON.stringify(popTest));
+  check("pop3: connection test signs in and counts messages", popTest.ok && /holds 3 messages/.test(popTest.detail), JSON.stringify(popTest));
   const popSeen = [];
   let popAtt = null;
   let dots = null;
+  let big = null;
   for await (const m of pop.listMessages({})) {
     popSeen.push(m.id);
     if (m.id.endsWith("uid-a")) popAtt = await pop.getAttachments(m.id);
-    if (m.id.endsWith("uid-b")) dots = await pop.getMime(m.id);
+    if (m.id.endsWith("uid-b")) dots = (await pop.getMime(m.id)).toString("latin1");
+    if (m.id.endsWith("uid-c")) big = await pop.getMime(m.id);
   }
-  check("pop3: lists by UIDL, oldest first", popSeen.join(",") === "pop3:bx:uid-a,pop3:bx:uid-b");
+  check("pop3: lists by UIDL, oldest first", popSeen.join(",") === "pop3:bx:uid-a,pop3:bx:uid-b,pop3:bx:uid-c");
   check("pop3: RETR returns the message intact", popAtt && popAtt.length === 1 && popAtt[0].bytes.equals(gzGoogle));
   check("pop3: dot-stuffed lines are restored", dots && dots.includes("\r\n.leading dot line\r\n") && !dots.includes(".."));
+  check("pop3: a large message arriving in many chunks is reassembled exactly", Buffer.isBuffer(big) && big.equals(bigPop), big && `${big.length} vs ${bigPop.length}`);
   check("pop3: never deletes, always quits", !popLog.some((l) => l.startsWith("DELE")) && popLog.filter((l) => l === "QUIT").length >= 2);
   const popBad = await createPop3Source({ host: "127.0.0.1", port: popPort, security: "none", username: "reports", password: "wrong" }, { timeoutMs: 5000 }).testConnection();
   check("pop3: wrong password is a login failure with advice", popBad.ok === false && popBad.stage === "login" && /app password/.test(popBad.detail), JSON.stringify(popBad));
@@ -242,6 +259,7 @@ function closeServer(server) {
     if (m[2] === "profile") return send(200, { emailAddress: "dmarc@example.com", messagesTotal: 42 });
     if (m[2] === "messages") {
       gState.queries.push(Object.fromEntries(url.searchParams.entries()));
+      if (gState.throttle) return send(429, { error: { message: "Rate limit exceeded", status: "RESOURCE_EXHAUSTED" } });
       if (!url.searchParams.get("pageToken")) return send(200, { messages: [{ id: "g2" }], nextPageToken: "page2" });
       return send(200, { messages: [{ id: "g1" }] });
     }
@@ -260,7 +278,12 @@ function closeServer(server) {
     const atts = await gmail.getAttachments(m.id);
     gSeen.push([m.id, m.receivedAt, atts.length]);
   }
-  check("gmail: pages through the listing", gSeen.map((s) => s[0]).sort().join(",") === "gws:bx:g1,gws:bx:g2" && gState.queries.length === 2 && gState.queries[1].pageToken === "page2");
+  check("gmail: pages through the listing, then yields oldest first", gSeen.map((s) => s[0]).join(",") === "gws:bx:g1,gws:bx:g2" && gState.queries.length === 2 && gState.queries[0].maxResults === "500" && gState.queries[1].pageToken === "page2", JSON.stringify(gSeen));
+  gState.throttle = true;
+  let gThrottled = null;
+  try { for await (const m of gmail.listMessages({})) { void m; } } catch (e) { gThrottled = e; }
+  gState.throttle = false;
+  check("gmail: 429 stops the mailbox as a retryable (throttled) failure", gThrottled && gThrottled.fatal === true && gThrottled.code === "throttled" && gThrottled.status === 429, gThrottled && gThrottled.message);
   check("gmail: query carries the date and the label", gState.queries[0].q === "after:1758000000 label:DMARC-Reports", gState.queries[0].q);
   check("gmail: raw messages decode and internalDate is used", gSeen.every((s) => s[2] === 1) && gSeen.find((s) => s[0].endsWith("g1"))[1] === "2025-09-22T10:06:00.000Z");
   check("gmail: the token is reused across calls", gState.tokenRequests === 1);

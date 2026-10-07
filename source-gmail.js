@@ -11,6 +11,8 @@ const { describeFetchError } = require("./net-errors");
 const crypto = require("crypto");
 const { createRawSource, SourceError } = require("./source-raw");
 
+const MAX_LISTED = 20000; // messages per run; the rest follow on the next run
+
 const SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const DEFAULT_API_BASE = "https://gmail.googleapis.com";
 const DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token";
@@ -99,9 +101,10 @@ function createGmailSource(cfg, { idPrefix = "gws:", fetchImpl = globalThis.fetc
     if (!res.ok) {
       const message = (data.error && (data.error.message || data.error.status)) || `HTTP ${res.status}`;
       if (res.status === 401) token = null;
-      const fatal = res.status === 401 || res.status === 403 || res.status === 404;
+      // 429 stops the mailbox too, but as a transient failure the sync retries after a pause.
+      const fatal = res.status === 401 || res.status === 403 || res.status === 404 || res.status === 429;
       const hint = res.status === 403 && /has not been used|disabled/i.test(message) ? " Enable the Gmail API for the service account's Google Cloud project." : "";
-      throw new SourceError(`Gmail API error (${res.status}): ${message}.${hint}`, { code: res.status === 429 ? "throttled" : "api", fatal, stage: "list" });
+      throw new SourceError(`Gmail API error (${res.status}): ${message}.${hint}`, { code: res.status === 429 ? "throttled" : "api", fatal, stage: "list", status: res.status });
     }
     return data;
   }
@@ -115,25 +118,29 @@ function createGmailSource(cfg, { idPrefix = "gws:", fetchImpl = globalThis.fetc
       async *list({ since }) {
         // Gmail's search takes epoch seconds for after:. A label narrows to where a filter files the reports.
         const q = [since ? `after:${since}` : "", config.folder ? `label:${String(config.folder).replace(/\s+/g, "-")}` : ""].filter(Boolean).join(" ");
+        // The API lists newest first. Every page is read before anything is yielded so the
+        // messages come out oldest first: a run that stops midway then leaves no gap behind
+        // the cursor, which is set from the newest message stored.
+        const ids = [];
         let pageToken = "";
         do {
-          const params = new URLSearchParams({ maxResults: "100", includeSpamTrash: "false" });
+          const params = new URLSearchParams({ maxResults: "500", includeSpamTrash: "false" });
           if (q) params.set("q", q);
           if (pageToken) params.set("pageToken", pageToken);
           const page = await api(`/messages?${params.toString()}`);
-          // Newest first from the API; oldest first reads better in the run log.
-          for (const m of [...(page.messages || [])].reverse()) {
-            yield { key: m.id };
-          }
+          for (const m of page.messages || []) ids.push(m.id);
           pageToken = page.nextPageToken || "";
-        } while (pageToken);
+        } while (pageToken && ids.length < MAX_LISTED);
+        for (const id of ids.reverse()) {
+          yield { key: id };
+        }
       },
       async fetchRaw(key) {
         let data;
         try {
           data = await api(`/messages/${encodeURIComponent(key)}?format=raw`);
         } catch (error) {
-          if (error.fatal && !/404/.test(error.message)) throw error;
+          if (error.fatal && error.status !== 404) throw error;
           throw new SourceError(`Could not fetch message ${key}: ${error.message}`, { code: "fetch", stage: "fetch" });
         }
         if (!data.raw) {

@@ -201,12 +201,28 @@ db.finishRun(runId, { messagesSeen: 2, reportsAdded: 2, duplicates: 1, errors: 0
 const last = db.lastRun();
 check("sync run recorded", last.id === runId && last.reports_added === 2 && last.finished_at >= last.started_at && last.since === 1758000000);
 check("runs list", db.runs().length === 1);
+for (let i = 0; i < 5; i += 1) db.finishRun(db.startRun("scheduled", null, "env"), {});
+db.finishRun(db.startRun("scheduled", null, "box2"), {});
+check("pruneRuns keeps the newest runs of each mailbox", db.pruneRuns({ keepPerMailbox: 3 }) === 3 && db.runs().length === 4 && db.runs().filter((r) => r.mailbox_id === "env").length === 3 && db.lastRunsByMailbox().length === 2);
+
+
+const geoFirst = openDatabase({ file: ":memory:" });
+geoFirst.insertReport({ messageId: "g1", attachmentName: "g.xml", parsed: parseAggregateReport(googleXml), xml: googleXml });
+geoFirst.setGeo("203.0.113.10", { source: "none" });
+check("a geo lookup alone leaves the reverse lookup pending", geoFirst.ipsMissingPtr().includes("203.0.113.10"));
+geoFirst.setPtr("203.0.113.10", null);
+check("a reverse lookup with no answer is still done", !geoFirst.ipsMissingPtr().includes("203.0.113.10") && geoFirst.ips().find((r) => r.ip === "203.0.113.10").ptr === null);
 
 db.setSetting("cursor", "123");
 check("settings", db.getSetting("cursor") === "123" && db.getSetting("missing") === null);
 
 const st = db.stats();
 check("stats", st.messages.total === 4 && st.reports.reports === 4 && st.reports.messages === 103);
+db.recordMessage({ graphId: "ff1", mailboxId: "env", receivedAt: 1758000000, status: "fetch_failed", error: "socket hang up" });
+check("a failed download is not a seen message but is listed with the errors", !db.hasMessage("ff1") && db.messagesWithErrors().some((m) => m.graph_id === "ff1"));
+check("oldest failed download within a window", db.oldestFailedMessageAt("env", 1757000000) === 1758000000 && db.oldestFailedMessageAt(null, 1757000000) === 1758000000 && db.oldestFailedMessageAt("env", 1759000000) === null && db.oldestFailedMessageAt("box2", 0) === null);
+db.recordMessage({ graphId: "ff1", mailboxId: "env", receivedAt: 1758000000, status: "no_report", error: null });
+check("a later success replaces the failed download", db.hasMessage("ff1") && db.oldestFailedMessageAt("env", 0) === null);
 
 db.recordMessage({ graphId: "m1", receivedAt: 1758300000, status: "error", error: "boom" });
 check("message upsert updates status", db.messagesWithErrors()[0].graph_id === "m1");
@@ -273,6 +289,14 @@ fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200
   sub.insertReport({ messageId: "s2", attachmentName: "s2.xml", parsed: parsed2, xml: googleXml });
   const later = Object.fromEntries(sub.subdomains({}).map((r) => [r.domain, r]));
   check("subdomains: the newest report's sp= applies to subdomains", later["hr.example.com"].appliedPolicy === "reject" && later["hr.example.com"].inheritsPolicy === false && later["hr.example.com"].total === 30);
+  // An older report that arrives later (higher id, earlier window) must not be taken for the current policy.
+  const parsed3 = parseAggregateReport(googleXml);
+  parsed3.metadata.reportId = "sub-3-old";
+  parsed3.metadata.dateRange = { begin: parsed3.metadata.dateRange.begin - 10 * 86400, end: parsed3.metadata.dateRange.end - 10 * 86400 };
+  parsed3.policy.sp = "none";
+  parsed3.records = [];
+  sub.insertReport({ messageId: "s3", attachmentName: "s3.xml", parsed: parsed3, xml: googleXml });
+  check("subdomains: the policy comes from the newest window, not the newest row", Object.fromEntries(sub.subdomains({}).map((r) => [r.domain, r]))["hr.example.com"].appliedPolicy === "reject");
   check("subdomains: search filter narrows to a From domain", sub.subdomains({ q: "hr.example.com" }).every((r) => r.domain === "hr.example.com"));
 
   // --- scorecard on the same data: one domain, quarantine, a spoofed subdomain, unlabelled failing sources ---

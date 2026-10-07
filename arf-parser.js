@@ -213,7 +213,8 @@ function parseArf(raw) {
 }
 
 /** Whether an email looks like it might be an ARF report, cheap enough to decide from the listing. */
-function looksLikeArf({ subject, from, attachments = [] } = {}) {
+function looksLikeArf({ subject, from, attachments = [], hasMessagePart = false } = {}) {
+  if (hasMessagePart) return true;
   if (attachments.some((a) => /feedback-report|rfc822/i.test(a.contentType || ""))) return true;
   const s = String(subject || "");
   return /\b(forensic|failure report|feedback report|dmarc)\b/i.test(s) && !/aggregate/i.test(s);

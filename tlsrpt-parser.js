@@ -9,6 +9,7 @@
  */
 const zlib = require("zlib");
 const { unzipSync } = require("fflate");
+const { zipEntryFilter } = require("./dmarc-parser");
 
 /** Thrown when bytes are JSON but not a TLS report. */
 class NotATlsReportError extends Error {
@@ -57,7 +58,7 @@ function extractJsonDocuments(buffer, filename = "", depth = 0) {
     return extractJsonDocuments(inner, filename.replace(/\.gz$/i, "") || "report.json", depth + 1);
   }
   if (isZip(buf)) {
-    const entries = unzipSync(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+    const entries = unzipSync(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), { filter: zipEntryFilter(filename, MAX_JSON_BYTES) });
     const docs = [];
     for (const [name, bytes] of Object.entries(entries)) {
       if (name.endsWith("/") || bytes.length === 0) continue;
@@ -66,7 +67,7 @@ function extractJsonDocuments(buffer, filename = "", depth = 0) {
     return docs;
   }
   if (looksLikeJson(buf)) {
-    return [{ name: filename || "report.json", json: buf.toString("utf8").replace(/^ /, "") }];
+    return [{ name: filename || "report.json", json: buf.toString("utf8").replace(/^\uFEFF/, "") }];
   }
   return [];
 }

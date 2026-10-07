@@ -25,6 +25,22 @@ class NotAReportError extends Error {
 const MAX_CONTAINER_DEPTH = 3;
 const MAX_XML_BYTES = 50 * 1024 * 1024;
 
+/**
+ * Refuses a zip whose entries claim to expand beyond `max` bytes in total, before
+ * any of them is inflated: a report is a few kilobytes, a zip bomb is not.
+ */
+function zipEntryFilter(filename, max) {
+  let total = 0;
+  return (entry) => {
+    if (entry.name.endsWith("/") || entry.originalSize === 0) return false;
+    total += entry.originalSize;
+    if (total > max) {
+      throw new Error(`${filename || "attachment"}: zip expands to more than ${Math.round(max / 1024 / 1024)} MB`);
+    }
+    return true;
+  };
+}
+
 function isGzip(buf) {
   return buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
 }
@@ -62,7 +78,7 @@ function extractXmlDocuments(buffer, filename = "", depth = 0) {
   }
 
   if (isZip(buf)) {
-    const entries = unzipSync(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
+    const entries = unzipSync(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), { filter: zipEntryFilter(filename, MAX_XML_BYTES) });
     const docs = [];
     for (const [name, bytes] of Object.entries(entries)) {
       if (name.endsWith("/") || bytes.length === 0) {
@@ -210,7 +226,7 @@ function parseAggregateReport(xml) {
 
     return {
       sourceIp,
-      count: Math.max(1, integer(row.count, 1)),
+      count: Math.max(0, integer(row.count, 1)),
       disposition: lower(evaluated.disposition) || "none",
       dkimEval,
       spfEval,
@@ -278,6 +294,7 @@ function summarizeRecords(records) {
 }
 
 module.exports = {
+  zipEntryFilter,
   NotAReportError,
   extractXmlDocuments,
   parseAggregateReport,

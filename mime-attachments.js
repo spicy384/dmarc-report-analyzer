@@ -80,10 +80,13 @@ function walk(text, depth, out) {
   const name = decodeParam(disposition.params, "filename") || decodeParam(contentType.params, "name");
   // Unnamed text parts are the message body, except XML: a few reporters send the report inline.
   const isText = contentType.type.startsWith("text/") && !name && contentType.type !== "text/xml";
-  const isMessage = contentType.type.startsWith("message/");
-  if (isText || isMessage) return;
-  if (!name && disposition.type !== "attachment" && depth === 0 && contentType.type === "text/plain") return;
-  out.push({
+  if (contentType.type.startsWith("message/")) {
+    // An attached message (or feedback report) is what a forensic report carries; the ARF parser reads it from the raw MIME.
+    out.hasMessagePart = true;
+    return;
+  }
+  if (isText) return;
+  out.attachments.push({
     name: name || `attachment.${(contentType.type.split("/")[1] || "bin").replace(/[^a-z0-9.+-]/gi, "")}`,
     contentType: contentType.type,
     bytes: decodeToBuffer(body, header(headers, "Content-Transfer-Encoding"))
@@ -92,7 +95,8 @@ function walk(text, depth, out) {
 
 /**
  * @param raw Buffer or string of a whole message
- * @returns { subject, from, date (unix seconds or null), messageId, attachments: [{ name, contentType, bytes }] }
+ * @returns { subject, from, date (unix seconds or null), messageId, attachments: [{ name, contentType, bytes }],
+ *            hasMessagePart (true when a message/* part was present, the shape of a forensic report) }
  */
 function extractMessage(raw) {
   const text = Buffer.isBuffer(raw) ? raw.toString("latin1") : String(raw);
@@ -101,14 +105,15 @@ function extractMessage(raw) {
   const parsedDate = dateHeader ? Date.parse(dateHeader) : NaN;
   const fromRaw = decodeHeaderWords(header(headers, "From") || "");
   const fromAddr = (fromRaw.match(/<([^>]+)>/) || [null, fromRaw])[1].trim();
-  const attachments = [];
-  walk(text, 0, attachments);
+  const out = { attachments: [], hasMessagePart: false };
+  walk(text, 0, out);
   return {
     subject: decodeHeaderWords(header(headers, "Subject") || "") || null,
     from: fromAddr || null,
     date: Number.isFinite(parsedDate) ? Math.floor(parsedDate / 1000) : null,
     messageId: header(headers, "Message-ID") || null,
-    attachments
+    attachments: out.attachments,
+    hasMessagePart: out.hasMessagePart
   };
 }
 

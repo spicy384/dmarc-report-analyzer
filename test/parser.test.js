@@ -110,4 +110,13 @@ threw = null;
 try { parser.extractXmlDocuments(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00]), "bad.gz"); } catch (e) { threw = e; }
 check("corrupt gzip raises", Boolean(threw));
 
+// A zip whose entries claim to inflate past the cap is refused before anything is inflated.
+const bomb = Buffer.from(zipSync({ "a.xml": new Uint8Array(26 * 1024 * 1024), "b.xml": new Uint8Array(26 * 1024 * 1024) }, { level: 1 }));
+threw = null;
+try { parser.extractXmlDocuments(bomb, "bomb.zip"); } catch (e) { threw = e; }
+check("zip that expands past the cap is refused", threw && /expands to more than 50 MB/.test(threw.message), threw && threw.message);
+
+const zeroCount = parser.parseAggregateReport(googleXml.toString().replace("<count>42</count>", "<count>0</count>"));
+check("a record with count 0 is kept as 0", zeroCount.records[0].count === 0);
+
 process.exit(report() ? 0 : 1);
