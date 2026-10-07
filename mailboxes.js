@@ -9,8 +9,8 @@
  * working without touching the file.
  */
 const crypto = require("crypto");
-const fs = require("fs");
 const path = require("path");
+const { readJsonFile, writeJsonFile } = require("./json-store");
 const { createGraphClient, loadCertificate, certificateInfo } = require("./graph");
 const { createImapSource } = require("./source-imap");
 const { createPop3Source } = require("./source-pop3");
@@ -42,24 +42,9 @@ function fail(status, message) {
   return error;
 }
 
-function readJson(file, fallback) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    return parsed ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // chmod is a no-op on some Windows setups; not fatal.
-  }
-}
+// Cached, atomic, and strict about unreadable files (json-store.js).
+const readJson = readJsonFile;
+const writeJson = writeJsonFile;
 
 function clean(value) {
   return value === undefined || value === null ? "" : String(value).trim();

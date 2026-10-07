@@ -29,7 +29,8 @@ function attempt(ip, status) {
   return { passed, status: res.statusCode, retryAfter: res.headers["Retry-After"], body: res.body };
 }
 
-check("clientAddress: first X-Forwarded-For hop wins, else req.ip", clientAddress({ headers: { "x-forwarded-for": "203.0.113.5, 10.0.0.1" }, ip: "10.0.0.1" }) === "203.0.113.5" && clientAddress({ headers: {}, ip: "::1" }) === "::1");
+// X-Forwarded-For is Express's business (the "trust proxy" setting decides what req.ip is), never read here.
+check("clientAddress: req.ip as Express resolved it, never the raw header", clientAddress({ headers: { "x-forwarded-for": "203.0.113.5, 10.0.0.1" }, ip: "10.0.0.1" }) === "10.0.0.1" && clientAddress({ headers: {}, ip: "::1" }) === "::1" && clientAddress({ headers: {}, socket: { remoteAddress: "10.9.9.9" } }) === "10.9.9.9");
 check("successes never count", [1, 2, 3, 4, 5].every(() => attempt("1.1.1.1", 200).passed) && limiter.retryAfter("1.1.1.1") === 0);
 attempt("2.2.2.2", 401);
 attempt("2.2.2.2", 401);

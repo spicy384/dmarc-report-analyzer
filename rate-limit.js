@@ -10,9 +10,9 @@
 const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_FAILURES = 20;
 
+/** The client address as Express resolves it, honouring the app's "trust proxy" setting. */
 function clientAddress(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-  return forwarded || req.ip || req.socket?.remoteAddress || "unknown";
+  return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
 function createRateLimiter({ windowMs = DEFAULT_WINDOW_MS, maxFailures = DEFAULT_MAX_FAILURES, now = Date.now, keyFor = clientAddress } = {}) {
@@ -64,7 +64,8 @@ function createRateLimiter({ windowMs = DEFAULT_WINDOW_MS, maxFailures = DEFAULT
       return res.status(429).json({ error: `Too many failed sign-in attempts from your address. Try again in ${wait >= 120 ? `${Math.ceil(wait / 60)} minutes` : `${wait} seconds`}.` });
     }
     res.on("finish", () => {
-      if (res.statusCode >= 400 && res.statusCode < 500 && res.statusCode !== 429) recordFailure(key);
+      // Only a refused credential counts: a validation error or "setup already done" is not an attempt.
+      if (res.statusCode === 401 || res.statusCode === 403) recordFailure(key);
       if (buckets.size > 10000) prune();
     });
     next();

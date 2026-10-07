@@ -244,8 +244,10 @@ const PROTECTED = [
     for (let i = 0; i < 6; i += 1) {
       locked = await req("/api/auth/login", { method: "POST", body: { username: "operator", password: "wrong-password" } });
     }
-    check("account locks after repeated failures", locked.status === 429, String(locked.status));
-    check("correct password still refused while locked", (await req("/api/auth/login", { method: "POST", body: { username: "operator", password: "another-long-password" } })).status === 429);
+    // A wrong password on a locked account answers like any wrong password, so the lock
+    // (and with it the account's existence) is only revealed to someone who knows the password.
+    check("wrong password on a locked account is a plain 401", locked.status === 401, String(locked.status));
+    check("correct password is refused with 429 while locked", (await req("/api/auth/login", { method: "POST", body: { username: "operator", password: "another-long-password" } })).status === 429);
 
     // === username enumeration ===
     const unknown = await req("/api/auth/login", { method: "POST", body: { username: "does-not-exist", password: "whatever-long" } });

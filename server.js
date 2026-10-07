@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { pipeline } = require("stream");
 const express = require("express");
 
 const { createAuth } = require("./auth-routes");
@@ -28,6 +29,21 @@ const UPLOAD_MAILBOX = "upload";
 const { createSync, publicJob, normaliseRetryPolicy, RETRY_DEFAULTS, RETRY_LIMITS } = require("./sync");
 
 const app = express();
+// Which proxies may set X-Forwarded-For (and so what req.ip means for the sign-in
+// throttle, the sessions list and the audit log). The default trusts a proxy on this
+// host or on a private network; TRUST_PROXY takes Express's forms: "false", a hop
+// count, or a comma-separated list of addresses/CIDRs/"loopback"/"uniquelocal".
+const TRUST_PROXY = process.env.TRUST_PROXY === undefined || process.env.TRUST_PROXY === "" ? "loopback, uniquelocal" : process.env.TRUST_PROXY;
+app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY === "false" ? false : TRUST_PROXY === "true" ? true : TRUST_PROXY);
+
+// Domains as they appear in reports and lookups (lower-cased by the caller).
+const DOMAIN_RE = /^[a-z0-9.-]+\.[a-z0-9-]{2,}$/;
+
+/** One string out of a query value (Express 5 may hand over an array for a repeated key). */
+function str(value, max = 200) {
+  const v = Array.isArray(value) ? value[0] : value;
+  return v === undefined || v === null ? undefined : String(v).slice(0, max);
+}
 const PORT = process.env.PORT || 3000;
 // Override with DATA_DIR when running in a container so the database lives on a volume.
 const DATA_DIR = process.env.DATA_DIR
@@ -217,8 +233,11 @@ function csvCell(value) {
   if (value === null || value === undefined) {
     return "";
   }
-  const s = Array.isArray(value) ? value.join(" ") : String(value);
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, "\"\"")}"` : s;
+  let s = Array.isArray(value) ? value.join(" ") : String(value);
+  // Report data is third-party text: a cell starting like a formula must not run when the
+  // file is opened in a spreadsheet, so it is prefixed and quoted.
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\r\n']/.test(s) ? `"${s.replace(/"/g, "\"\"")}"` : s;
 }
 
 function toCsv(rows) {
@@ -262,11 +281,18 @@ function filterFrom(req) {
 
 app.get("/api/status", route(async (req, res) => {
   const lastRuns = new Map(db.lastRunsByMailbox().map((r) => [r.mailbox_id, r]));
-  const counts = new Map(db.mailboxCounts().map((c) => [c.id, c]));
-  const list = mailboxes.list().map((m) => ({ ...m, lastRun: lastRuns.get(m.id) || null, counts: counts.get(m.id) || null }));
+  const mailboxCounts = db.mailboxCounts();
+  const counts = new Map(mailboxCounts.map((c) => [c.id, c]));
+  // Connection details (tenant and client ids, hosts, usernames, bucket names) are for administrators.
+  const admin = req.user?.role === "admin";
+  const list = mailboxes.list().map((m) => ({
+    ...(admin ? m : { id: m.id, name: m.name, mailbox: m.mailbox, type: m.type, typeLabel: m.typeLabel, folder: m.folder, enabled: m.enabled, readOnly: m.readOnly }),
+    lastRun: lastRuns.get(m.id) || null,
+    counts: counts.get(m.id) || null
+  }));
   res.json({
     mailboxes: list,
-    mailboxCounts: db.mailboxCounts(),
+    mailboxCounts,
     geoip: { ...geoip.describe(), stats: db.geoStats() },
     retention: retentionInfo(),
     forensicCount: db.forensicCount(),
@@ -392,7 +418,7 @@ app.post("/api/upload", authGuard.requireWriter, express.raw({ type: () => true,
 
 analysis.get("/forensic", route(async (req, res) => {
   const filter = filterFrom(req);
-  res.json(req.db.forensics(filter, { ip: req.query.ip, page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
+  res.json(req.db.forensics(filter, { ip: str(req.query.ip), page: positiveInt(req.query.page, 1), pageSize: positiveInt(req.query.pageSize, 50) }));
 }));
 
 analysis.get("/forensic/:id", route(async (req, res) => {
@@ -462,7 +488,7 @@ analysis.get("/weekly", route(async (req, res) => {
   } catch (error) {
     return res.status(400).json({ error: error.message });
   }
-  res.json(buildWeekly({ db: req.db, end, domain: req.query.domain ? String(req.query.domain).toLowerCase() : null, mailbox: req.query.mailbox || null }));
+  res.json(buildWeekly({ db: req.db, end, domain: req.query.domain ? String(req.query.domain).toLowerCase() : null, mailbox: str(req.query.mailbox, 40) || null }));
 }));
 
 /** The week ending on `end` (unix seconds, default today) against the week before, plus its plain-text form. */
@@ -579,7 +605,7 @@ app.get("/api/lookup", route(async (req, res) => {
 analysis.get("/policy", route(async (req, res) => {
   const filter = filterFrom(req);
   const domain = String(req.query.domain || filter.domain || "").trim().toLowerCase();
-  if (!/^[a-z0-9.-]+\.[a-z0-9-]{2,}$/.test(domain)) {
+  if (!DOMAIN_RE.test(domain)) {
     return res.status(400).json({ error: "Pick a domain first." });
   }
   const refresh = String(req.query.refresh || "") === "1";
@@ -784,7 +810,7 @@ app.post("/api/monitor/run", authGuard.requireAdmin, route(async (req, res) => {
 
 app.get("/api/dns-history", route(async (req, res) => {
   const domain = String(req.query.domain || "").trim().toLowerCase();
-  if (!/^[a-z0-9.-]+\.[a-z0-9-]{2,}$/.test(domain)) {
+  if (!DOMAIN_RE.test(domain)) {
     return res.status(400).json({ error: "Pick a domain first." });
   }
   res.json({ domain, history: db.dnsHistory(domain, { limit: positiveInt(req.query.limit, 100) }) });
@@ -830,7 +856,7 @@ app.delete("/api/known-senders/:id", authGuard.requireAdmin, route(async (req, r
 /** Proposes known-sender entries from a domain's SPF record; nothing is stored until the user accepts. */
 app.post("/api/known-senders/from-spf", authGuard.requireWriter, route(async (req, res) => {
   const domain = String((req.body && req.body.domain) || "").trim().toLowerCase();
-  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
+  if (!DOMAIN_RE.test(domain)) {
     return res.status(400).json({ error: "Enter a domain name." });
   }
   const spf = await dnsRecords.getSpf(domain, { refresh: Boolean(req.body && req.body.refresh) });
@@ -945,14 +971,25 @@ app.get("/api/maintenance/backup", authGuard.requireAdmin, route(async (req, res
   }
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15).replace("T", "-");
   const tmp = path.join(os.tmpdir(), `dmarc-backup-${process.pid}-${Date.now()}.tar.gz`);
-  const manifest = await createBackup({ db, dataDir: DATA_DIR, dest: tmp, version: APP_VERSION });
+  let manifest;
+  try {
+    manifest = await createBackup({ db, dataDir: DATA_DIR, dest: tmp, version: APP_VERSION });
+  } catch (error) {
+    fs.rm(tmp, { force: true }, () => {});
+    throw error;
+  }
   auditFrom(req, "backup.download", null, `${manifest.files.join(", ")}; ${manifest.bytes} bytes`);
   res.setHeader("Content-Type", "application/gzip");
   res.setHeader("Content-Disposition", `attachment; filename="dmarc-backup-${stamp}.tar.gz"`);
   res.setHeader("Content-Length", String(manifest.bytes));
-  const stream = fs.createReadStream(tmp);
-  stream.on("close", () => fs.rm(tmp, { force: true }, () => {}));
-  stream.pipe(res);
+  // pipeline() destroys the file stream when the client goes away and surfaces read errors.
+  await new Promise((resolve) => {
+    pipeline(fs.createReadStream(tmp), res, (error) => {
+      if (error && !res.headersSent) res.status(500).end();
+      fs.rm(tmp, { force: true }, () => {});
+      resolve();
+    });
+  });
 }));
 
 // The archive arrives as the raw request body; it is small compared to the 1 GB cap.
@@ -1049,9 +1086,9 @@ analysis.get("/ips/:ip", route(async (req, res) => {
 analysis.get("/records", route(async (req, res) => {
   const filter = filterFrom(req);
   res.json(req.db.records(filter, {
-    result: req.query.result,
-    ip: req.query.ip,
-    org: req.query.org,
+    result: str(req.query.result, 20),
+    ip: str(req.query.ip, 60),
+    org: str(req.query.org),
     page: positiveInt(req.query.page, 1),
     pageSize: positiveInt(req.query.pageSize, 100)
   }));
@@ -1060,7 +1097,7 @@ analysis.get("/records", route(async (req, res) => {
 analysis.get("/reports", route(async (req, res) => {
   const filter = filterFrom(req);
   res.json(req.db.reports(filter, {
-    org: req.query.org,
+    org: str(req.query.org),
     page: positiveInt(req.query.page, 1),
     pageSize: positiveInt(req.query.pageSize, 50)
   }));
@@ -1102,7 +1139,7 @@ analysis.get("/domains", route(async (req, res) => {
 
 analysis.get("/export/records.csv", route(async (req, res) => {
   const filter = filterFrom(req);
-  const { rows, total } = req.db.records(filter, { result: req.query.result, ip: req.query.ip, org: req.query.org, page: 1, pageSize: CSV_ROW_CAP });
+  const { rows, total } = req.db.records(filter, { result: str(req.query.result, 20), ip: str(req.query.ip, 60), org: str(req.query.org), page: 1, pageSize: CSV_ROW_CAP });
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=\"dmarc-records.csv\"");
   if (total > rows.length) {
@@ -1154,6 +1191,15 @@ app.use("/api", (req, res, next) => {
   req.db = db;
   next();
 }, analysis);
+
+// Errors thrown outside route() (synchronous middleware such as the account store refusing
+// an unreadable file) still answer as JSON with the right status instead of an HTML page.
+app.use((error, req, res, next) => {
+  const status = Number(error.status) || (error.type === "entity.too.large" ? 413 : 500);
+  if (status >= 500) console.error(`request failed: ${error.message}`);
+  if (res.headersSent) return;
+  res.status(status).json({ error: status >= 500 && !error.status ? "Internal error." : error.message });
+});
 
 // --- boot ------------------------------------------------------------------
 
@@ -1224,7 +1270,7 @@ if (require.main === module) {
     } });
     console.log("Monitoring: DNS records snapshotted daily; reporter silence and stalled ingestion checked hourly and after each sync.");
 
-    geoip.open().then((g) => {
+    geoip.open().catch((error) => ({ cityDb: null, asnDb: null, online: false, problems: [error.message] })).then((g) => {
       const parts = [];
       if (g.cityDb) parts.push("city file");
       if (g.asnDb) parts.push("ASN file");

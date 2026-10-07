@@ -5,7 +5,6 @@
  * matters (users, sessions) is persisted so a restart does not sign everyone
  * out or lose accounts.
  */
-const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const QRCode = require("qrcode");
@@ -13,10 +12,18 @@ const QRCode = require("qrcode");
 const auth = require("./auth");
 const webauthn = require("@simplewebauthn/server");
 const { createRateLimiter } = require("./rate-limit");
+const { readJsonFile, writeJsonFile } = require("./json-store");
 
 // Failed sign-in attempts allowed per client address per 15 minutes, on top of the
 // per-account lockout below. 0 switches the address limit off (tests do this).
-const LOGIN_RATE_LIMIT = process.env.LOGIN_RATE_LIMIT === undefined ? 20 : Number(process.env.LOGIN_RATE_LIMIT) || 0;
+const LOGIN_RATE_LIMIT = (() => {
+  const raw = process.env.LOGIN_RATE_LIMIT;
+  if (raw === undefined || raw === "") return 20;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : 20;
+})();
+// A session's lastSeenAt is persisted at most this often; the idle window is hours, so seconds do not matter.
+const LAST_SEEN_WRITE_INTERVAL_MS = 60 * 1000;
 
 const SESSION_COOKIE = "dmarc_session";
 const RP_NAME = "DMARC Report Analyzer";
@@ -57,8 +64,7 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
 
   /** Where a session was opened from, kept on the session for the Sessions list. */
   function clientInfo(req) {
-    const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
-    return { ip: forwarded || req.ip || null, userAgent: String(req.headers["user-agent"] || "").slice(0, 200) };
+    return { ip: req.ip || null, userAgent: String(req.headers["user-agent"] || "").slice(0, 200) };
   }
 
   /** A stable, non-secret handle for a session id. */
@@ -80,25 +86,10 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
   // Pending logins live in memory only: they are short-lived by design.
   const pendingLogins = new Map();
 
-  function readJson(file, fallback) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-      return parsed ?? fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
-  function writeJson(file, value) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
-    // Best effort: these files hold password hashes and TOTP secrets.
-    try {
-      fs.chmodSync(file, 0o600);
-    } catch {
-      // chmod is a no-op on some Windows setups; not fatal.
-    }
-  }
+  // Cached by mtime and written atomically (json-store.js); an unreadable file throws
+  // rather than reading as "no accounts yet", which would reopen first-run setup.
+  const readJson = readJsonFile;
+  const writeJson = writeJsonFile;
 
   const loadUsers = () => {
     const u = readJson(USERS_FILE, []);
@@ -186,9 +177,14 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
       return null;
     }
 
-    // Sliding idle window.
-    session.lastSeenAt = Date.now();
-    saveSessions(sessions);
+    // Sliding idle window, persisted once a minute rather than on every request.
+    const now = Date.now();
+    if (pruned || now - (session.lastSeenAt || 0) >= LAST_SEEN_WRITE_INTERVAL_MS) {
+      session.lastSeenAt = now;
+      saveSessions(sessions);
+    } else {
+      session.lastSeenAt = now;
+    }
     return { id, ...session };
   }
 
@@ -200,18 +196,20 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
     }
   }
 
-  function destroySessionsForUser(userId) {
+  /** Ends a user's sessions (all of them, or all but `except`); returns how many ended. */
+  function destroySessionsForUser(userId, { except = null } = {}) {
     const sessions = loadSessions();
-    let changed = false;
+    let ended = 0;
     for (const [id, s] of Object.entries(sessions)) {
-      if (s.userId === userId) {
+      if (s.userId === userId && id !== except) {
         delete sessions[id];
-        changed = true;
+        ended += 1;
       }
     }
-    if (changed) {
+    if (ended) {
       saveSessions(sessions);
     }
+    return ended;
   }
 
   // --- cookies -------------------------------------------------------------
@@ -221,7 +219,14 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
     for (const part of String(header || "").split(";")) {
       const idx = part.indexOf("=");
       if (idx > 0) {
-        out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+        const raw = part.slice(idx + 1).trim();
+        let value = raw;
+        try {
+          value = decodeURIComponent(raw);
+        } catch {
+          // Another app's cookie with a bare "%": keep it as sent rather than fail every request.
+        }
+        out[part.slice(0, idx).trim()] = value;
       }
     }
     return out;
@@ -370,11 +375,20 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
     }
 
     // CSRF: cookie-authenticated state changes must echo the session token.
-    // Proxy-authenticated calls are exempt because they carry no cookie.
     if (!SAFE_METHODS.has(req.method) && !identity.viaProxy) {
       const supplied = req.headers[CSRF_HEADER];
       if (!supplied || !auth.safeEqual(supplied, identity.session.csrfToken)) {
         return res.status(403).json({ error: "Invalid or missing CSRF token." });
+      }
+    }
+    // Behind an authentication proxy there is no token, but the proxy's own cookie still
+    // rides along on a cross-site request. The browser's Sec-Fetch-Site says where the
+    // request came from; a custom header (which forces a CORS preflight) is the fallback.
+    if (!SAFE_METHODS.has(req.method) && identity.viaProxy) {
+      const site = String(req.headers["sec-fetch-site"] || "").toLowerCase();
+      const sameSite = site === "same-origin" || site === "none";
+      if (!sameSite && !(site === "" && req.headers[CSRF_HEADER] !== undefined)) {
+        return res.status(403).json({ error: "Cross-site request refused." });
       }
     }
 
@@ -484,14 +498,16 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
       return invalid();
     }
 
+    // The password is checked before the lockout is mentioned, so a locked account with a
+    // wrong password answers exactly like an unknown username.
+    if (!auth.verifyPassword(password, user.passwordHash)) {
+      if (!isLockedOut(user)) registerFailure(user);
+      return invalid();
+    }
+
     if (isLockedOut(user)) {
       const mins = Math.ceil((user.lockedUntil - Date.now()) / 60000);
       return res.status(429).json({ error: `Too many failed attempts. Try again in ${mins} minute(s).` });
-    }
-
-    if (!auth.verifyPassword(password, user.passwordHash)) {
-      registerFailure(user);
-      return invalid();
     }
 
     clearFailures(user);
@@ -573,6 +589,10 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
       return res.status(401).json({ error: "Sign-in expired. Start again." });
     }
 
+    if (isLockedOut(user)) {
+      return res.status(429).json({ error: "Too many failed attempts. Try again later." });
+    }
+
     const supplied = auth.hashRecoveryCode(req.body?.code);
     const remaining = (user.recoveryCodes || []).filter((h) => h !== supplied);
 
@@ -615,8 +635,9 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
         userID: Buffer.from(user.id, "utf8"),
         attestationType: "none",
         excludeCredentials: (user.passkeys || []).map((p) => ({ id: p.id, transports: p.transports })),
-        // A discoverable credential with user verification, so it can sign in by itself.
-        authenticatorSelection: { residentKey: "required", userVerification: "preferred" }
+        // A discoverable credential with user verification, so it can sign in by itself;
+        // sign-in requires verification, so a key that cannot verify is refused here, not then.
+        authenticatorSelection: { residentKey: "required", userVerification: "required" }
       });
       rememberChallenge(`reg:${user.id}`, options.challenge);
       res.json({ options });
@@ -638,7 +659,7 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
         expectedChallenge,
         expectedOrigin: ctx.origin,
         expectedRPID: ctx.rpID,
-        requireUserVerification: false
+        requireUserVerification: true
       });
     } catch (error) {
       return res.status(400).json({ error: `The passkey could not be verified: ${error.message}` });
@@ -796,7 +817,7 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
   /** Signs the caller out everywhere, this session included. */
   router.post("/api/auth/sessions/sign-out-all", requireAuth, (req, res) => {
     const ended = destroySessionsForUser(req.user.id);
-    log(req, "session.sign_out_all", req.user.username, `${typeof ended === "number" ? ended : "all"} session(s) ended`);
+    log(req, "session.sign_out_all", req.user.username, `${ended} session(s) ended`);
     clearSessionCookie(res);
     res.json({ ok: true });
   });
@@ -874,8 +895,10 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
     }
 
     updateUser(user.id, { passwordHash: auth.hashPassword(next) });
-    log(req, "password.change", req.user.username, null);
-    return res.json({ ok: true });
+    // Whoever else holds a session on the old password is signed out; this session stays.
+    const ended = destroySessionsForUser(user.id, { except: req.session ? req.session.id : null });
+    log(req, "password.change", req.user.username, ended ? `${ended} other session(s) ended` : null);
+    return res.json({ ok: true, otherSessionsEnded: ended });
   });
 
   // --- user management (admin) ---------------------------------------------

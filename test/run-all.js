@@ -18,6 +18,7 @@ const SUITES = [
   "monitor.test.js",
   "scratch.test.js",
   "rate-limit.test.js",
+  "json-store.test.js",
   "version.test.js",
   "geoip.test.js",
   "geoip-update.test.js",

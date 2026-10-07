@@ -101,7 +101,9 @@ check("env entry can use a certificate", envCert.id === ENV_ID && envCert.authMe
 // --- without env --------------------------------------------------------------
 const bare = createMailboxStore({ dataDir, env: {} });
 check("no env entry when variables are missing; file entries still load", bare.list().length === 1 && bare.list()[0].id === added.id);
-check("corrupt file is treated as empty", (() => { const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "dmarc-mb2-")); fs.writeFileSync(path.join(d2, "mailboxes.json"), "{not json"); const s2 = createMailboxStore({ dataDir: d2 }); const ok = s2.list().length === 0; fs.rmSync(d2, { recursive: true, force: true }); return ok; })());
+// A corrupt file is refused loudly (503) rather than read as "no mailboxes", which would
+// silently stop every sync and invite re-adding them.
+check("corrupt file is an error, not an empty store", (() => { const d2 = fs.mkdtempSync(path.join(os.tmpdir(), "dmarc-mb2-")); fs.writeFileSync(path.join(d2, "mailboxes.json"), "{not json"); const s2 = createMailboxStore({ dataDir: d2 }); let err = null; try { s2.list(); } catch (e) { err = e; } fs.rmSync(d2, { recursive: true, force: true }); return err && err.status === 503 && /mailboxes.json/.test(err.message); })());
 
 fs.rmSync(dataDir, { recursive: true, force: true });
 process.exit(report() ? 0 : 1);
