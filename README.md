@@ -21,7 +21,7 @@ real mail.
 |---|---|
 | **Sending sources**: every address that sent as your domain, with reverse DNS, network, your label or a catalogue guess, why it fails and a 30-day trend.<br>![Sending sources table](docs/screenshots/sources.png) | **Policy readiness**: your DMARC, SPF, DKIM and MTA-STS records checked live, and what `p=reject` would have done to the period's mail.<br>![Policy readiness, the "If p=reject" tab](docs/screenshots/policy.png) |
 | **This week** against last week, ready to copy into an email or print.<br>![This week panel](docs/screenshots/weekly.png) | **Domains**: one row per domain with its policy, pass rate and what needs attention.<br>![Domains scorecard](docs/screenshots/domains.png) |
-| **Analyze headers**: paste a message's headers to see why it passed or failed, with alignment recomputed against the From domain.<br>![Header analysis: verdicts, findings and the authentication tab](docs/screenshots/header-analysis.png) | The same message's **path**, hop by hop with the wait before each. The report exports as PDF, HTML, text or JSON.<br>![Header analysis: the path tab](docs/screenshots/header-path.png) |
+| **Analyze headers**: paste a message's headers for a spoof verdict (likely legitimate to likely spoofed, with the reasons and their weights) and the SPF, DKIM and DMARC results with alignment recomputed against the From domain.<br>![Header analysis: verdicts, findings and the authentication tab](docs/screenshots/header-analysis.png) | The same message's **path**, hop by hop with the wait before each. The report exports as PDF, HTML, text or JSON.<br>![Header analysis: the path tab](docs/screenshots/header-path.png) |
 | **TLS reports** (RFC 8460): sessions that succeeded and failed over TLS, by reason, receiving MX and sending MTA.<br>![TLS reports panel](docs/screenshots/tls-reports.png) | **Settings**: mailboxes in Microsoft 365, Google Workspace, Amazon SES, IMAP or POP3, with retry options for connection failures.<br>![Mailbox sync settings](docs/screenshots/settings-sync.png) |
 
 Dark theme:
@@ -161,19 +161,32 @@ SpamAssassin-style markers; and all headers in order. Findings in plain language
 top: a disguised display name, a Reply-To in another domain, a slow hop, a signature that
 no longer has a key.
 
-Above the findings, one answer: **Likely legitimate**, **Probably legitimate**,
-**Unclear**, **Suspicious** or **Likely spoofed**, with a confidence and the reasons that
-decided it, each with its weight. The weights come from the DMARC result (a pass on a
-public mail provider counts for little, since anyone can open a mailbox there), whether
-the sending address is one you labelled or one your DMARC reports know, a forwarder's ARC
-chain or the receiver's override softening a failure, a display name that hides another
-address or borrows the name of one of your domains, a From domain that is a near miss of
-one of yours (swapped or look-alike letters, an added word, another suffix), a Reply-To
-that diverts the conversation to a public mailbox, DKIM signatures that skip From or
-verify failed, Microsoft's composite authentication and category, and spam-filter marks.
-It is a guess: headers copied from a mail client carry no Authentication-Results, so the
-verdict then rests on thin evidence and says so, and a well-run domain that is nobody's
-look-alike passes every check whoever owns it. An Exchange Online trace is prefilled with the Message-ID. The result
+### Spoof verdict
+
+Above the findings, one answer with a confidence and the reasons that decided it, each
+with its weight for or against:
+
+| Verdict | Score | Typical case |
+|---|---|---|
+| **Likely legitimate** | +40 and up | DMARC passes with aligned DKIM, from a sending address you labelled or your reports know |
+| **Probably legitimate** | +15 to +39 | A pass with little else to go on, or a forwarded message whose original pass the ARC record vouches for |
+| **Unclear** | −14 to +14 | Signals both ways, or too few of them |
+| **Suspicious** | −15 to −39 | A disguised display name, a look-alike domain, your name on a public mailbox, replies diverted elsewhere |
+| **Likely spoofed** | −40 and below | DMARC fails for your domain from a system your reports have never seen, with the filter's marks to match |
+
+The weights come from the DMARC result (a pass on a public mail provider counts for
+little, since anyone can open a mailbox there); whether the sending address is one you
+labelled or one your DMARC reports know; a forwarder's ARC chain or the receiver's
+override softening a failure, and the forwarder's own ARC record restoring the original
+pass; a display name that hides another address or borrows the name of one of your
+domains; a From domain that is a near miss of one of yours (swapped or look-alike
+letters, an added word, another suffix), which outweighs a clean pass on purpose; a
+Reply-To that diverts the conversation to a public mailbox; DKIM signatures that skip
+From or fail to verify; Microsoft's composite authentication and category; and
+spam-filter marks. It is a guess: headers copied from a mail client carry no
+Authentication-Results, so the verdict then rests on thin evidence, says so, and stays
+at the middle steps; and a well-run domain that is nobody's look-alike passes every
+check whoever owns it. The verdict is carried into the text, HTML and JSON exports. An Exchange Online trace is prefilled with the Message-ID. The result
 can be exported: **Print / PDF** prints the whole report with every section expanded,
 **Download report** saves a self-contained HTML file (no scripts, no external requests) to
 attach to a ticket, **Copy as text** puts a plain-text version on the clipboard, and
