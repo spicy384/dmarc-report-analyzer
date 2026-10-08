@@ -281,6 +281,18 @@ function headerReportSections(a) {
   const v = a.verdicts;
   const who = (p) => (p ? `${p.name ? `${p.name} ` : ""}<${p.address || "?"}>` : "-");
   const sections = [];
+  if (a.assessment) {
+    const s = a.assessment;
+    sections.push({
+      title: "Assessment",
+      pairs: [
+        ["Verdict", `${s.label} (${s.confidence} confidence, score ${s.score > 0 ? "+" : ""}${s.score})`],
+        ["In short", s.summary],
+        ...s.reasons.map((r) => [r.effect === "spoofed" ? `Against (${Math.abs(r.weight)})` : `For (${r.weight})`, r.text]),
+        ...s.caveats.map((c) => ["Caveat", c])
+      ]
+    });
+  }
   sections.push({
     title: "Message",
     pairs: [
@@ -415,6 +427,9 @@ function headerReportHtml(a) {
   ];
   if (v.arc) pills.push(pill("ARC", v.arc.result || v.arc.chain || "present", (v.arc.result || v.arc.chain) === "pass"));
   if (a.microsoft && a.microsoft.compauth) pills.push(pill("compauth", a.microsoft.compauth.result, /pass/.test(a.microsoft.compauth.result)));
+  const verdict = a.assessment
+    ? `<div class="assessment ${e(a.assessment.level)}"><strong>${e(a.assessment.label)}</strong> <span class="conf">(${e(a.assessment.confidence)} confidence)</span><p>${e(a.assessment.summary)}</p></div>`
+    : "";
   const body = [];
   for (const s of headerReportSections(a)) {
     body.push(`<h2>${e(s.title)}</h2>`);
@@ -452,6 +467,10 @@ function headerReportHtml(a) {
   ul.findings li { padding: 6px 10px; margin: 4px 0; border-left: 4px solid #a3a3a3; background: #fafafa; }
   ul.findings li.good { border-color: #16a34a; } ul.findings li.bad { border-color: #dc2626; } ul.findings li.warn { border-color: #d97706; }
   footer { margin-top: 28px; font-size: 12px; color: #666; }
+  .assessment { margin: 12px 0 4px; padding: 10px 14px; border-left: 6px solid #a3a3a3; background: #fafafa; }
+  .assessment strong { font-size: 16px; } .assessment .conf { color: #666; font-size: 12px; } .assessment p { margin: 4px 0 0; }
+  .assessment.likely-legitimate, .assessment.probably-legitimate { border-color: #16a34a; }
+  .assessment.suspicious { border-color: #d97706; } .assessment.likely-spoofed { border-color: #dc2626; }
   @media print { body { background: #fff; } main { padding: 0; max-width: none; } tr { break-inside: avoid; } }
 </style>
 </head>
@@ -459,6 +478,7 @@ function headerReportHtml(a) {
 <main>
 <h1>${e(headerReportTitle(a))}</h1>
 <div class="pills">${pills.join("")}</div>
+${verdict}
 ${body.join("\n")}
 <footer>${e(headerReportFooter())}</footer>
 </main>
@@ -505,11 +525,52 @@ document.getElementById("hdr-export-text").addEventListener("click", async () =>
   hdrStatus.textContent = ok ? "Report copied as text." : "The browser would not allow copying, so the text report was downloaded instead.";
 });
 
+/** The one-line answer (spoofed or legitimate?) with its reasons, above the details. */
+function renderHeaderAssessment(s) {
+  const box = document.getElementById("hdr-assessment");
+  box.replaceChildren();
+  box.hidden = !s;
+  if (!s) return;
+  box.className = `hdr-assessment level-${s.level}`;
+  const head = document.createElement("div");
+  head.className = "hdr-assessment-head";
+  const label = document.createElement("span");
+  label.className = "hdr-assessment-level";
+  label.textContent = s.label;
+  const conf = document.createElement("span");
+  conf.className = `pill pill-sev-${s.confidence === "high" ? "info" : s.confidence === "medium" ? "medium" : "high"}`;
+  conf.textContent = `${s.confidence} confidence`;
+  head.append(label, conf);
+  const summary = document.createElement("p");
+  summary.className = "hdr-assessment-summary";
+  summary.textContent = s.summary;
+  box.append(head, summary);
+  if (s.reasons.length) {
+    const ul = document.createElement("ul");
+    ul.className = "hdr-assessment-reasons";
+    for (const r of s.reasons) {
+      const li = document.createElement("li");
+      li.className = `effect-${r.effect}`;
+      li.textContent = `${r.effect === "spoofed" ? "\u2212" : "+"}${Math.abs(r.weight)}  ${r.text}`;
+      li.title = r.effect === "spoofed" ? "Points towards a spoofed message" : "Points towards a legitimate message";
+      ul.appendChild(li);
+    }
+    box.appendChild(ul);
+  }
+  for (const c of s.caveats) {
+    const p = document.createElement("p");
+    p.className = "hdr-assessment-caveat";
+    p.textContent = c;
+    box.appendChild(p);
+  }
+}
+
 function renderHeaderAnalysis(a) {
   lastHeaderAnalysis = a;
   hdrResultsPanel.hidden = false;
   const v = a.verdicts;
   document.getElementById("hdr-title").textContent = a.summary.subject ? `Result: ${a.summary.subject}` : "Result";
+  renderHeaderAssessment(a.assessment || null);
   hdrVerdicts.replaceChildren(
     hdrPill("SPF", v.spf.result ? (v.spf.result === "pass" && !v.spf.aligned ? "pass, not aligned" : v.spf.result) : "none", { good: ["pass"] }),
     hdrPill("DKIM", v.dkim.passingDomains.length ? (v.dkim.aligned ? "pass" : "pass, not aligned") : v.dkim.result, { good: ["pass"] }),

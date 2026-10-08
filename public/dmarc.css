@@ -1512,6 +1512,51 @@ body.scratch-mode #mailbox-label {
   flex-wrap: wrap;
   gap: 6px;
 }
+/* The spoofed-or-legitimate assessment above the findings. */
+.hdr-assessment {
+  margin: 12px 0 4px;
+  padding: 12px 16px;
+  border-left: 6px solid var(--border-strong);
+  border-radius: 0 var(--radius, 10px) var(--radius, 10px) 0;
+  background: var(--bg-accent);
+}
+.hdr-assessment.level-likely-legitimate,
+.hdr-assessment.level-probably-legitimate { border-left-color: var(--success, #16a34a); }
+.hdr-assessment.level-suspicious { border-left-color: var(--warning, #d97706); }
+.hdr-assessment.level-likely-spoofed { border-left-color: var(--danger); }
+.hdr-assessment-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.hdr-assessment-level {
+  font-size: 18px;
+  font-weight: 700;
+}
+.hdr-assessment-summary {
+  margin: 6px 0 0;
+}
+.hdr-assessment-reasons {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.hdr-assessment-reasons li {
+  padding-left: 10px;
+  border-left: 3px solid var(--border-strong);
+  white-space: pre-wrap;
+}
+.hdr-assessment-reasons li.effect-legitimate { border-left-color: var(--success, #16a34a); }
+.hdr-assessment-reasons li.effect-spoofed { border-left-color: var(--danger); }
+.hdr-assessment-caveat {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .hdr-findings {
   list-style: none;
   margin: 12px 0;

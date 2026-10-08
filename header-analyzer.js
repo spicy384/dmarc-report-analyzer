@@ -4,13 +4,15 @@
  * with the From domain, the path it took hop by hop with the time spent on each,
  * the DKIM signatures it carries (checked against DNS), the address that handed
  * it to the receiver, and what the spam filter stamped on it (Microsoft 365 in
- * detail, SpamAssassin-style scores generically). Parsing is pure; the DNS and
- * enrichment lookups are injected so tests run offline. Nothing is stored.
+ * detail, SpamAssassin-style scores generically), and one assessment on top: is it
+ * more likely spoofed or legitimate, and why (header-assessment.js). Parsing is pure;
+ * the DNS and enrichment lookups are injected so tests run offline. Nothing is stored.
  */
 const { splitHeaders, decodeHeaderWords } = require("./arf-parser");
 const { parseIp } = require("./ipmatch");
 const { matchCatalogue } = require("./sender-catalogue");
 const { organizationalDomain: orgDomain } = require("./domains");
+const { assessHeaders } = require("./header-assessment");
 
 const MAX_INPUT_BYTES = 512 * 1024;
 const MAX_DKIM_LOOKUPS = 6;
@@ -558,7 +560,18 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
       if (microsoft.sfv && ["SKB", "BLK", "SKS"].includes(microsoft.sfv)) add("warn", `Marked as spam by configuration, not by content (SFV:${microsoft.sfv}: ${microsoft.sfvMeaning}).`);
     }
 
-    return {
+    // Your own domains (the ones your DMARC reports are about) let the assessment spot
+    // look-alike domains and display names that borrow your name.
+    let ownDomains = [];
+    if (db && typeof db.domains === "function") {
+      try {
+        ownDomains = db.domains().map((d) => d.domain);
+      } catch {
+        ownDomains = [];
+      }
+    }
+
+    const result = {
       summary,
       verdicts,
       authResults: authHeaders,
@@ -575,6 +588,8 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
       headers,
       counts: { headers: headers.length, hops: hops.length, signatures: signatures.length }
     };
+    result.assessment = assessHeaders(result, { ownDomains });
+    return result;
   }
 
   return { analyze };

@@ -34,7 +34,8 @@ const dnsRecords = {
 };
 const db = {
   ips: (_f, { ip }) => (ip === "167.89.12.34" ? [{ ip, total: 420, failed: 3, firstSeen: 1, lastSeen: 2 }] : []),
-  senderFor: (ip) => (ip === "167.89.12.34" ? { id: 1, kind: "vendor", label: "SendGrid", pattern: "*.sendgrid.net" } : null)
+  senderFor: (ip) => (ip === "167.89.12.34" ? { id: 1, kind: "vendor", label: "SendGrid", pattern: "*.sendgrid.net" } : null),
+  domains: () => [{ domain: "example.com" }, { domain: "contoso.co.uk" }]
 };
 const geoip = { lookup: async (ips) => new Map(ips.map((ip) => [ip, { country: "United States", countryCode: "US", city: null, asn: 11377, asOrg: "SendGrid, Inc.", source: "file" }])) };
 const analyzer = createHeaderAnalyzer({ dnsRecords, db, geoip, now: () => NOW });
@@ -50,6 +51,7 @@ const analyzer = createHeaderAnalyzer({ dnsRecords, db, geoip, now: () => NOW })
   const texts = a.findings.map((f) => `${f.severity}: ${f.text}`);
   check("findings: DMARC pass, envelope note, delivery time, known sender", texts.some((t) => t.startsWith("good: DMARC passes for example.com")) && texts.some((t) => t.startsWith("info: The envelope sender")) === false && texts.some((t) => /Delivered in 18 s over 5 hops/.test(t)) && texts.some((t) => t.startsWith("good: Handed to the receiver by 167.89.12.34") && /SendGrid/.test(t) && /420 messages, 3 failing/.test(t)), texts.join("\n"));
   check("all headers returned in order", a.headers.length === 21 && a.headers[0].name === "Received" && a.counts.hops === 5);
+  check("assessment: the sample is likely legitimate with high confidence, for the right reasons", a.assessment.level === "likely-legitimate" && a.assessment.confidence === "high" && a.assessment.score >= 60 && a.assessment.reasons[0].effect === "legitimate" && /DMARC passes/.test(a.assessment.reasons[0].text) && a.assessment.reasons.some((r) => /labelled/.test(r.text)) && a.assessment.reasons.some((r) => /almost all passing/.test(r.text)) && /^DMARC passes for example\.com/.test(a.assessment.summary), JSON.stringify(a.assessment));
 
   // --- a spoof: authenticated as someone else, display name disguised, replies diverted ---
   const spoof = [
@@ -73,7 +75,34 @@ const analyzer = createHeaderAnalyzer({ dnsRecords, db, geoip, now: () => NOW })
   const st = s.findings.map((f) => `${f.severity}: ${f.text}`);
   check("spoof findings: failure explained, policy consequence, reply-to, signature problems, slow hop", st.some((t) => t.startsWith("bad: DMARC fails for example.com") && /evil-mail\.test/.test(t)) && st.some((t) => /p=reject/.test(t)) && st.some((t) => /Replies go to collector@freemail\.test/.test(t)) && st.some((t) => /does not cover the From header/.test(t)) && st.some((t) => /l=20/.test(t)) && st.some((t) => /No DKIM key is published at k1\._domainkey\.evil-mail\.test/.test(t)) && st.some((t) => /Delivery took 1 h/.test(t)), st.join("\n"));
   check("spoof: source from the SPF comment, unknown to the reports; other filter headers listed", s.source.ip === "203.0.113.77" && s.source.known === null && s.source.seen === null && s.microsoft === null && s.otherFilters.some((o) => o.name === "X-Spam-Status"));
+  check("assessment: the spoof is likely spoofed, with the DMARC failure and the diverted replies on top", s.assessment.level === "likely-spoofed" && s.assessment.confidence === "high" && s.assessment.reasons[0].effect === "spoofed" && /DMARC fails/.test(s.assessment.reasons[0].text) && s.assessment.reasons.some((r) => /Replies go to collector@freemail\.test/.test(r.text)) && s.assessment.reasons.some((r) => /never appeared in your DMARC reports/.test(r.text)) && s.assessment.reasons.some((r) => /marked it as spam/.test(r.text)), JSON.stringify(s.assessment));
   const disguised = await analyzer.analyze('From: "ceo@example.com" <random@freemail.test>\nSubject: hi\nDate: Tue, 29 Sep 2026 15:00:05 +0000\n');
+  check("assessment: a disguised name with no authentication results is suspicious on low confidence, and says why", disguised.assessment.level === "suspicious" && disguised.assessment.confidence === "low" && disguised.assessment.caveats.some((c) => /No Authentication-Results/.test(c)) && /^On thin evidence: /.test(disguised.assessment.summary), JSON.stringify(disguised.assessment));
+
+  // --- assessment: the cases authentication alone gets wrong -------------------------------
+  const authFor = (domain, ip) => [
+    `Authentication-Results: mx.google.com; dkim=pass header.i=@${domain} header.s=k1 header.b=abc; spf=pass (google.com: domain of bounce@${domain} designates ${ip} as permitted sender) smtp.mailfrom=bounce@${domain}; dmarc=pass (p=NONE) header.from=${domain}`,
+    `Received: from mail.${domain} (mail.${domain}. [${ip}]) by mx.google.com with ESMTPS id abc for <jane@contoso.com>; Tue, 29 Sep 2026 08:00:06 -0700 (PDT)`,
+    "Date: Tue, 29 Sep 2026 15:00:05 +0000",
+    "Message-ID: <2@" + domain + ">"
+  ];
+  const lookalike = await analyzer.analyze([...authFor("examp1e.com", "203.0.113.80"), 'From: "Example Billing" <billing@examp1e.com>', "Subject: Invoice"].join("\r\n"));
+  check("assessment: a look-alike of your domain is suspicious even though it authenticates", lookalike.verdicts.dmarc.computed === "pass" && lookalike.assessment.level === "suspicious" && lookalike.assessment.reasons[0].effect === "spoofed" && /looks like your domain example\.com/.test(lookalike.assessment.reasons[0].text), JSON.stringify(lookalike.assessment));
+  const brand = await analyzer.analyze([...authFor("gmail.com", "209.85.1.1"), 'From: "Contoso IT Helpdesk" <contoso.helpdesk.2026@gmail.com>', "Subject: Password expiry"].join("\r\n"));
+  check("assessment: your name on a public mailbox is suspicious; the provider's DMARC pass counts for little", brand.assessment.level === "suspicious" && brand.assessment.reasons.some((r) => /uses the name of your domain contoso\.co\.uk/.test(r.text) && /public mail provider/.test(r.text)) && brand.assessment.reasons.some((r) => /public mail provider$|went through that public mail provider/.test(r.text) && r.weight === 15), JSON.stringify(brand.assessment));
+  const forwarded = await analyzer.analyze([
+    "Authentication-Results: mx.google.com; dkim=fail (body hash did not verify) header.i=@example.com header.s=s1 header.b=abc; spf=pass (google.com: domain of list-bounces@lists.test designates 203.0.113.90 as permitted sender) smtp.mailfrom=list-bounces@lists.test; arc=pass (i=1 spf=pass spfdomain=em1234.example.com dkim=pass dkdomain=example.com dmarc=pass fromdomain=example.com); dmarc=pass (p=REJECT dis=NONE) header.from=example.com",
+    "ARC-Seal: i=1; a=rsa-sha256; t=1; cv=none; d=lists.test; s=arc; b=x",
+    "ARC-Authentication-Results: i=1; lists.test; spf=pass smtp.mailfrom=bounce@em1234.example.com; dkim=pass header.d=example.com; dmarc=pass header.from=example.com",
+    "Received: from lists.test (lists.test. [203.0.113.90]) by mx.google.com with ESMTPS id abc for <jane@contoso.com>; Tue, 29 Sep 2026 08:00:06 -0700 (PDT)",
+    "DKIM-Signature: v=1; a=rsa-sha256; d=example.com; s=s1; h=from:to:subject; bh=x; b=y",
+    'From: "Example Billing" <billing@example.com>',
+    "Subject: [list] Invoice", "Date: Tue, 29 Sep 2026 15:00:05 +0000", "Message-ID: <3@example.com>"
+  ].join("\r\n"));
+  check("assessment: a forwarded message that failed in transit is not called spoofed; the receiver's override is honoured", forwarded.verdicts.dmarc.computed === "fail" && ["unclear", "probably-legitimate"].includes(forwarded.assessment.level) && forwarded.assessment.reasons.some((r) => /forwarder or mailing list/.test(r.text) && r.weight === -10) && forwarded.assessment.caveats.some((c) => /Forwarded mail/.test(c)), JSON.stringify(forwarded.assessment));
+  const { lookalikeOf, brandInName, levenshtein } = require("../header-assessment");
+  check("lookalikeOf: swapped letters, look-alike digits, added words, other suffix; never your own domain", lookalikeOf("exarnple.com", ["example.com"]) === "example.com" && lookalikeOf("examp1e.com", ["example.com"]) === "example.com" && lookalikeOf("example-billing.com", ["example.com"]) === "example.com" && lookalikeOf("example.net", ["example.com"]) === "example.com" && lookalikeOf("example.com", ["example.com"]) === null && lookalikeOf("contoso.co.uk", ["contoso.co.uk"]) === null && lookalikeOf("microsoft.com", ["example.com"]) === null && lookalikeOf("mail.example.com", ["example.com"]) === null);
+  check("brandInName / levenshtein", brandInName("Contoso Support", ["contoso.co.uk"]) === "contoso.co.uk" && brandInName("Jane Doe", ["contoso.co.uk"]) === null && brandInName("Discontent", ["contoso.co.uk"]) === null && levenshtein("kitten", "sitting") === 3);
   check("disguised display name is called out; no auth results is a warning", disguised.findings.some((f) => f.severity === "bad" && /display name shows a different address/.test(f.text)) && disguised.findings.some((f) => /No Authentication-Results header/.test(f.text)) && disguised.verdicts.dmarc.computed === null);
 
   // --- input validation ---

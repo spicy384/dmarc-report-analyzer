@@ -159,7 +159,21 @@ DNS, network, your known-sender label and whether it appears in your DMARC repor
 Microsoft 365 stamps decoded (SCL, BCL, SFV, CAT, compauth reason, connecting IP) and
 SpamAssassin-style markers; and all headers in order. Findings in plain language sit on
 top: a disguised display name, a Reply-To in another domain, a slow hop, a signature that
-no longer has a key. An Exchange Online trace is prefilled with the Message-ID. The result
+no longer has a key.
+
+Above the findings, one answer: **Likely legitimate**, **Probably legitimate**,
+**Unclear**, **Suspicious** or **Likely spoofed**, with a confidence and the reasons that
+decided it, each with its weight. The weights come from the DMARC result (a pass on a
+public mail provider counts for little, since anyone can open a mailbox there), whether
+the sending address is one you labelled or one your DMARC reports know, a forwarder's ARC
+chain or the receiver's override softening a failure, a display name that hides another
+address or borrows the name of one of your domains, a From domain that is a near miss of
+one of yours (swapped or look-alike letters, an added word, another suffix), a Reply-To
+that diverts the conversation to a public mailbox, DKIM signatures that skip From or
+verify failed, Microsoft's composite authentication and category, and spam-filter marks.
+It is a guess: headers copied from a mail client carry no Authentication-Results, so the
+verdict then rests on thin evidence and says so, and a well-run domain that is nobody's
+look-alike passes every check whoever owns it. An Exchange Online trace is prefilled with the Message-ID. The result
 can be exported: **Print / PDF** prints the whole report with every section expanded,
 **Download report** saves a self-contained HTML file (no scripts, no external requests) to
 attach to a ticket, **Copy as text** puts a plain-text version on the clipboard, and
