@@ -469,7 +469,7 @@ function headerReportHtml(a) {
   footer { margin-top: 28px; font-size: 12px; color: #666; }
   .assessment { margin: 12px 0 4px; padding: 10px 14px; border-left: 6px solid #a3a3a3; background: #fafafa; }
   .assessment strong { font-size: 16px; } .assessment .conf { color: #666; font-size: 12px; } .assessment p { margin: 4px 0 0; }
-  .assessment.likely-legitimate, .assessment.probably-legitimate { border-color: #16a34a; }
+  .assessment.likely-authorized, .assessment.probably-authorized { border-color: #16a34a; }
   .assessment.suspicious { border-color: #d97706; } .assessment.likely-spoofed { border-color: #dc2626; }
   @media print { body { background: #fff; } main { padding: 0; max-width: none; } tr { break-inside: avoid; } }
 </style>
@@ -525,7 +525,7 @@ document.getElementById("hdr-export-text").addEventListener("click", async () =>
   hdrStatus.textContent = ok ? "Report copied as text." : "The browser would not allow copying, so the text report was downloaded instead.";
 });
 
-/** The one-line answer (spoofed or legitimate?) with its reasons, above the details. */
+/** The one-line answer (spoofed, or an authorized sender?) with its reasons, above the details. */
 function renderHeaderAssessment(s) {
   const box = document.getElementById("hdr-assessment");
   box.replaceChildren();
@@ -552,7 +552,7 @@ function renderHeaderAssessment(s) {
       const li = document.createElement("li");
       li.className = `effect-${r.effect}`;
       li.textContent = `${r.effect === "spoofed" ? "\u2212" : "+"}${Math.abs(r.weight)}  ${r.text}`;
-      li.title = r.effect === "spoofed" ? "Points towards a spoofed message" : "Points towards a legitimate message";
+      li.title = r.effect === "spoofed" ? "Points towards a spoofed message" : "Points towards an authorized sender";
       ul.appendChild(li);
     }
     box.appendChild(ul);

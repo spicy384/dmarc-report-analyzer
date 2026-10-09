@@ -1,6 +1,7 @@
 /**
- * One answer on top of the header analysis: is this message more likely spoofed or
- * sent from a legitimate source? Every signal the analysis already carries is given
+ * One answer on top of the header analysis: was this message more likely spoofed, or
+ * sent by a server authorised to send as the From domain? ("Authorized sender" is
+ * all it claims: the content can still be unwanted.) Every signal the analysis already carries is given
  * a weight, for or against, and the sum lands on a five-step scale with a confidence
  * that says how much evidence there was. It is a guess, stated with its reasons, and
  * the reasons are the product: a reader can disagree with any of them.
@@ -14,8 +15,8 @@ const LEVELS = [
   { id: "likely-spoofed", label: "Likely spoofed", min: -Infinity, max: -40 },
   { id: "suspicious", label: "Suspicious", min: -39, max: -15 },
   { id: "unclear", label: "Unclear", min: -14, max: 14 },
-  { id: "probably-legitimate", label: "Probably legitimate", min: 15, max: 39 },
-  { id: "likely-legitimate", label: "Likely legitimate", min: 40, max: Infinity }
+  { id: "probably-authorized", label: "Probably authorized sender", min: 15, max: 39 },
+  { id: "likely-authorized", label: "Likely authorized sender", min: 40, max: Infinity }
 ];
 
 // Public mailbox providers: a business sender on one of these is not itself suspicious,
@@ -100,7 +101,7 @@ function assessHeaders(analysis, { ownDomains = [] } = {}) {
   const hasAuthResults = Array.isArray(a.authResults) && a.authResults.length > 0;
   const reasons = [];
   const caveats = [];
-  const add = (weight, text) => reasons.push({ effect: weight >= 0 ? "legitimate" : "spoofed", weight, text });
+  const add = (weight, text) => reasons.push({ effect: weight >= 0 ? "authorized" : "spoofed", weight, text });
 
   // --- authentication: the backbone of the answer ------------------------------------------
   const dmarc = v.dmarc || {};

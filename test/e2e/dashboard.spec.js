@@ -98,7 +98,7 @@ test("first run, dashboard, policy, analysis and settings", async ({ page }) => 
   await page.fill("#hdr-input", fs.readFileSync(path.join(EXAMPLES, "sample-headers.txt"), "utf8"));
   await page.locator("#hdr-analyze").click();
   await expect(page.locator("#headers-results-panel")).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator("#hdr-assessment")).toContainText("Likely legitimate");
+  await expect(page.locator("#hdr-assessment")).toContainText("Likely authorized sender");
   await expect(page.locator("#hdr-verdicts")).toContainText("DMARC pass");
   await expect(page.locator("#hdr-verdicts")).toContainText("SPF pass");
   await expect(page.locator("#hdr-findings")).toContainText("DMARC passes for example.com");

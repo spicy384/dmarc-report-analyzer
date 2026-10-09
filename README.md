@@ -21,7 +21,7 @@ real mail.
 |---|---|
 | **Sending sources**: every address that sent as your domain, with reverse DNS, network, your label or a catalogue guess, why it fails and a 30-day trend.<br>![Sending sources table](docs/screenshots/sources.png) | **Policy readiness**: your DMARC, SPF, DKIM and MTA-STS records checked live, and what `p=reject` would have done to the period's mail.<br>![Policy readiness, the "If p=reject" tab](docs/screenshots/policy.png) |
 | **This week** against last week, ready to copy into an email or print.<br>![This week panel](docs/screenshots/weekly.png) | **Domains**: one row per domain with its policy, pass rate and what needs attention.<br>![Domains scorecard](docs/screenshots/domains.png) |
-| **Analyze headers**: paste a message's headers for a spoof verdict (likely legitimate to likely spoofed, with the reasons and their weights) and the SPF, DKIM and DMARC results with alignment recomputed against the From domain.<br>![Header analysis: verdicts, findings and the authentication tab](docs/screenshots/header-analysis.png) | The same message's **path**, hop by hop with the wait before each. The report exports as PDF, HTML, text or JSON.<br>![Header analysis: the path tab](docs/screenshots/header-path.png) |
+| **Analyze headers**: paste a message's headers for a spoof verdict (likely authorized sender to likely spoofed, with the reasons and their weights) and the SPF, DKIM and DMARC results with alignment recomputed against the From domain.<br>![Header analysis: verdicts, findings and the authentication tab](docs/screenshots/header-analysis.png) | The same message's **path**, hop by hop with the wait before each. The report exports as PDF, HTML, text or JSON.<br>![Header analysis: the path tab](docs/screenshots/header-path.png) |
 | **TLS reports** (RFC 8460): sessions that succeeded and failed over TLS, by reason, receiving MX and sending MTA.<br>![TLS reports panel](docs/screenshots/tls-reports.png) | **Settings**: mailboxes in Microsoft 365, Google Workspace, Amazon SES, IMAP or POP3, with retry options for connection failures.<br>![Mailbox sync settings](docs/screenshots/settings-sync.png) |
 
 Dark theme:
@@ -164,12 +164,15 @@ no longer has a key.
 ### Spoof verdict
 
 Above the findings, one answer with a confidence and the reasons that decided it, each
-with its weight for or against:
+with its weight for or against. "Authorized sender" means exactly that: the server that
+sent the message was allowed to send as the From domain. It says nothing about whether
+the content is wanted, and a domain that authenticates can still belong to an attacker,
+which is what the look-alike and display-name checks are for.
 
 | Verdict | Score | Typical case |
 |---|---|---|
-| **Likely legitimate** | +40 and up | DMARC passes with aligned DKIM, from a sending address you labelled or your reports know |
-| **Probably legitimate** | +15 to +39 | A pass with little else to go on, or a forwarded message whose original pass the ARC record vouches for |
+| **Likely authorized sender** | +40 and up | DMARC passes with aligned DKIM, from a sending address you labelled or your reports know |
+| **Probably authorized sender** | +15 to +39 | A pass with little else to go on, or a forwarded message whose original pass the ARC record vouches for |
 | **Unclear** | −14 to +14 | Signals both ways, or too few of them |
 | **Suspicious** | −15 to −39 | A disguised display name, a look-alike domain, your name on a public mailbox, replies diverted elsewhere |
 | **Likely spoofed** | −40 and below | DMARC fails for your domain from a system your reports have never seen, with the filter's marks to match |
