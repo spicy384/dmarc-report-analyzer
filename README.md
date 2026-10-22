@@ -589,6 +589,10 @@ The app serves plain HTTP by default. Three options, in order of preference:
    certificate. Proxies do not verify upstream certificates by default.
 3. **Your own certificate** via `TLS_CERT`/`TLS_KEY`, mounted read-only.
 
+Proxy-side asset caching (Nginx Proxy Manager's "Cache Assets") is safe: the page addresses
+its scripts and styles by version and is itself never cached, and a page left open across an
+upgrade offers to reload.
+
 ### Behind an authentication proxy
 
 If Authelia, Authentik or oauth2-proxy already protects the app, set

@@ -1642,3 +1642,27 @@ body.scratch-mode #mailbox-label {
 .panel-head .filter-count + .head-toggle {
   margin-left: 0;
 }
+
+/* --- after an upgrade ------------------------------------------------------ */
+
+/* The server now runs another version than this page's scripts. Floating at the bottom left,
+   clear of the sticky header, and above the sign-in overlay (an old page is often there). */
+.update-bar {
+  position: fixed;
+  left: calc(16px + env(safe-area-inset-left));
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning-fg) 40%, transparent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  color: var(--warning-fg);
+  font-size: 13px;
+}

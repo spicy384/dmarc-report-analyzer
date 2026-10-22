@@ -170,6 +170,31 @@ function run(fn) {
   });
 }
 
+// The version this page was served by; the server says which version it runs on every API reply.
+const PAGE_VERSION = document.querySelector('meta[name="app-version"]')?.content || null;
+
+/**
+ * After an upgrade, a page left open keeps running the old version's scripts. When the server
+ * says it runs another version, a bar offers to reload (once).
+ */
+function noticeVersion(res) {
+  const running = res.headers.get("X-App-Version");
+  if (!PAGE_VERSION || !running || running === PAGE_VERSION || document.getElementById("update-bar")) return;
+  const bar = document.createElement("div");
+  bar.id = "update-bar";
+  bar.className = "update-bar";
+  bar.setAttribute("role", "status");
+  const text = document.createElement("span");
+  text.textContent = `This app was updated to ${running}. Reload to use the new version (anything not yet saved here will be lost).`;
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.className = "small";
+  reload.textContent = "Reload";
+  reload.addEventListener("click", () => location.reload());
+  bar.append(text, reload);
+  document.body.prepend(bar);
+}
+
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (csrfToken) {
@@ -177,6 +202,7 @@ async function api(path, options = {}) {
   }
 
   const res = await fetch(apiPath(path), { ...options, headers, signal: options.signal || activeLoadSignal || undefined });
+  noticeVersion(res);
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {

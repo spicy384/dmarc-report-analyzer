@@ -83,6 +83,26 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: "1mb" }));
+
+// The page, with its scripts and styles addressed by version (/js/01-core.js?v=1.4.1), so
+// neither a browser nor a caching proxy in between (Nginx Proxy Manager's "Cache Assets")
+// hands out one release's scripts with another's server; and the version it was served by,
+// which the page compares with what the API says (X-App-Version) to offer a reload after an upgrade.
+function versionedPage(file) {
+  return fs.readFileSync(file, "utf8")
+    .replace(/(src|href)="(\/?(?:js\/)?[\w.-]+\.(?:js|css))"/g, (m, attr, url) => `${attr}="${url}?v=${encodeURIComponent(pkg.version)}"`)
+    .replace("<head>", () => `<head>\n  <meta name="app-version" content="${pkg.version.replace(/[^\w.+-]/g, "")}" />`);
+}
+const INDEX_HTML = versionedPage(path.join(__dirname, "public", "index.html"));
+app.get(["/", "/index.html"], (req, res) => {
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.send(INDEX_HTML);
+});
+app.use("/api", (req, res, next) => {
+  res.setHeader("X-App-Version", pkg.version);
+  next();
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 fs.mkdirSync(DATA_DIR, { recursive: true });

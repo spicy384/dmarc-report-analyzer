@@ -409,6 +409,19 @@ async function waitForServer(tries = 60) {
     check("filter: mailbox param accepted", (await req("/api/summary?mailbox=env")).body.totals.messages === 53 && (await req("/api/summary?mailbox=other")).body.totals.messages === 0);
 
     check("static page served", (await fetch(`http://127.0.0.1:${APP_PORT}/`)).status === 200);
+
+    // --- the page knows which version served it ---
+    const version = require("../package.json").version;
+    const pageRes = await fetch(`http://127.0.0.1:${APP_PORT}/`);
+    const page = await pageRes.text();
+    check("page: scripts and styles addressed by version, and the version named", page.includes(`src="/js/01-core.js?v=${version}"`) && page.includes(`src="/js/24-init.js?v=${version}"`)
+      && page.includes(`href="/styles.css?v=${version}"`) && page.includes(`href="/dmarc.css?v=${version}"`) && !/src="\/js\/[\w.-]+\.js"/.test(page)
+      && page.includes(`<meta name="app-version" content="${version}" />`));
+    check("page: not kept stale, still under the CSP", pageRes.headers.get("cache-control") === "no-cache" && /text\/html/.test(pageRes.headers.get("content-type"))
+      && /script-src 'self'/.test(pageRes.headers.get("content-security-policy")) && (await fetch(`http://127.0.0.1:${APP_PORT}/index.html`)).headers.get("cache-control") === "no-cache");
+    check("page: the scripts themselves still served", (await fetch(`http://127.0.0.1:${APP_PORT}/js/01-core.js?v=${version}`)).status === 200);
+    check("api: says which version answers, signed in or not", (await req("/api/status", { raw: true })).headers.get("x-app-version") === version
+      && (await fetch(`http://127.0.0.1:${APP_PORT}/api/auth/me`)).headers.get("x-app-version") === version);
   } finally {
     const exited = new Promise((resolve) => app.once("exit", resolve));
     app.kill();
