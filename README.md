@@ -525,7 +525,7 @@ and fail without Python and a C++ toolchain.
 | `TLS_ENABLED` | `false` | Serve HTTPS with a generated self-signed certificate |
 | `TLS_HOSTS` | | Extra names/IPs for that certificate, comma separated |
 | `TLS_CERT`, `TLS_KEY` | | Use your own certificate instead |
-| `TRUST_PROXY` | `loopback, uniquelocal` | Which proxies may set `X-Forwarded-For` (so what the client address is for the sign-in throttle, sessions and audit log): `false`, a hop count, or addresses/CIDRs, as Express takes them |
+| `TRUST_PROXY` | `loopback` | Whose `X-Forwarded-For` to believe (so what the client address is for the sign-in throttle, sessions and audit log): your proxy's address or a CIDR, a hop count, `uniquelocal` for any private network, or `false`. Unset, only a proxy on the same host is believed |
 | `OWN_DOMAINS` | derived from the reports | Comma-separated domains that are yours, for the header verdict's look-alike checks |
 | `TRUST_PROXY_AUTH` | `false` | Accept the user from a reverse-proxy header (see below) |
 | `PROXY_USER_HEADER` | `remote-user` | Which header carries the username |
@@ -608,6 +608,12 @@ The app serves plain HTTP by default. Three options, in order of preference:
    connects to in `TLS_HOSTS`, so the hop between them is encrypted with a self-signed
    certificate. Proxies do not verify upstream certificates by default.
 3. **Your own certificate** via `TLS_CERT`/`TLS_KEY`, mounted read-only.
+
+With any of these, also say whose `X-Forwarded-For` to believe, or every client will
+appear as the proxy in the sign-in throttle and the audit log: `TRUST_PROXY=1` when the
+proxy is the only way in (as in `deploy/caddy`), or the proxy's address when it is on
+another host, for example `TRUST_PROXY=192.168.1.20`. The choice is yours; unset, the
+header is ignored except from a proxy on the same host.
 
 Proxy-side asset caching (Nginx Proxy Manager's "Cache Assets") is safe: the page addresses
 its scripts and styles by version and is itself never cached, and a page left open across an
@@ -710,8 +716,13 @@ minutes), every endpoint that takes a credential while signed out (`/api/auth/se
 `/api/auth/login`, its MFA and recovery steps, passkey sign-in) is throttled per client
 address: twenty failed attempts in 15 minutes answer `429` with `Retry-After` until the
 window passes. Successes never count, so a shared office address only pays for its own
-mistakes. Behind a reverse proxy the client address comes from `X-Forwarded-For`, trusted
-only from the proxies `TRUST_PROXY` names (by default this host and private networks).
+mistakes. Behind a reverse proxy the client address comes from `X-Forwarded-For`, and
+believing that header is your choice: unset, only a proxy on the same host is believed, so
+behind a proxy elsewhere every client appears as the proxy (the throttle is then shared
+and the audit log shows the proxy's address). Set `TRUST_PROXY` to the proxy's address to
+see real clients. `TRUST_PROXY=uniquelocal` believes any private-network peer, which is
+convenient but lets a client that reaches the app directly on that network claim any
+address. The start-up log says which is in force.
 `LOGIN_RATE_LIMIT` changes the number; `0` switches it off.
 
 Every response carries a Content-Security-Policy (`default-src 'self'`; scripts only from

@@ -68,6 +68,10 @@ services:
       # Caddy terminates HTTPS, so the browser only ever sends the cookie over TLS.
       COOKIE_SECURE: "true"
 
+      # Caddy is the only thing that can reach the app (no published port), so its
+      # X-Forwarded-For is believed: the throttle and audit log see the real client.
+      TRUST_PROXY: "1"
+
       # Not needed: the hop to the app stays inside this host's Docker network.
       TLS_ENABLED: "false"
 

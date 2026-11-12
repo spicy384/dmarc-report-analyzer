@@ -33,10 +33,12 @@ if (require.main === module) process.umask(0o077);
 const app = express();
 app.disable("x-powered-by");
 // Which proxies may set X-Forwarded-For (and so what req.ip means for the sign-in
-// throttle, the sessions list and the audit log). The default trusts a proxy on this
-// host or on a private network; TRUST_PROXY takes Express's forms: "false", a hop
-// count, or a comma-separated list of addresses/CIDRs/"loopback"/"uniquelocal".
-const TRUST_PROXY = process.env.TRUST_PROXY === undefined || process.env.TRUST_PROXY === "" ? "loopback, uniquelocal" : process.env.TRUST_PROXY;
+// throttle, the sessions list and the audit log). Believing that header is a choice:
+// unset, only a proxy on this host is trusted, so a client that reaches the app directly
+// cannot pick the address it is throttled and logged under. TRUST_PROXY names more, in
+// Express's forms: "false", a hop count, or a comma-separated list of addresses, CIDRs,
+// "loopback" and "uniquelocal" (every private network: convenient, and spoofable from one).
+const TRUST_PROXY = process.env.TRUST_PROXY === undefined || process.env.TRUST_PROXY === "" ? "loopback" : process.env.TRUST_PROXY;
 app.set("trust proxy", /^\d+$/.test(TRUST_PROXY) ? Number(TRUST_PROXY) : TRUST_PROXY === "false" ? false : TRUST_PROXY === "true" ? true : TRUST_PROXY);
 
 // Domains as they appear in reports and lookups (lower-cased by the caller).
@@ -1302,6 +1304,7 @@ if (require.main === module) {
     notifier.start();
     scratches.start();
     updates.start();
+    console.log(process.env.TRUST_PROXY ? `Trust proxy: ${TRUST_PROXY}` : "Trust proxy: loopback (X-Forwarded-For from other hosts is ignored; set TRUST_PROXY to your proxy's address to use it)");
     console.log(`Version: ${pkg.version}${process.env.APP_COMMIT ? ` (${String(process.env.APP_COMMIT).slice(0, 7)})` : ""}; update check ${updates.describe().enabled ? `daily against ${updates.describe().image}` : UPDATE_CHECK_ALLOWED ? "off (switched off under Settings)" : "off (UPDATE_CHECK=false)"}.`);
     monitor.start({ onAlerts: (created) => {
       console.log(`monitor: ${created.length} new alert(s) (${created.map((a) => a.type).join(", ")})`);

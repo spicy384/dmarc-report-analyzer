@@ -66,6 +66,18 @@ services:
       # is Secure exactly when the app serves HTTPS itself (TLS_ENABLED or your own certificate).
       COOKIE_SECURE: ${COOKIE_SECURE:-}
 
+      # Whose X-Forwarded-For to believe, which decides the client address used by the
+      # sign-in throttle, the sessions list and the audit log. Unset, only a proxy on this
+      # host is believed and everything behind another proxy appears as the proxy itself.
+      # Your choice:
+      #   TRUST_PROXY=192.168.1.20    the proxy's address (or several, or a CIDR): recommended
+      #   TRUST_PROXY=1               the nearest proxy, whatever its address
+      #   TRUST_PROXY=uniquelocal     any private-network address: convenient, but a client
+      #                               on that network reaching the app directly can then
+      #                               claim any address
+      #   TRUST_PROXY=false           never, not even from this host
+      TRUST_PROXY: ${TRUST_PROXY:-}
+
       # --- HTTPS -----------------------------------------------------------
       # Encrypts the hop between a reverse proxy and this app, which matters when the
       # proxy runs on a different host. With TLS_ENABLED=true the app generates and
