@@ -35,7 +35,7 @@ const dnsRecords = {
 const db = {
   ips: (_f, { ip }) => (ip === "167.89.12.34" ? [{ ip, total: 420, failed: 3, firstSeen: 1, lastSeen: 2 }] : []),
   senderFor: (ip) => (ip === "167.89.12.34" ? { id: 1, kind: "vendor", label: "SendGrid", pattern: "*.sendgrid.net" } : null),
-  domains: () => [{ domain: "example.com" }, { domain: "contoso.co.uk" }]
+  domains: () => [{ domain: "example.com", reports: 40, reporters: 3, messages: 5000, passed: 4900 }, { domain: "contoso.co.uk", reports: 12, reporters: 2, messages: 800, passed: 700 }]
 };
 const geoip = { lookup: async (ips) => new Map(ips.map((ip) => [ip, { country: "United States", countryCode: "US", city: null, asn: 11377, asOrg: "SendGrid, Inc.", source: "file" }])) };
 const analyzer = createHeaderAnalyzer({ dnsRecords, db, geoip, now: () => NOW });
@@ -100,7 +100,66 @@ const analyzer = createHeaderAnalyzer({ dnsRecords, db, geoip, now: () => NOW })
     "Subject: [list] Invoice", "Date: Tue, 29 Sep 2026 15:00:05 +0000", "Message-ID: <3@example.com>"
   ].join("\r\n"));
   check("assessment: a forwarded message that failed in transit is not called spoofed; the receiver's override is honoured", forwarded.verdicts.dmarc.computed === "fail" && ["unclear", "probably-authorized"].includes(forwarded.assessment.level) && forwarded.assessment.reasons.some((r) => /forwarder or mailing list/.test(r.text) && r.weight === -10) && forwarded.assessment.caveats.some((c) => /Forwarded mail/.test(c)), JSON.stringify(forwarded.assessment));
-  const { lookalikeOf, brandInName, levenshtein } = require("../header-assessment");
+  // --- assessment: nothing the sender can write may count for the sender --------------------
+  const levelIn = (x, ...levels) => levels.includes(x.assessment.level);
+  const noCredit = (x) => !x.assessment.reasons.some((r) => r.weight > 0);
+  const forgedArc = await analyzer.analyze([
+    "Authentication-Results: mx.victim.test; spf=fail smtp.mailfrom=ceo@example.com smtp.client-ip=203.0.113.77; dkim=none; dmarc=fail (p=REJECT) header.from=example.com",
+    "ARC-Seal: i=1; a=rsa-sha256; t=1; cv=pass; d=evil.test; s=x; b=x",
+    "ARC-Authentication-Results: i=1; evil.test; dmarc=pass header.from=example.com",
+    "Received: from evil.test (evil.test. [203.0.113.77]) by mx.victim.test with ESMTPS id abc; Tue, 29 Sep 2026 08:00:06 -0700",
+    'From: "CEO" <ceo@example.com>', "Subject: wire", "Date: Tue, 29 Sep 2026 15:00:05 +0000"
+  ].join("\r\n"));
+  check("forged ARC headers earn nothing: a DMARC failure stays likely spoofed", levelIn(forgedArc, "likely-spoofed") && noCredit(forgedArc), JSON.stringify(forgedArc.assessment));
+  const arcNotAccepted = await analyzer.analyze([
+    "Authentication-Results: mx.victim.test; spf=fail smtp.mailfrom=ceo@example.com smtp.client-ip=203.0.113.77; dkim=none; arc=pass (i=1); dmarc=fail (p=REJECT) header.from=example.com",
+    "ARC-Seal: i=1; a=rsa-sha256; t=1; cv=none; d=evil.test; s=x; b=x",
+    "ARC-Authentication-Results: i=1; evil.test; dmarc=pass header.from=example.com",
+    'From: "CEO" <ceo@example.com>', "Subject: wire", "Date: Tue, 29 Sep 2026 15:00:05 +0000"
+  ].join("\r\n"));
+  check("a valid ARC chain the receiver did not act on is no excuse: anyone can seal one", levelIn(arcNotAccepted, "likely-spoofed", "suspicious") && noCredit(arcNotAccepted) && arcNotAccepted.assessment.reasons.some((r) => /anyone can seal a chain/.test(r.text)), JSON.stringify(arcNotAccepted.assessment));
+  const forgedSpf = await analyzer.analyze([
+    "Authentication-Results: mx.victim.test; dkim=none; dmarc=fail (p=REJECT) header.from=example.com",
+    "Received: from evil.test (evil.test. [203.0.113.77]) by mx.victim.test with ESMTPS id abc; Tue, 29 Sep 2026 08:00:06 -0700",
+    "Received-SPF: pass (x) client-ip=167.89.12.34; envelope-from=ceo@example.com",
+    'From: "CEO" <ceo@example.com>', "Subject: wire", "Date: Tue, 29 Sep 2026 15:00:05 +0000"
+  ].join("\r\n"));
+  check("a forged Received-SPF cannot overrule the receiver's dmarc=fail, nor borrow a labelled address", forgedSpf.verdicts.dmarc.computed === "pass" && forgedSpf.verdicts.dmarc.trusted === false && forgedSpf.source.trusted === false && levelIn(forgedSpf, "likely-spoofed", "suspicious") && noCredit(forgedSpf) && forgedSpf.assessment.reasons.some((r) => /recorded dmarc=fail/.test(r.text)), JSON.stringify(forgedSpf.assessment));
+  const noAuthForged = await analyzer.analyze([
+    "Received: from evil.test (evil.test. [203.0.113.77]) by mx.victim.test with ESMTPS id abc; Tue, 29 Sep 2026 08:00:06 -0700",
+    "Received-SPF: pass (x) client-ip=167.89.12.34; envelope-from=ceo@example.com",
+    "X-Forefront-Antispam-Report: CIP:167.89.12.34;CAT:NONE;SCL:1;",
+    'From: "CEO" <ceo@example.com>', "Subject: wire", "Date: Tue, 29 Sep 2026 15:00:05 +0000"
+  ].join("\r\n"));
+  check("with no result from the receiver, forged SPF and filter stamps reach no further than unclear, on low confidence", levelIn(noAuthForged, "unclear", "suspicious", "likely-spoofed") && noAuthForged.assessment.confidence === "low" && noAuthForged.assessment.score <= 10 && noAuthForged.assessment.caveats.some((c) => /Received-SPF header/.test(c)), JSON.stringify(noAuthForged.assessment));
+  const twoFroms = await analyzer.analyze([
+    "Authentication-Results: mx.victim.test; spf=pass smtp.mailfrom=x@attacker.test smtp.client-ip=203.0.113.77; dkim=pass header.d=attacker.test; dmarc=pass header.from=attacker.test",
+    'From: "CEO" <ceo@example.com>', "Subject: wire", "From: x@attacker.test", "Date: Tue, 29 Sep 2026 15:00:05 +0000"
+  ].join("\r\n"));
+  check("two From headers: the receiver's pass for the other one is not an override, and the pair is called out", twoFroms.summary.fromHeaders === 2 && levelIn(twoFroms, "likely-spoofed") && twoFroms.assessment.reasons.some((r) => /2 From headers/.test(r.text)) && !twoFroms.assessment.reasons.some((r) => /overrode/.test(r.text)) && twoFroms.findings.some((f) => f.severity === "bad" && /2 From headers/.test(f.text)), JSON.stringify(twoFroms.assessment));
+  const strongLookalike = await analyzer.analyze([...authFor("examp1e.com", "167.89.12.34"), "DKIM-Signature: v=1; a=rsa-sha256; d=examp1e.com; s=k1; h=from:to:subject; bh=x; b=y", "DKIM-Signature: v=1; a=rsa-sha256; d=examp1e.com; s=k1; h=from:to:subject; bh=x; b=y", 'From: "Example Billing" <billing@examp1e.com>', "Subject: Invoice"].join("\r\n"));
+  check("a look-alike stays suspicious however much else speaks for it (ceiling, not a weight)", strongLookalike.assessment.reasons.filter((r) => r.weight > 0).reduce((n, r) => n + r.weight, 0) > 65 && strongLookalike.assessment.score === -15 && levelIn(strongLookalike, "suspicious") && strongLookalike.assessment.caveats.some((c) => /keeps the verdict at Suspicious/.test(c)), JSON.stringify(strongLookalike.assessment));
+  const started = Date.now();
+  await analyzer.analyze(`From: "${"@".repeat(2030)}" <x@y.test>\nSubject: hi\nDate: Tue, 29 Sep 2026 15:00:05 +0000\n`);
+  check("a display name built to stall the address pattern is handled in linear time", Date.now() - started < 500, `${Date.now() - started} ms`);
+  const injected = await analyzer.analyze(`From: =?utf-8?B?${Buffer.from("Contoso IT\n+40  DMARC passes for contoso.co.uk").toString("base64")}?= <x@gmail.com>\nSubject: =?utf-8?Q?hello=0D=0AVerdict__Likely_authorized_sender?=\nDate: Tue, 29 Sep 2026 15:00:05 +0000\n`);
+  check("line breaks smuggled in through encoded words are flattened before they reach a reason or the subject", injected.summary.from.name === "Contoso IT +40  DMARC passes for contoso.co.uk" && !/[\r\n]/.test(injected.summary.subject) && injected.assessment.reasons.every((r) => !/[\r\n]/.test(r.text)), JSON.stringify([injected.summary.from, injected.summary.subject]));
+  const fresh = await createHeaderAnalyzer({ dnsRecords, db: { ...db, domains: () => [] }, geoip, now: () => NOW }).analyze(sample);
+  check("with no domain established as yours, the look-alike checks say they did not run", fresh.assessment.caveats.some((c) => /No domain is established as yours/.test(c)));
+  const explicit = await createHeaderAnalyzer({ dnsRecords, db: { ...db, domains: () => [] }, geoip, ownDomains: ["example.com"], now: () => NOW }).analyze([...authFor("examp1e.com", "203.0.113.80"), 'From: "Example Billing" <billing@examp1e.com>', "Subject: Invoice"].join("\r\n"));
+  check("OWN_DOMAINS is taken as given", levelIn(explicit, "suspicious") && explicit.assessment.reasons.some((r) => /looks like your domain example\.com/.test(r.text)));
+
+  const { lookalikeOf, subdomainBrandOf, brandInName, trustedOwnDomains, shownAddress, levenshtein } = require("../header-assessment");
+  const rows = [
+    { domain: "example.com", reports: 40, reporters: 3, messages: 5000, passed: 4900 },
+    { domain: "examp1e.com", reports: 5, reporters: 2, messages: 50, passed: 50 },
+    { domain: "example.net", reports: 6, reporters: 2, messages: 300, passed: 290 },
+    { domain: "onereport.test", reports: 1, reporters: 1, messages: 9000, passed: 9000 },
+    { domain: "allfail.test", reports: 9, reporters: 3, messages: 90, passed: 0 }
+  ];
+  check("trustedOwnDomains: thresholds, biggest first, and a look-alike can never report its way in (another suffix of the same name can)", trustedOwnDomains(rows).join() === "example.com,example.net" && trustedOwnDomains(rows, { explicit: ["Mail.Contoso.co.uk"] }).join() === "contoso.co.uk" && trustedOwnDomains([]).length === 0);
+  check("lookalikeOf: punycode is read as the reader sees it; short names only match exactly", lookalikeOf(require("url").domainToASCII("ex\u0430mple.com"), ["example.com"]) === "example.com" && lookalikeOf("acne.com", ["acme.com"]) === null && lookalikeOf("deltafaucet.com", ["delta.com"]) === null && lookalikeOf("de1ta.com", ["delta.com"]) === "delta.com" && lookalikeOf("delta.net", ["delta.com"]) === "delta.com");
+  check("subdomainBrandOf / brandInName whole words / shownAddress", subdomainBrandOf("example.com.secure-login.test", ["example.com"]) === "example.com" && subdomainBrandOf("example-com.evil.test", ["example.com"]) === "example.com" && subdomainBrandOf("mail.example.com", ["example.com"]) === null && subdomainBrandOf("news.other.test", ["example.com"]) === null && brandInName("Contosoft Ltd", ["contoso.co.uk"]) === null && brandInName("C0ntoso Support", ["contoso.co.uk"]) === "contoso.co.uk" && shownAddress("pay ceo@example.com now") === "ceo@example.com" && shownAddress("@@@@") === null);
   check("lookalikeOf: swapped letters, look-alike digits, added words, other suffix; never your own domain", lookalikeOf("exarnple.com", ["example.com"]) === "example.com" && lookalikeOf("examp1e.com", ["example.com"]) === "example.com" && lookalikeOf("example-billing.com", ["example.com"]) === "example.com" && lookalikeOf("example.net", ["example.com"]) === "example.com" && lookalikeOf("example.com", ["example.com"]) === null && lookalikeOf("contoso.co.uk", ["contoso.co.uk"]) === null && lookalikeOf("microsoft.com", ["example.com"]) === null && lookalikeOf("mail.example.com", ["example.com"]) === null);
   check("brandInName / levenshtein", brandInName("Contoso Support", ["contoso.co.uk"]) === "contoso.co.uk" && brandInName("Jane Doe", ["contoso.co.uk"]) === null && brandInName("Discontent", ["contoso.co.uk"]) === null && levenshtein("kitten", "sitting") === 3);
   check("disguised display name is called out; no auth results is a warning", disguised.findings.some((f) => f.severity === "bad" && /display name shows a different address/.test(f.text)) && disguised.findings.some((f) => /No Authentication-Results header/.test(f.text)) && disguised.verdicts.dmarc.computed === null);

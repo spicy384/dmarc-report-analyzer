@@ -179,17 +179,36 @@ which is what the look-alike and display-name checks are for.
 
 The weights come from the DMARC result (a pass on a public mail provider counts for
 little, since anyone can open a mailbox there); whether the sending address is one you
-labelled or one your DMARC reports know; a forwarder's ARC chain or the receiver's
-override softening a failure, and the forwarder's own ARC record restoring the original
-pass; a display name that hides another address or borrows the name of one of your
-domains; a From domain that is a near miss of one of yours (swapped or look-alike
-letters, an added word, another suffix), which outweighs a clean pass on purpose; a
-Reply-To that diverts the conversation to a public mailbox; DKIM signatures that skip
-From or fail to verify; Microsoft's composite authentication and category; and
-spam-filter marks. It is a guess: headers copied from a mail client carry no
-Authentication-Results, so the verdict then rests on thin evidence, says so, and stays
-at the middle steps; and a well-run domain that is nobody's look-alike passes every
-check whoever owns it. The verdict is carried into the text, HTML and JSON exports. An Exchange Online trace is prefilled with the Message-ID. The result
+labelled or one your DMARC reports know; the receiving server's own decision to accept a
+forwarded message, with the ARC record it validated restoring the original pass; a
+display name that hides another address or borrows the name of one of your domains; a
+From or Reply-To domain that is a near miss of one of yours (look-alike letters, another
+suffix, and for longer names a swapped letter or an added word); a Reply-To that diverts
+the conversation to a public mailbox; more than one From header; DKIM signatures that
+skip From or fail to verify; Microsoft's composite authentication and category; and
+spam-filter marks.
+
+Two rules keep the verdict from being talked round. **Only what the receiving server
+recorded counts for the sender**: the newest Authentication-Results, the address its SPF
+check names, and Microsoft's stamps when Microsoft 365 is the receiver. ARC seals,
+Received-SPF, older Authentication-Results and filter stamps from elsewhere can all be
+written by the sender, so they may count against a message but never for it, and a
+receiver's `dmarc=fail` overrules any pass computed from them. And **an impersonation
+signal is a ceiling, not a weight**: a look-alike domain, a hidden address or a borrowed
+name keeps the verdict at Suspicious however well the message authenticates, because the
+impersonator's own domain passing every check is how the trick works.
+
+Which domains are yours is taken from the DMARC reports: a domain needs several reports
+from more than one reporter with passing mail, and a domain that is itself a near miss of
+a bigger one is never accepted, since anyone can mail a forged report to the reporting
+address. Set `OWN_DOMAINS` (comma separated) to state them yourself, which is also how
+to tell the app that a similar-looking second domain really is yours. It is a guess all
+the same: headers copied from a mail client carry no Authentication-Results, so the
+verdict then rests on thin evidence, says so, and stays at the middle steps; the newest
+Authentication-Results is trusted by position, so a message that never passed through a
+receiver that adds one can carry a forged one; and a well-run domain that is nobody's
+look-alike passes every check whoever owns it. The verdict is carried into the text,
+HTML and JSON exports. An Exchange Online trace is prefilled with the Message-ID. The result
 can be exported: **Print / PDF** prints the whole report with every section expanded,
 **Download report** saves a self-contained HTML file (no scripts, no external requests) to
 attach to a ticket, **Copy as text** puts a plain-text version on the clipboard, and
@@ -507,6 +526,7 @@ and fail without Python and a C++ toolchain.
 | `TLS_HOSTS` | | Extra names/IPs for that certificate, comma separated |
 | `TLS_CERT`, `TLS_KEY` | | Use your own certificate instead |
 | `TRUST_PROXY` | `loopback, uniquelocal` | Which proxies may set `X-Forwarded-For` (so what the client address is for the sign-in throttle, sessions and audit log): `false`, a hop count, or addresses/CIDRs, as Express takes them |
+| `OWN_DOMAINS` | derived from the reports | Comma-separated domains that are yours, for the header verdict's look-alike checks |
 | `TRUST_PROXY_AUTH` | `false` | Accept the user from a reverse-proxy header (see below) |
 | `PROXY_USER_HEADER` | `remote-user` | Which header carries the username |
 

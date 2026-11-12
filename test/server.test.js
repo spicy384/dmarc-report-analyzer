@@ -420,6 +420,12 @@ async function waitForServer(tries = 60) {
     check("page: not kept stale, still under the CSP", pageRes.headers.get("cache-control") === "no-cache" && /text\/html/.test(pageRes.headers.get("content-type"))
       && /script-src 'self'/.test(pageRes.headers.get("content-security-policy")) && (await fetch(`http://127.0.0.1:${APP_PORT}/index.html`)).headers.get("cache-control") === "no-cache");
     check("page: the scripts themselves still served", (await fetch(`http://127.0.0.1:${APP_PORT}/js/01-core.js?v=${version}`)).status === 200);
+    const stale = await fetch(`http://127.0.0.1:${APP_PORT}/js/01-core.js?v=0.0.0-next`, { redirect: "manual" });
+    check("page: a script asked for under another version is redirected to the current one, never served or cached there", stale.status === 302 && stale.headers.get("location") === `/js/01-core.js?v=${version}` && stale.headers.get("cache-control") === "no-store");
+    const sneaky = await fetch(`http://127.0.0.1:${APP_PORT}//evil.test/x.js?v=1`, { redirect: "manual" });
+    check("page: that redirect cannot be pointed at another site", sneaky.status !== 302 || /^\/[^/]/.test(sneaky.headers.get("location") || ""), `${sneaky.status} ${sneaky.headers.get("location")}`);
+    const apiReply = await req("/api/status", { raw: true });
+    check("api: answers are not cacheable and the server does not advertise itself", apiReply.headers.get("cache-control") === "no-store" && !apiReply.headers.get("x-powered-by"));
     check("api: says which version answers, signed in or not", (await req("/api/status", { raw: true })).headers.get("x-app-version") === version
       && (await fetch(`http://127.0.0.1:${APP_PORT}/api/auth/me`)).headers.get("x-app-version") === version);
   } finally {

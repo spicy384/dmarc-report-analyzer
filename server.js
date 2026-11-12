@@ -28,7 +28,10 @@ const pkg = require("./package.json");
 const UPLOAD_MAILBOX = "upload";
 const { createSync, publicJob, normaliseRetryPolicy, RETRY_DEFAULTS, RETRY_LIMITS } = require("./sync");
 
+// Files this process creates (database, backups, generated certificates) are for its own user only.
+if (require.main === module) process.umask(0o077);
 const app = express();
+app.disable("x-powered-by");
 // Which proxies may set X-Forwarded-For (and so what req.ip means for the sign-in
 // throttle, the sessions list and the audit log). The default trusts a proxy on this
 // host or on a private network; TRUST_PROXY takes Express's forms: "false", a hop
@@ -101,7 +104,20 @@ app.get(["/", "/index.html"], (req, res) => {
 });
 app.use("/api", (req, res, next) => {
   res.setHeader("X-App-Version", pkg.version);
+  // API answers carry report data, addresses and settings: nothing a browser or proxy should keep.
+  res.setHeader("Cache-Control", "no-store");
   next();
+});
+// A script or stylesheet asked for under another release's number is sent on to the current
+// one, never served under that address: otherwise anyone could ask for this release's files
+// under the next release's URLs before an upgrade and leave a caching proxy holding them.
+app.use((req, res, next) => {
+  if ((req.method === "GET" || req.method === "HEAD") && /\.(?:js|css)$/.test(req.path) && req.query.v !== undefined && req.query.v !== pkg.version) {
+    res.setHeader("Cache-Control", "no-store");
+    // One leading slash only: "//host/x.js" must not become a redirect to another site.
+    return res.redirect(302, `/${req.path.replace(/^\/+/, "")}?v=${encodeURIComponent(pkg.version)}`);
+  }
+  return next();
 });
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -780,7 +796,10 @@ app.post("/api/settings/retention/apply", authGuard.requireAdmin, route(async (r
 // --- email header analysis ------------------------------------------------------
 
 // Pasted headers are analysed and returned; nothing about them is stored or logged.
-const headerAnalyzer = createHeaderAnalyzer({ dnsRecords, geoip, db });
+// OWN_DOMAINS (comma separated) states which domains are yours for the header verdict's
+// look-alike checks; unset, they are derived from the DMARC reports.
+const OWN_DOMAINS = String(process.env.OWN_DOMAINS || "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean);
+const headerAnalyzer = createHeaderAnalyzer({ dnsRecords, geoip, db, ownDomains: OWN_DOMAINS });
 
 app.post("/api/headers/analyze", route(async (req, res) => {
   res.json(await headerAnalyzer.analyze(req.body && req.body.raw));

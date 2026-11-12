@@ -126,6 +126,9 @@ const PROTECTED = [
     check("correct code enrols mfa", confirm.status === 200, JSON.stringify(confirm.body));
     check("enrolment returns 10 recovery codes", (confirm.body.recoveryCodes || []).length === 10);
     const recoveryCodes = confirm.body.recoveryCodes;
+    const swapNoPw = await req("/api/auth/mfa/setup", { method: "POST", body: {} });
+    check("replacing an authenticator that is set up needs the password", swapNoPw.status === 401 && swapNoPw.body.passwordRequired === true && !swapNoPw.body.secret, JSON.stringify(swapNoPw.body));
+    check("with the password, a replacement can be started", (await req("/api/auth/mfa/setup", { method: "POST", body: { password: "correct-horse-battery" } })).status === 200);
 
     const meAfter = await req("/api/auth/me");
     check("me reports mfa enrolled", meAfter.body.user?.mfaEnrolled === true);
@@ -244,14 +247,18 @@ const PROTECTED = [
     for (let i = 0; i < 6; i += 1) {
       locked = await req("/api/auth/login", { method: "POST", body: { username: "operator", password: "wrong-password" } });
     }
-    // A wrong password on a locked account answers like any wrong password, so the lock
-    // (and with it the account's existence) is only revealed to someone who knows the password.
-    check("wrong password on a locked account is a plain 401", locked.status === 401, String(locked.status));
-    check("correct password is refused with 429 while locked", (await req("/api/auth/login", { method: "POST", body: { username: "operator", password: "another-long-password" } })).status === 429);
+    // Once locked, the answer is the same whatever is typed: checking the password first
+    // would let a guesser keep trying through the lock and learn the right one from the reply.
+    // Names that are not accounts lock the same way (below), so the lock reveals nothing either.
+    check("a locked account answers 429 whatever is typed (wrong password)", locked.status === 429 && /Too many failed attempts/.test(locked.body.error || ""), String(locked.status));
+    check("a locked account answers 429 whatever is typed (right password), so the lock confirms nothing", (await req("/api/auth/login", { method: "POST", body: { username: "operator", password: "another-long-password" } })).status === 429);
 
     // === username enumeration ===
     const unknown = await req("/api/auth/login", { method: "POST", body: { username: "does-not-exist", password: "whatever-long" } });
     check("unknown user gives the same error as a wrong password", unknown.status === 401 && /incorrect username or password/i.test(unknown.body.error || ""), JSON.stringify(unknown.body));
+    let ghost = null;
+    for (let i = 0; i < 6; i += 1) ghost = await req("/api/auth/login", { method: "POST", body: { username: "No-Such-Account", password: "wrong-password" } });
+    check("a name that is not an account locks the same way, so the lock does not reveal which names exist", ghost.status === 429 && /Too many failed attempts/.test(ghost.body.error || ""), String(ghost.status));
 
     // === proxy auth is off unless explicitly enabled ===
     const spoofed = await req("/api/reports", {

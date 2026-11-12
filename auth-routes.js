@@ -81,7 +81,10 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
   // Set this whenever HTTPS terminates in front of the app (a reverse proxy counts).
   // Deliberately not tied to NODE_ENV: a flag that silently does nothing is worse
   // than one that is simply off.
-  const cookieSecure = String(process.env.COOKIE_SECURE || "").toLowerCase() === "true";
+  // When the app serves HTTPS itself the cookie is Secure without being asked; an explicit
+  // COOKIE_SECURE (true or false) always wins.
+  const servesTls = String(process.env.TLS_ENABLED || "").toLowerCase() === "true" || Boolean(process.env.TLS_CERT && process.env.TLS_KEY);
+  const cookieSecure = process.env.COOKIE_SECURE ? String(process.env.COOKIE_SECURE).toLowerCase() === "true" : servesTls;
 
   // Pending logins live in memory only: they are short-lived by design.
   const pendingLogins = new Map();
@@ -273,6 +276,33 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
     }
   }
 
+  // Names that are not accounts are counted the same way, in memory, so that being locked
+  // out does not tell a guesser which usernames exist.
+  const unknownFailures = new Map(); // lower-cased name -> { failed, lockedUntil }
+  const MAX_UNKNOWN_TRACKED = 10000;
+
+  function unknownLockedUntil(name) {
+    const entry = unknownFailures.get(String(name).toLowerCase().slice(0, 128));
+    return entry && entry.lockedUntil && Date.now() < entry.lockedUntil ? entry.lockedUntil : null;
+  }
+
+  function registerUnknownFailure(name) {
+    const key = String(name).toLowerCase().slice(0, 128);
+    const entry = unknownFailures.get(key) || { failed: 0, lockedUntil: null };
+    if (entry.lockedUntil && Date.now() >= entry.lockedUntil) {
+      entry.lockedUntil = null;
+      entry.failed = 0;
+    }
+    entry.failed += 1;
+    if (entry.failed >= MAX_FAILED_ATTEMPTS) {
+      entry.lockedUntil = Date.now() + LOCKOUT_MS;
+      entry.failed = 0;
+    }
+    unknownFailures.delete(key); // re-insert, so the oldest entry is the least recently tried
+    unknownFailures.set(key, entry);
+    while (unknownFailures.size > MAX_UNKNOWN_TRACKED) unknownFailures.delete(unknownFailures.keys().next().value);
+  }
+
   // --- identity resolution -------------------------------------------------
 
   function publicUser(user) {
@@ -296,8 +326,13 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
   // Challenges in flight, keyed by a random token (sign-in) or "reg:<user id>".
   const passkeyChallenges = new Map();
 
+  // Sign-in challenges are handed out before anyone has signed in, so the map is bounded:
+  // the oldest go first, which at worst makes a very slow legitimate sign-in start over.
+  const MAX_PASSKEY_CHALLENGES = 1000;
+
   function rememberChallenge(key, challenge) {
     for (const [k, v] of passkeyChallenges) if (Date.now() > v.expiresAt) passkeyChallenges.delete(k);
+    while (passkeyChallenges.size >= MAX_PASSKEY_CHALLENGES) passkeyChallenges.delete(passkeyChallenges.keys().next().value);
     passkeyChallenges.set(key, { challenge, expiresAt: Date.now() + PASSKEY_CHALLENGE_TTL_MS });
   }
 
@@ -492,28 +527,35 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
     // Same response whether the user exists or not, so usernames cannot be probed.
     const invalid = () => res.status(401).json({ error: "Incorrect username or password." });
 
+    const locked = (until) => res.status(429).json({ error: `Too many failed attempts. Try again in ${Math.max(1, Math.ceil((until - Date.now()) / 60000))} minute(s).` });
+
     if (!user) {
+      const until = unknownLockedUntil(username);
+      if (until) return locked(until);
       // Spend comparable time so timing does not reveal existence.
       auth.verifyPassword(password, "scrypt$16384$8$1$00$00");
+      registerUnknownFailure(username);
       return invalid();
     }
 
-    // The password is checked before the lockout is mentioned, so a locked account with a
-    // wrong password answers exactly like an unknown username.
-    if (!auth.verifyPassword(password, user.passwordHash)) {
-      if (!isLockedOut(user)) registerFailure(user);
-      return invalid();
-    }
-
+    // The lock is consulted before the password and answers the same whatever was typed.
+    // Checking the password first would turn the lock into an oracle: a guesser could keep
+    // trying through it and learn the right password from the one reply that differs.
     if (isLockedOut(user)) {
-      const mins = Math.ceil((user.lockedUntil - Date.now()) / 60000);
-      return res.status(429).json({ error: `Too many failed attempts. Try again in ${mins} minute(s).` });
+      return locked(user.lockedUntil);
+    }
+
+    if (!auth.verifyPassword(password, user.passwordHash)) {
+      registerFailure(user);
+      return invalid();
     }
 
     clearFailures(user);
 
     if (user.mfaEnrolled && user.totpSecret) {
       const pendingToken = auth.randomToken(24);
+      // Abandoned second-factor steps are dropped here rather than kept until the process ends.
+      for (const [k, v] of pendingLogins) if (Date.now() > v.expiresAt) pendingLogins.delete(k);
       pendingLogins.set(pendingToken, { userId: user.id, expiresAt: Date.now() + PENDING_LOGIN_TTL_MS });
       return res.json({ ok: true, mfaRequired: true, pendingToken });
     }
@@ -833,6 +875,12 @@ function createAuth({ dataDir, audit = () => {} } = {}) {
 
   /** Begins TOTP enrolment; nothing is stored until the code is confirmed. */
   router.post("/api/auth/mfa/setup", requireAuth, async (req, res) => {
+    // Replacing an authenticator that is already set up takes the password, as turning it
+    // off does: otherwise whoever holds a stolen session could swap in a second factor of their own.
+    const current = findUserById(req.user.id);
+    if (current && current.mfaEnrolled && current.totpSecret && !auth.verifyPassword(String(req.body?.password || ""), current.passwordHash)) {
+      return res.status(401).json({ error: "Enter your password to replace the authenticator that is already set up.", passwordRequired: true });
+    }
     const secret = auth.generateTotpSecret();
     const uri = auth.buildOtpauthUri({ secret, account: req.user.username });
 

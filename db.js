@@ -990,7 +990,7 @@ function openDatabase({ dataDir, file } = {}) {
 
   function domains() {
     return db.prepare(`
-      SELECT r.domain AS domain, COUNT(*) AS reports, SUM(r.messages) AS messageTotal, SUM(r.passed) AS passedTotal,
+      SELECT r.domain AS domain, COUNT(*) AS reports, COUNT(DISTINCT r.org_name) AS reporters, SUM(r.messages) AS messageTotal, SUM(r.passed) AS passedTotal,
              MAX(r.range_end) AS lastSeen
       FROM reports r GROUP BY r.domain ORDER BY messageTotal DESC`).all()
       .map(({ messageTotal, passedTotal, ...row }) => ({ ...row, messages: messageTotal, passed: passedTotal }));

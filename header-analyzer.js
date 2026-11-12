@@ -12,7 +12,7 @@ const { splitHeaders, decodeHeaderWords } = require("./arf-parser");
 const { parseIp } = require("./ipmatch");
 const { matchCatalogue } = require("./sender-catalogue");
 const { organizationalDomain: orgDomain } = require("./domains");
-const { assessHeaders } = require("./header-assessment");
+const { assessHeaders, shownAddress, trustedOwnDomains } = require("./header-assessment");
 
 const MAX_INPUT_BYTES = 512 * 1024;
 const MAX_DKIM_LOOKUPS = 6;
@@ -45,10 +45,18 @@ function first(headers, name) {
   return all.length ? all[0] : null;
 }
 
+// Control and direction-override characters have no place in an address or a subject, and
+// (decoded from an encoded word) they would let a sender draw fake lines into the report.
+// eslint-disable-next-line no-control-regex
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]+/g;
+function cleanText(value) {
+  return String(value === null || value === undefined ? "" : value).replace(UNPRINTABLE, " ");
+}
+
 /** Display name, address and domain out of a From-like header value. */
 function parseAddress(value) {
   if (!value) return null;
-  const decoded = decodeHeaderWords(String(value).slice(0, MAX_ADDRESS_HEADER)).trim();
+  const decoded = cleanText(decodeHeaderWords(String(value).slice(0, MAX_ADDRESS_HEADER))).trim();
   const angle = decoded.match(/<([^<>]*)>\s*$/) || decoded.match(/<([^<>]*)>/);
   const address = (angle ? angle[1] : (decoded.match(/[^\s<>"(),;:]+@[^\s<>"(),;:]+/) || [""])[0]).trim().toLowerCase();
   const name = angle ? decoded.slice(0, angle.index).trim().replace(/^"(.*)"$/, "$1").trim() : "";
@@ -302,6 +310,9 @@ function parseMicrosoft(headers, topAuth) {
     safety: fields.SFTY || null,
     authAs: authAs || null,
     authSource: first(headers, "X-MS-Exchange-Organization-AuthSource"),
+    // The stamps are the receiver's own only when Microsoft 365 is the receiver: its
+    // Authentication-Results then carries compauth. Otherwise the sender may have written them.
+    trusted: Boolean(compauth) && Boolean(first(headers, "X-Forefront-Antispam-Report")),
     compauth: compauth ? { result: compauth.result, reason: compauth.props.reason || null, meaning: compauthMeaning(compauth.result, compauth.props.reason) } : null
   };
 }
@@ -354,7 +365,7 @@ function formatDuration(seconds) {
  * `dnsRecords` (dns-records.js), `geoip` and `db` are optional; without them the
  * analysis is purely what the headers say.
  */
-function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now = () => Math.floor(Date.now() / 1000) } = {}) {
+function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, ownDomains: explicitOwnDomains = [], now = () => Math.floor(Date.now() / 1000) } = {}) {
   async function analyze(raw) {
     const text = String(raw || "");
     if (!text.trim()) throw fail(400, "Paste the message headers first.");
@@ -376,8 +387,10 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
       returnPath,
       replyTo,
       sender,
-      to: decodeHeaderWords(first(headers, "To") || "") || null,
-      subject: decodeHeaderWords(first(headers, "Subject") || "") || null,
+      // More than one From header is itself a finding: receivers and mail programs may pick different ones.
+      fromHeaders: valuesOf(headers, "From").length,
+      to: cleanText(decodeHeaderWords(first(headers, "To") || "")).trim() || null,
+      subject: cleanText(decodeHeaderWords(first(headers, "Subject") || "")).trim() || null,
       date: toSeconds(first(headers, "Date")),
       dateRaw: first(headers, "Date"),
       messageId: (first(headers, "Message-ID") || "").trim() || null
@@ -426,7 +439,7 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
     const dkimAlignedDomains = dkimPassing.filter((d) => aligned(d, fromDomain, strictDkim));
     const computedDmarc = !fromDomain || (!spfResult && !dkimAuth.length) ? null : (spfAligned || dkimAlignedDomains.length ? "pass" : "fail");
     const verdicts = {
-      spf: { result: spfResult, domain: spfDomain, aligned: spfResult === "pass" ? spfAligned : false, strict: strictSpf, comment: spfAuth ? spfAuth.comment : null },
+      spf: { result: spfResult, source: spfAuth ? "authentication-results" : receivedSpf ? "received-spf" : null, domain: spfDomain, aligned: spfResult === "pass" ? spfAligned : false, strict: strictSpf, comment: spfAuth ? spfAuth.comment : null },
       dkim: {
         result: dkimAuth.length ? (dkimPassing.length ? "pass" : dkimAuth[0].result) : (signatures.length ? "not reported" : "none"),
         passingDomains: [...new Set(dkimPassing)],
@@ -438,6 +451,9 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
       dmarc: {
         reported: dmarcAuth ? dmarcAuth.result : null,
         computed: computedDmarc,
+        // Whether the computed result rests on what the receiving server recorded. A pass
+        // pieced together from a Received-SPF header alone could be the sender's own writing.
+        trusted: computedDmarc === "pass" ? Boolean(top && (dkimAlignedDomains.length || (spfAligned && spfAuth))) : Boolean(top),
         via: computedDmarc === "pass" ? [spfAligned ? "SPF" : null, dkimAlignedDomains.length ? "DKIM" : null].filter(Boolean) : [],
         action: dmarcAuth ? dmarcAuth.props.action || null : null,
         headerFrom: dmarcAuth ? dmarcAuth.props["header.from"] || null : null,
@@ -452,7 +468,7 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
     };
 
     // --- the address that handed the message to the receiver ---
-    const source = { ip: null, how: null };
+    const source = { ip: null, how: null, trusted: false };
     const candidates = [
       [spfAuth && (spfAuth.props["smtp.client-ip"] || ((spfAuth.comment || "").match(/sender ip is ([0-9a-f:.]+)/i) || [])[1] || ((spfAuth.comment || "").match(/designates ([0-9a-f:.]+) as/i) || [])[1]), "the receiver's SPF check"],
       [receivedSpf && receivedSpf.clientIp, "the Received-SPF header"],
@@ -463,6 +479,8 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
       if (clean && parseIp(clean)) {
         source.ip = clean;
         source.how = how;
+        // Only the receiver's own SPF check names the address reliably; the other places can be forged.
+        source.trusted = how === "the receiver's SPF check";
         break;
       }
     }
@@ -536,7 +554,8 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
       if (sig.dns && sig.dns.weak) add("warn", `The DKIM key at ${name} is only ${sig.dns.keyBits} bits.`);
       if (sig.result && sig.result !== "pass") add("bad", `DKIM ${sig.result} for ${name}${sig.resultComment ? ` (${sig.resultComment})` : ""}: the message was modified in transit, or the key does not match.`);
     }
-    if (from && from.name && /[^\s<>"]+@[^\s<>"]+\.[a-z]{2,}/i.test(from.name) && !from.name.toLowerCase().includes(from.address || "\u0000")) {
+    if (summary.fromHeaders > 1) add("bad", `The message carries ${summary.fromHeaders} From headers; the first is shown here. Receivers and mail programs can disagree on which one is the sender.`);
+    if (from && from.name && shownAddress(from.name) && !from.name.toLowerCase().includes(from.address || "\u0000")) {
       add("bad", `The display name shows a different address ("${from.name}") from the real one (${from.address}): a common way to disguise the sender.`);
     }
     if (replyTo && from && replyTo.domain && from.domain && orgDomain(replyTo.domain) !== orgDomain(from.domain)) add("warn", `Replies go to ${replyTo.address}, a different domain from the From address (${from.address}).`);
@@ -562,10 +581,12 @@ function createHeaderAnalyzer({ dnsRecords = null, geoip = null, db = null, now 
 
     // Your own domains (the ones your DMARC reports are about) let the assessment spot
     // look-alike domains and display names that borrow your name.
-    let ownDomains = [];
-    if (db && typeof db.domains === "function") {
+    // An explicit list (OWN_DOMAINS) wins; otherwise they are derived from the reports with
+    // thresholds, because anyone can mail a forged report (see trustedOwnDomains).
+    let ownDomains = trustedOwnDomains([], { explicit: explicitOwnDomains });
+    if (!ownDomains.length && db && typeof db.domains === "function") {
       try {
-        ownDomains = db.domains().map((d) => d.domain);
+        ownDomains = trustedOwnDomains(db.domains());
       } catch {
         ownDomains = [];
       }
