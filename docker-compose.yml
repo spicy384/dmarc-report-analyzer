@@ -62,8 +62,9 @@ services:
       GEOIP_ONLINE: ${GEOIP_ONLINE:-true}
 
       # Set true once HTTPS terminates in front of this, so the session cookie is marked
-      # Secure. Leave false on plain HTTP or sign-in will not work at all.
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Secure; false on plain HTTP, or sign-in will not work at all. Left unset, the cookie
+      # is Secure exactly when the app serves HTTPS itself (TLS_ENABLED or your own certificate).
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
 
       # --- HTTPS -----------------------------------------------------------
       # Encrypts the hop between a reverse proxy and this app, which matters when the

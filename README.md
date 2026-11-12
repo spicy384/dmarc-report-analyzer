@@ -521,7 +521,7 @@ and fail without Python and a C++ toolchain.
 | `APP_URL` | where settings were saved from | Link back to the app in webhook notifications |
 | `DATA_DIR` | `./data` | Accounts, sessions, the SQLite database, generated TLS files |
 | `TZ` | `UTC` | Timezone for the container |
-| `COOKIE_SECURE` | `false` | Mark the session cookie Secure. Set `true` behind HTTPS |
+| `COOKIE_SECURE` | `false`; `true` when the app serves HTTPS itself | Mark the session cookie Secure. Set `true` behind an HTTPS proxy |
 | `TLS_ENABLED` | `false` | Serve HTTPS with a generated self-signed certificate |
 | `TLS_HOSTS` | | Extra names/IPs for that certificate, comma separated |
 | `TLS_CERT`, `TLS_KEY` | | Use your own certificate instead |
